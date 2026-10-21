@@ -1,0 +1,138 @@
+/* Assistant docking has one owner. The application controls --assistant-width
+   and has-assistant-dock / has-docked-assistant; no popup rules are needed. */
+.assistant-dock {
+  position: fixed;
+  inset: 16px 16px 16px auto;
+  width: var(--assistant-width, 662px);
+  height: calc(100dvh - 32px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  z-index: 61;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: var(--panel);
+  box-shadow: 0 2px 12px #25191d08;
+  isolation: isolate;
+}
+.assistant-dock > .assistant-panel {
+  position: static;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  min-height: 0;
+  height: auto;
+  margin: 0;
+  border: 0;
+  border-radius: inherit;
+  box-shadow: none;
+  overflow: hidden;
+  background: var(--panel);
+}
+.assistant-dock .assistant-header {
+  height: 54px;
+  min-height: 54px;
+  flex-shrink: 0;
+  padding: 0 18px;
+  background: var(--panel);
+}
+.assistant-dock .assistant-header .icon-button {
+  min-width: 36px;
+  min-height: 36px;
+}
+.assistant-dock .conversation {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.assistant-dock .assistant-welcome {
+  width: 100%;
+  max-width: 620px;
+  padding: clamp(38px, 12vh, 145px) 28px 26px;
+  margin: 0 auto;
+}
+.assistant-dock .assistant-welcome h2 { font-size: 26px; }
+.assistant-dock .suggestion-grid { gap: 10px; }
+.assistant-dock .suggestion-grid button { min-height: 104px; padding: 15px; font-size: 12px; }
+.assistant-dock .messages { padding: 24px; }
+.assistant-dock .message { font-size: 14px; line-height: 1.85; }
+.assistant-dock .composer-wrap {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 12px 18px 16px;
+  background: var(--panel);
+}
+.assistant-dock .composer textarea { min-height: 68px; max-height: min(180px, 24dvh); font-size: 13px; }
+.assistant-dock .composer-bottom { min-width: 0; }
+.assistant-dock .composer-bottom .model-select-wrap { max-width: 70%; }
+.assistant-dock .selected-passage blockquote { max-height: 86px; overflow-y: auto; }
+.assistant-dock-resizer {
+  position: absolute;
+  left: -11px;
+  top: 0;
+  width: 16px;
+  height: 100%;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+}
+.assistant-dock-resizer::before { content: ""; position: absolute; width: 3px; top: 14px; bottom: 14px; border-radius: 3px; background: transparent; }
+.assistant-dock-resizer:hover, .assistant-dock-resizer:focus-visible, .assistant-dock.is-resizing .assistant-dock-resizer { color: var(--accent); }
+.assistant-dock-resizer:hover::before, .assistant-dock-resizer:focus-visible::before, .assistant-dock.is-resizing .assistant-dock-resizer::before { background: var(--tint); }
+.assistant-dock-resizer svg { z-index: 1; padding: 6px 0; height: 32px; background: var(--panel); border-radius: 4px; }
+.assistant-dock-mobile-bar { display: none; }
+@media (min-width: 1000px) {
+  .workspace.has-docked-assistant { margin-right: calc(var(--assistant-width, 662px) + 32px); }
+  .workspace.has-docked-assistant .paper-layout { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .workspace.has-docked-assistant .paper-content { width: 100%; max-width: none; }
+  .workspace.has-docked-assistant .paper-toolbar { margin-right: 0; }
+
+}
+@media (max-width: 999px) {
+  .assistant-dock {
+    inset: 12px 12px 12px auto;
+    width: min(560px, calc(100vw - 24px));
+    height: calc(100dvh - 24px);
+    box-shadow: -12px 0 55px #25191d25;
+  }
+  .workspace.has-docked-assistant { margin-right: 0; }
+  .assistant-dock-resizer { display: none; }
+  .assistant-dock-mobile-bar { display: flex; align-items: center; flex: 0 0 50px; min-height: 50px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+  .assistant-dock-mobile-bar button { display: flex; align-items: center; gap: 8px; min-height: 44px; color: var(--accent); font-size: 12px; }
+  .assistant-dock .assistant-header { min-height: 48px; height: 48px; }
+  .assistant-dock .assistant-header .icon-button { min-width: 44px; min-height: 44px; }
+  .assistant-dock .assistant-welcome { padding-top: 32px; }
+
+}
+@media (max-width: 480px) {
+  .assistant-dock { inset: 0; width: 100vw; height: 100dvh; border-radius: 0; border: 0; }
+  .assistant-dock-mobile-bar { padding-top: env(safe-area-inset-top); min-height: calc(50px + env(safe-area-inset-top)); }
+  .assistant-dock .assistant-welcome { padding: 22px 16px; }
+  .assistant-dock .assistant-welcome h2 { font-size: 22px; }
+  .assistant-dock .suggestion-grid { gap: 8px; }
+  .assistant-dock .suggestion-grid button { font-size: 11px; min-height: 88px; padding: 11px; }
+  .assistant-dock .messages { padding: 16px; }
+  .assistant-dock .composer-wrap { padding: 10px 12px max(12px, env(safe-area-inset-bottom)); }
+  .assistant-dock .composer textarea { max-height: 120px; }
+  .assistant-dock .selected-passage blockquote { max-height: 68px; }
+
+}
+@media (max-height: 650px) {
+  .assistant-dock .assistant-welcome { padding-top: 20px; }
+  .assistant-dock .assistant-symbol { margin-bottom: 10px; }
+  .assistant-dock .composer textarea { min-height: 48px; height: 48px; }
+  .assistant-dock .selected-passage blockquote { max-height: 52px; }
+}
+
+.app-shell.has-assistant-dock > .assistant-bubble.is-open { display: none; }
