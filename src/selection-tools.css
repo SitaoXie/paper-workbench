@@ -1,0 +1,18 @@
+.selection-source { min-width: 0; }
+.overview-selection { position: fixed; z-index: 90; width: min(380px, calc(100vw - 24px)); max-height: min(430px, calc(100dvh - 24px)); overflow: auto; padding: 12px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); color: var(--text); box-shadow: 0 10px 40px #32232930; font-size: 12px; }
+.overview-selection header { display: flex; align-items: center; justify-content: space-between; color: var(--secondary); font-size: 11px; }
+.overview-selection header .icon-button { width: 38px; height: 38px; flex-shrink: 0; }
+.overview-selection blockquote { margin: 5px 0 10px; border-left: 3px solid var(--line); padding: 4px 9px; max-height: 80px; overflow: auto; color: var(--secondary); line-height: 1.65; white-space: pre-wrap; }
+.overview-selection-actions { display: grid; grid-template-columns: repeat(3,1fr); gap: 7px; }
+.overview-selection-actions button { display: flex; align-items: center; justify-content: center; gap: 6px; background: var(--subtle); border: 1px solid var(--line); border-radius: 7px; min-height: 44px; font-size: 12px; }
+.overview-selection-actions button:last-child { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.overview-selection-result { max-height: 220px; overflow: auto; margin: 12px 0; border-top: 1px solid var(--line); padding-top: 10px; font-size: 13px !important; }
+.overview-selection-result p { margin: 6px 0; }
+.overview-selection .text-button { display: flex; align-items: center; gap: 6px; min-height: 36px; }
+.overview-selection .text-button { flex-shrink: 0; white-space: nowrap; }
+.reading-inline-error button { flex-shrink: 0; white-space: nowrap; min-height: 36px; }
+.selection-pending { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.overview-selection-options { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 9px; color: var(--secondary); font-size: 11px; }
+.overview-selection-options label { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.overview-selection-options select { width: auto; min-height: 36px; padding: 4px 6px; margin: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }
+.overview-selection-options > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

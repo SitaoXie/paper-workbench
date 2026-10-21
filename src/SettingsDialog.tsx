@@ -1,15 +1,24 @@
 import { useState } from "react";
+import { t, useLocale } from "./i18n";
+import "./locale-polish.css";
+import "./vision-tools.css";
 import {
   Check,
   ChevronDown,
   Globe2,
+  Eye,
   Loader2,
   Plus,
   ShieldCheck,
   Trash2,
   X,
 } from "lucide-react";
-import { api, type Settings, type ModelProfile } from "./types";
+import {
+  api,
+  type Settings,
+  type ModelProfile,
+  type VisionSettings,
+} from "./types";
 
 type Draft = ModelProfile & {
   apiKey?: string;
@@ -17,6 +26,10 @@ type Draft = ModelProfile & {
   extra: string;
   modelText: string;
 };
+function modelCountLabel(modelText: string) {
+  const count = modelText.split(/[\n,，]+/).filter(Boolean).length;
+  return t(`${count} 个模型`, `${count} model${count === 1 ? "" : "s"}`);
+}
 function toDraft(s: ModelProfile): Draft {
   return {
     ...s,
@@ -31,7 +44,7 @@ export function profileList(s: Settings): ModelProfile[] {
         {
           ...s,
           id: "default",
-          name: "默认连接",
+          name: t("默认连接"),
           models: s.model ? [s.model] : [],
         },
       ];
@@ -45,6 +58,7 @@ export default function SettingsDialog({
   onClose: () => void;
   onSaved: (s: Settings) => void;
 }) {
+  useLocale();
   const [profiles, setProfiles] = useState(() =>
     profileList(current).map(toDraft),
   );
@@ -54,41 +68,70 @@ export default function SettingsDialog({
   const [active, setActive] = useState(
     current.activeProfileId || profileList(current)[0].id,
   );
+  const [vision, setVision] = useState<VisionSettings>(
+    () => current.vision || { enabled: false },
+  );
+  const declaredModels = (profile: Draft) => [
+    ...new Set(
+      [...profile.modelText.split(/[\n,，]+/), profile.model]
+        .map((model) => model.trim())
+        .filter(Boolean),
+    ),
+  ];
+  const visionProfiles = profiles.filter((profile) =>
+    declaredModels(profile).some(
+      (model) => profile.modelCapabilities?.[model] === "vision",
+    ),
+  );
+  const visionProfile = visionProfiles.find(
+    (profile) => profile.id === vision.profileId,
+  );
+  const visionModels = visionProfile
+    ? declaredModels(visionProfile).filter(
+        (model) => visionProfile.modelCapabilities?.[model] === "vision",
+      )
+    : [];
   const [busy, setBusy] = useState("");
   const [feedback, setFeedback] = useState("");
   const [failed, setFailed] = useState(false);
   const draft = profiles.find((p) => p.id === selected) || profiles[0];
-  const update = (patch: Partial<Draft>) =>
+  const update = (patch: Partial<Draft>) => {
+    const origin = (url: string) => {
+      try {
+        return new URL(url).origin;
+      } catch {
+        return "";
+      }
+    };
+    const destinationChanged =
+      (patch.provider !== undefined && patch.provider !== draft.provider) ||
+      (patch.baseUrl !== undefined &&
+        origin(patch.baseUrl) !== origin(draft.baseUrl));
+    if (destinationChanged && vision.profileId === draft.id)
+      setVision((old) => ({ ...old, enabled: false }));
     setProfiles((ps) =>
-      ps.map((p) => {
-        if (p.id !== draft.id) return p;
-        const origin = (url: string) => {
-          try {
-            return new URL(url).origin;
-          } catch {
-            return "";
-          }
-        };
-        const destinationChanged =
-          (patch.provider !== undefined && patch.provider !== p.provider) ||
-          (patch.baseUrl !== undefined &&
-            origin(patch.baseUrl) !== origin(p.baseUrl));
-        return {
-          ...p,
-          ...patch,
-          ...(destinationChanged
-            ? {
-                apiKey: "",
-                apiKeyConfigured: false,
-                modelConfigured: false,
-                clearApiKey: true,
-              }
-            : {}),
-        };
-      }),
+      ps.map((profile) =>
+        profile.id !== draft.id
+          ? profile
+          : {
+              ...profile,
+              ...patch,
+              ...(destinationChanged
+                ? {
+                    apiKey: "",
+                    apiKeyConfigured: false,
+                    modelConfigured: false,
+                    clearApiKey: true,
+                    modelCapabilities: {},
+                  }
+                : {}),
+            },
+      ),
     );
+  };
   const payload = () => ({
     activeProfileId: active,
+    vision,
     profiles: profiles.map(({ extra, modelText, ...p }) => {
       const models = [
         ...new Set(
@@ -103,6 +146,14 @@ export default function SettingsDialog({
         ...p,
         model: p.model.trim(),
         models: models.filter(Boolean),
+        modelCapabilities: Object.fromEntries(
+          models
+            .filter(Boolean)
+            .map((model) => [
+              model,
+              p.modelCapabilities?.[model] === "vision" ? "vision" : "text",
+            ]),
+        ),
         extraBody: JSON.parse(extra),
       };
     }),
@@ -113,6 +164,16 @@ export default function SettingsDialog({
     try {
       const body = payload();
       if (action === "save") {
+        if (
+          vision.enabled &&
+          (!visionProfile || !visionModels.includes(vision.model || ""))
+        )
+          throw new Error(
+            t(
+              "请先明确声明视觉模型，并选择视觉连接与模型。",
+              "Declare a vision-capable model, then choose its connection and model.",
+            ),
+          );
         const s = await api<Settings>("/settings", {
           method: "PUT",
           body: JSON.stringify(body),
@@ -120,13 +181,14 @@ export default function SettingsDialog({
         onSaved(s);
         setProfiles(profileList(s).map(toDraft));
         setActive(s.activeProfileId || active);
-        setFeedback("配置已保存");
+        setVision(s.vision || { enabled: false });
+        setFeedback(t("配置已保存"));
       } else {
         await api("/settings/test", {
           method: "POST",
           body: JSON.stringify({ ...body, activeProfileId: selected }),
         });
-        setFeedback("连接成功，模型已响应。");
+        setFeedback(t("连接成功，模型已响应。"));
       }
       setFailed(false);
     } catch (e) {
@@ -142,7 +204,7 @@ export default function SettingsDialog({
       ...ps,
       toDraft({
         id,
-        name: `连接 ${ps.length + 1}`,
+        name: t(`连接 ${ps.length + 1}`, `Connection ${ps.length + 1}`),
         provider: "openai",
         baseUrl: "https://api.example.com/v1",
         model: "",
@@ -159,6 +221,7 @@ export default function SettingsDialog({
     setProfiles(remaining);
     setSelected(remaining[0].id);
     if (active === draft.id) setActive(remaining[0].id);
+    if (vision.profileId === draft.id) setVision({ enabled: false });
   }
   return (
     <div
@@ -176,22 +239,22 @@ export default function SettingsDialog({
         <div className="modal-heading">
           <div>
             <span className="eyebrow">YOUR MODELS, YOUR WORKSPACE</span>
-            <h2 id="settings-title">模型与 API</h2>
+            <h2 id="settings-title">{t("模型与 API")}</h2>
           </div>
           <button
             className="icon-button"
-            aria-label="关闭模型设置"
+            aria-label={t("关闭模型设置")}
             onClick={onClose}
           >
             <X size={19} />
           </button>
         </div>
         <p className="settings-intro">
-          每个连接保存一组 API 和多个模型。
+          {t("每个连接保存一组 API 和多个模型。")}
           <br />
-          摘要、翻译和问答都可以自由切换模型。
+          {t("摘要、翻译和问答都可以自由切换模型。")}
         </p>
-        <div className="profile-list" aria-label="已保存的模型连接">
+        <div className="profile-list" aria-label={t("已保存的模型连接")}>
           {profiles.map((p) => (
             <button
               key={p.id}
@@ -201,25 +264,27 @@ export default function SettingsDialog({
                 setFeedback("");
               }}
             >
-              <span>{p.name || "未命名连接"}</span>
+              <span title={p.name || t("未命名连接")}>
+                {p.name || t("未命名连接")}
+              </span>
               <small>
-                {p.modelText.split(/[\n,，]+/).filter(Boolean).length} 个模型
-                {active === p.id ? " · 当前使用" : ""}
+                {modelCountLabel(p.modelText)}
+                {active === p.id ? t(" · 当前使用") : ""}
               </small>
             </button>
           ))}
           <button className="add-profile" onClick={add}>
-            <Plus size={15} /> 添加连接
+            <Plus size={15} /> {t("添加连接")}
           </button>
         </div>
-        <label htmlFor="profile-name">连接名称</label>
+        <label htmlFor="profile-name">{t("连接名称")}</label>
         <input
           id="profile-name"
           value={draft.name}
           onChange={(e) => update({ name: e.target.value })}
-          placeholder="例如：个人 API / 本地模型"
+          placeholder={t("例如：个人 API / 本地模型")}
         />
-        <label htmlFor="provider">API 协议</label>
+        <label htmlFor="provider">{t("API 协议")}</label>
         <select
           id="provider"
           value={draft.provider}
@@ -234,7 +299,7 @@ export default function SettingsDialog({
             })
           }
         >
-          <option value="openai">OpenAI 兼容</option>
+          <option value="openai">{t("OpenAI 兼容")}</option>
           <option value="anthropic">Anthropic</option>
         </select>
         <label htmlFor="base-url">API Base URL</label>
@@ -244,27 +309,27 @@ export default function SettingsDialog({
           onChange={(e) => update({ baseUrl: e.target.value })}
           placeholder="https://api.example.com/v1"
         />
-        <label htmlFor="models-list">预填模型列表</label>
+        <label htmlFor="models-list">{t("预填模型列表")}</label>
         <textarea
           id="models-list"
           className="models-list"
           rows={4}
           value={draft.modelText}
           onChange={(e) => update({ modelText: e.target.value })}
-          placeholder={
-            "每行一个模型 ID，例如：\nmodel-fast\nmodel-reasoning\nmodel-vision"
-          }
+          placeholder={t(
+            "每行一个模型 ID，例如：\nmodel-fast\nmodel-reasoning\nmodel-vision",
+          )}
         />
         <p className="field-hint">
-          同一 URL 与 API Key 共用；每行或逗号分隔一个模型 ID。
+          {t("同一 URL 与 API Key 共用；每行或逗号分隔一个模型 ID。")}
         </p>
-        <label htmlFor="model">模型名称</label>
+        <label htmlFor="model">{t("模型名称")}</label>
         <input
           id="model"
           list="configured-models"
           value={draft.model}
           onChange={(e) => update({ model: e.target.value })}
-          placeholder="当前使用的模型 ID"
+          placeholder={t("当前使用的模型 ID")}
         />
         <datalist id="configured-models">
           {draft.modelText
@@ -274,11 +339,45 @@ export default function SettingsDialog({
               <option key={m.trim()} value={m.trim()} />
             ))}
         </datalist>
+        {!!declaredModels(draft).length && (
+          <fieldset className="model-capability-editor">
+            <legend>{t("模型能力声明", "Model capabilities")}</legend>
+            <p>
+              {t(
+                "默认为仅文本。请根据服务商文档声明视觉能力；不会根据模型名称猜测。",
+                "Models default to text only. Declare vision support from your provider documentation; names are never used to infer capabilities.",
+              )}
+            </p>
+            {declaredModels(draft).map((model) => (
+              <label key={model}>
+                <span title={model}>{model}</span>
+                <select
+                  aria-label={t(`${model} 模型能力`, `${model} capabilities`)}
+                  value={draft.modelCapabilities?.[model] || "text"}
+                  onChange={(event) =>
+                    update({
+                      modelCapabilities: {
+                        ...draft.modelCapabilities,
+                        [model]:
+                          event.target.value === "vision" ? "vision" : "text",
+                      },
+                    })
+                  }
+                >
+                  <option value="text">{t("仅文本", "Text only")}</option>
+                  <option value="vision">
+                    {t("文本与图像", "Text and images")}
+                  </option>
+                </select>
+              </label>
+            ))}
+          </fieldset>
+        )}
         <label htmlFor="api-key">
           API Key{" "}
           {draft.apiKeyConfigured && !draft.clearApiKey && (
             <span className="configured">
-              <Check size={12} /> 已配置
+              <Check size={12} /> {t("已配置")}
             </span>
           )}
         </label>
@@ -291,7 +390,9 @@ export default function SettingsDialog({
             update({ apiKey: e.target.value, clearApiKey: false })
           }
           placeholder={
-            draft.apiKeyConfigured ? "已保存 · 留空以保留" : "本地服务可留空"
+            draft.apiKeyConfigured
+              ? t("已保存 · 留空以保留")
+              : t("本地服务可留空")
           }
         />
         {draft.apiKeyConfigured && (
@@ -301,7 +402,7 @@ export default function SettingsDialog({
               checked={draft.clearApiKey || false}
               onChange={(e) => update({ clearApiKey: e.target.checked })}
             />
-            清除已保存的 API Key
+            {t("清除已保存的 API Key")}
           </label>
         )}
         <div className="profile-actions">
@@ -311,21 +412,141 @@ export default function SettingsDialog({
               checked={active === draft.id}
               onChange={() => setActive(draft.id)}
             />
-            将此连接设为当前使用
+            {t("将此连接设为当前使用")}
           </label>
           <button
             className="text-button danger"
             disabled={profiles.length < 2}
             onClick={remove}
           >
-            <Trash2 size={13} /> 删除连接
+            <Trash2 size={13} /> {t("删除连接")}
           </button>
         </div>
+        <section
+          className="vision-settings"
+          aria-label={t("图像分析设置", "Image analysis settings")}
+        >
+          <div className="vision-settings-heading">
+            <Eye size={17} />
+            <strong>{t("独立视觉模型", "Separate vision model")}</strong>
+          </div>
+          <p>
+            {t(
+              "文字研读和图像分析可以使用不同连接。只有主动点击分析图表才会发送裁切图像。",
+              "Text reading and image analysis can use separate connections. A cropped figure is sent only when you explicitly analyze it.",
+            )}
+          </p>
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={vision.enabled}
+              onChange={(event) => {
+                const enabled = event.target.checked;
+                if (!enabled) {
+                  setVision((old) => ({ ...old, enabled: false }));
+                  return;
+                }
+                const profile = visionProfile || visionProfiles[0];
+                const model =
+                  profile &&
+                  declaredModels(profile).find(
+                    (model) => profile.modelCapabilities?.[model] === "vision",
+                  );
+                setVision({
+                  enabled,
+                  profileId: profile?.id,
+                  model:
+                    profile?.id === vision.profileId &&
+                    visionModels.includes(vision.model || "")
+                      ? vision.model
+                      : model,
+                });
+              }}
+            />
+            {t("启用图像分析", "Enable image analysis")}
+          </label>
+          {vision.enabled && (
+            <>
+              <label htmlFor="vision-profile">
+                {t("视觉连接", "Vision connection")}
+              </label>
+              <select
+                id="vision-profile"
+                value={vision.profileId || ""}
+                onChange={(event) => {
+                  const profile = visionProfiles.find(
+                    (profile) => profile.id === event.target.value,
+                  );
+                  setVision({
+                    enabled: true,
+                    profileId: profile?.id,
+                    model:
+                      profile &&
+                      declaredModels(profile).find(
+                        (model) =>
+                          profile.modelCapabilities?.[model] === "vision",
+                      ),
+                  });
+                }}
+              >
+                <option value="">
+                  {t(
+                    "选择已声明视觉能力的连接",
+                    "Choose a declared vision connection",
+                  )}
+                </option>
+                {visionProfiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </option>
+                ))}
+              </select>
+              <label htmlFor="vision-model">
+                {t("视觉模型", "Vision model")}
+              </label>
+              <select
+                id="vision-model"
+                value={vision.model || ""}
+                onChange={(event) =>
+                  setVision((old) => ({ ...old, model: event.target.value }))
+                }
+              >
+                <option value="">
+                  {t("选择视觉模型", "Choose a vision model")}
+                </option>
+                {visionModels.map((model) => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
+              {!visionProfiles.length && (
+                <p className="vision-settings-empty">
+                  {t(
+                    "请先在上方模型能力中将至少一个模型设为“文本与图像”。",
+                    "First mark at least one model above as Text and images.",
+                  )}
+                </p>
+              )}
+            </>
+          )}
+        </section>
         <details className="advanced-settings">
           <summary>
-            高级请求参数 <ChevronDown size={12} />
+            {t("高级请求参数")} <ChevronDown size={12} />
           </summary>
-          <label htmlFor="context-budget">论文上下文预算（字符）</label>
+          <label htmlFor="request-timeout">{t("单次模型请求超时（秒）", "Model request timeout (seconds)")}</label>
+          <input
+            id="request-timeout"
+            type="number"
+            min={15}
+            max={600}
+            step={1}
+            value={draft.requestTimeoutSeconds || 90}
+            onChange={(event) => update({ requestTimeoutSeconds: Number(event.target.value) })}
+          />
+          <p className="field-hint">{t("慢速推理或高清图像可增加等待时间；每个连接独立设置，最多10分钟。", "Allow more time for slow reasoning or high-resolution images. Each connection has its own limit, up to 10 minutes.")}</p>
+          <label htmlFor="context-budget">{t("论文上下文预算（字符）")}</label>
           <input
             id="context-budget"
             type="number"
@@ -335,7 +556,7 @@ export default function SettingsDialog({
             value={draft.contextChars || 44000}
             onChange={(e) => update({ contextChars: Number(e.target.value) })}
           />
-          <label htmlFor="max-output">模型输出上限（Tokens）</label>
+          <label htmlFor="max-output">{t("模型输出上限（Tokens）")}</label>
           <input
             id="max-output"
             type="number"
@@ -347,7 +568,7 @@ export default function SettingsDialog({
               update({ maxOutputTokens: Number(e.target.value) })
             }
           />
-          <label htmlFor="extra-body">额外 JSON 参数</label>
+          <label htmlFor="extra-body">{t("额外 JSON 参数")}</label>
           <textarea
             id="extra-body"
             spellCheck={false}
@@ -358,7 +579,9 @@ export default function SettingsDialog({
         <div className="settings-privacy">
           <ShieldCheck size={17} />
           <p>
-            密钥仅保存在本机服务端。配置和论文不随源码分享；只有主动生成或提问时才向所选服务发送内容。
+            {t(
+              "密钥仅保存在本机服务端。配置和论文不随源码分享；只有主动生成或提问时才向所选服务发送内容。",
+            )}
           </p>
         </div>
         {feedback && (
@@ -377,7 +600,7 @@ export default function SettingsDialog({
             ) : (
               <Globe2 size={15} />
             )}
-            测试连接
+            {t("测试连接")}
           </button>
           <button
             className="primary-button"
@@ -389,13 +612,13 @@ export default function SettingsDialog({
             ) : (
               <Check size={15} />
             )}
-            保存配置
+            {t("保存配置")}
           </button>
         </div>
         <div className="settings-footer">
-          也可以使用已登录的 Codex / Claude 会话和项目 skill
+          {t("也可以使用已登录的 Codex / Claude 会话和项目 skill")}
           <br />
-          直接写入解读，无需配置额外 API。
+          {t("直接写入解读，无需配置额外 API。")}
         </div>
       </section>
     </div>

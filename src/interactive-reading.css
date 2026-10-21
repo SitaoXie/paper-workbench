@@ -1,0 +1,23 @@
+.interactive-reading { display: grid; gap: 20px; margin-top: 22px; color: var(--text, #252326); }
+.interactive-intro { display: flex; align-items: flex-start; gap: 8px; color: var(--secondary, #69636b); font-size: 13px; line-height: 1.65; margin: 0; }
+.interactive-intro svg, .interactive-reading summary svg { flex: none; margin-top: 2px; }
+.interactive-concept { border-bottom: 1px solid var(--line, #e6e1e5); padding-bottom: 20px; }
+.interactive-reading summary { cursor: pointer; min-height: 44px; line-height: 1.5; padding: 10px 4px; }
+.interactive-concept summary { display: flex; align-items: flex-start; gap: 9px; font-size: 18px; font-weight: 650; }
+.interactive-concept summary::after { content: "+"; margin-left: auto; color: var(--muted, #817881); }
+.interactive-concept details[open] > summary::after { content: "−"; }
+.interactive-text { font-size: 16px; line-height: 1.85; white-space: pre-wrap; overflow-wrap: anywhere; margin: 9px 0 12px; }
+.interactive-citations { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--muted, #817881); }
+.interactive-citations button { min-height: 36px; padding: 7px 10px; }
+.interactive-citations button:disabled { cursor: default; color: inherit; }
+.interactive-question { border: 1px solid var(--line, #e6e1e5); border-radius: 12px; padding: 20px; background: var(--subtle, #faf8f9); }
+.interactive-kicker { display: flex; gap: 7px; align-items: center; color: var(--accent, #944359); font-size: 12px; }
+.interactive-question h3 { font-size: 18px; font-weight: 600; line-height: 1.6; margin: 12px 0 8px; overflow-wrap: anywhere; }
+.interactive-question summary { color: var(--accent, #944359); font-size: 13px; }
+.interactive-answer-explanation { font-size: 14px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--secondary, #69636b); }
+.interactive-figure { padding: 4px 0 18px; border-bottom: 1px solid var(--line, #e6e1e5); }
+.interactive-figure figure { margin-top: 0; }
+.interactive-source-missing { border: 1px dashed var(--line, #e6e1e5); border-radius: 10px; padding: 18px; font-size: 13px; line-height: 1.7; }
+.interactive-reading summary:focus-visible { outline: 2px solid var(--accent, #944359); outline-offset: 3px; border-radius: 4px; }
+@media (max-width: 600px) { .interactive-question { padding: 16px; } .interactive-concept summary, .interactive-question h3 { font-size: 17px; } .interactive-text { font-size: 15px; } }
+@media print { .interactive-reading details > * { display: block !important; } .interactive-reading summary { padding-left: 0; } .interactive-question { break-inside: avoid; } }

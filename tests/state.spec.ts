@@ -51,7 +51,9 @@ test("a delayed favorite response cannot replace the newly opened paper", async 
     let result: unknown = {};
     if (path === "/settings") result = settings;
     else if (path === "/papers") result = { papers };
-    else if (path === "/chats") result = { messages: [] };
+    else if (path === "/chats") result = { messages: [], conversationId: null };
+    else if (path.endsWith("/annotations")) result = { annotations: [] };
+    else if (path.endsWith("/activities")) result = { activities: [] };
     else if (path.startsWith("/papers/")) {
       if (req.method() === "PATCH") {
         releaseFavorite = () =>

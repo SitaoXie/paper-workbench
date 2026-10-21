@@ -1,0 +1,59 @@
+/* Keep translated controls legible without changing paper or note typography. */
+.reading-history .history-tabs {
+  gap: clamp(8px, 2vw, 16px);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.reading-history .history-tabs button {
+  flex: 0 0 auto;
+  min-height: 44px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.reading-history .history-entry {
+  min-height: 44px;
+  font-size: 13px;
+}
+.reading-history .history-entry > svg {
+  flex: none;
+}
+.reading-history .history-entry small {
+  font-size: 10px;
+}
+.reading-history .history-detail-actions {
+  flex-wrap: wrap;
+}
+.reading-history .history-detail-actions button {
+  min-height: 44px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.reading-history .history-activity-detail .prose,
+.reading-history .history-activity-detail blockquote {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.settings-drawer .profile-actions {
+  flex-wrap: wrap;
+}
+.settings-drawer .profile-actions .text-button,
+.settings-drawer .profile-list .add-profile {
+  min-height: 44px;
+}
+.agent-bridge .section-heading {
+  align-items: flex-start;
+}
+.agent-bridge .section-heading h3 {
+  min-width: 0;
+  line-height: 1.5;
+}
+.agent-bridge .section-heading .icon-button,
+.agent-bridge .section-heading h3 > svg {
+  flex: none;
+}
+.agent-bridge-actions > button,
+.agent-bridge-actions > label {
+  min-height: 44px;
+  white-space: normal;
+  text-align: center;
+}

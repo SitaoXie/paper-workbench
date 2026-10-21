@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import {
   Store,
   publicPaper,
+  publicReadingTranslation,
   discoverFigures,
   contentHash,
 } from "./storage.mjs";
@@ -21,7 +22,13 @@ import {
   canUseModel,
   validateLanguage,
   translateContent,
+  assistPassage,
+  analyzeFigure,
 } from "./models.mjs";
+import { visionModel, prepareVisionInput, visualEvidenceRecord } from "./vision.mjs";
+import { readingPreferences, readingFormat, readingState, materializeReadingVersions, appendReadingVersion, syncReadingTranslations } from "./reading.mjs";
+import { generateInteractiveReading, translateInteractiveReading, usableInteractiveTranslation, interactiveTranslationFailure } from "./interactive.mjs";
+import { validateAnnotation, validatePage, annotationMarkdown } from "./annotations.mjs";
 
 import {
   prepareInsights,
@@ -51,6 +58,21 @@ export async function createApp({
     limits: { fileSize: 25 * 1024 * 1024, files: 1, fields: 2 },
   });
   const reportJobs = new Set();
+  const translationJobs = new Map();
+  const reusableTranslation = (entry, sourceHash, updatedAt) => entry &&
+    typeof entry.markdown === "string" && entry.markdown.trim() && !entry.stale &&
+    (entry.sourceHash ? entry.sourceHash === sourceHash : Boolean(updatedAt) && entry.sourceUpdatedAt === updatedAt);
+  const coalesceTranslation = async (key, work) => {
+    if (translationJobs.has(key)) return translationJobs.get(key);
+    const job = Promise.resolve().then(work);
+    translationJobs.set(key, job);
+    try { return await job; }
+    finally { if (translationJobs.get(key) === job) translationJobs.delete(key); }
+  };
+  const assistJobs = new Set();
+  const visionJobs = new Set();
+  let visionRequests = [];
+  let assistRequests = [];
   const searchCache = new Map();
   app.disable("x-powered-by");
   app.locals.store = store;
@@ -82,7 +104,7 @@ export async function createApp({
     }
     // A link may open the application shell from another site. API/data fetches
     // remain same-site only; navigation permission never grants API access.
-    const shellNavigation = request.method === "GET" && request.path === "/" &&
+    const shellNavigation = request.method === "GET" && /^\/(?:en\/?|zh\/?)?$/.test(request.path) &&
       request.headers["sec-fetch-mode"] === "navigate" &&
       request.headers["sec-fetch-dest"] === "document";
     if (request.headers["sec-fetch-site"] === "cross-site" && !shellNavigation)
@@ -91,6 +113,8 @@ export async function createApp({
       response.setHeader("Cache-Control", "no-store");
     next();
   });
+  // Only this local source-bound image route accepts a larger JSON payload.
+  app.use("/api/papers/:id/figures/:figureId/analyze", express.json({ limit: "6mb" }));
   app.use(express.json({ limit: "256kb" }));
   const paperById = (id) => {
     const paper = store.paper(id);
@@ -123,11 +147,13 @@ export async function createApp({
           store.data.activeConversations[conversationKey(paperId)] &&
         conversation.paperId === paperId,
     );
-  const createConversation = (paperId) => {
+  const createConversation = (paperId, metadata) => {
     const conversation = {
       id: randomUUID(),
       paperId,
       title: "New conversation",
+      kind: "question",
+      ...(metadata ? { metadata } : {}),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -141,11 +167,23 @@ export async function createApp({
     if (paperId) paperById(paperId);
     return paperId || null;
   };
+  const questionMetadata = (body, paperId) => {
+    if (body.kind !== undefined && body.kind !== "question") throw new ApiError("Conversation kind must be question.");
+    if (body.metadata === undefined) return undefined;
+    if (!paperId || !body.metadata || typeof body.metadata !== "object" || Array.isArray(body.metadata))
+      throw new ApiError("Question metadata requires a paper context.");
+    const { quote, page } = body.metadata;
+    const result = {};
+    if (quote !== undefined) result.quote = validateMarkdown(quote, "quote", 12000);
+    if (page !== undefined) result.page = validatePage(page, paperById(paperId));
+    if (!Object.keys(result).length) throw new ApiError("Question metadata needs quote or page.");
+    return result;
+  };
 
   app.get("/api/health", (_request, response) =>
     response.json({
       status: "ok",
-      version: "0.1.0",
+      version: "0.2.0",
       modelConfigured: canUseModel(store.data.settings),
       paperCount: store.data.papers.length,
     }),
@@ -308,9 +346,13 @@ export async function createApp({
     wrap(async (request, response) => {
       const paper = paperById(request.params.id);
       const body = bodyOf(request);
-      if (typeof body.favorite !== "boolean")
-        throw new ApiError("favorite must be true or false.");
-      paper.favorite = body.favorite;
+      if (!("favorite" in body) && !("activeReadingId" in body))
+        throw new ApiError("Provide favorite or activeReadingId.");
+      if ("favorite" in body && typeof body.favorite !== "boolean") throw new ApiError("favorite must be true or false.");
+      if ("activeReadingId" in body && !readingState(paper).readingVersions.some((version) => version.id === body.activeReadingId))
+        throw new ApiError("Reading version not found in this paper.", 404);
+      if ("favorite" in body) paper.favorite = body.favorite;
+      if ("activeReadingId" in body) paper.activeReadingId = body.activeReadingId;
       await store.save();
       response.json({ paper: publicPaper(paper) });
     }),
@@ -328,6 +370,8 @@ export async function createApp({
       store.data.conversations = store.data.conversations.filter(
         (item) => item.paperId !== paper.id,
       );
+      store.data.annotations = store.data.annotations.filter((item) => item.paperId !== paper.id);
+      store.data.activities = store.data.activities.filter((item) => item.paperId !== paper.id);
       delete store.data.activeConversations[conversationKey(paper.id)];
       await store.save();
       if (paper.filePath)
@@ -386,10 +430,166 @@ export async function createApp({
       response.json({ papers, warnings });
     }),
   );
+  app.post("/api/papers/:id/figures/:figureId/analyze", wrap(async (request, response) => {
+    const paper = paperById(request.params.id);
+    const body = bodyOf(request);
+    const selected = visionModel(store.data.settings);
+    const input = prepareVisionInput(body, paper, request.params.figureId);
+    const language = validateLanguage(body.language);
+    if (visionJobs.has(paper.id)) throw new ApiError("A figure analysis is already running for this paper.", 409);
+    visionRequests = visionRequests.filter(time => Date.now() - time < 60000);
+    if (visionJobs.size >= 2 || visionRequests.length >= 12) throw new ApiError("Too many figure analysis requests. Please retry shortly.", 429);
+    visionJobs.add(paper.id);
+    visionRequests.push(Date.now());
+    try {
+      const markdown = validateMarkdown(await analyzeFigure(paper, input, language, selected, { fetchImpl }), "Visual analysis", 50000);
+      const current = store.paper(paper.id);
+      if (!current) throw new ApiError("The paper was deleted while analyzing the figure.", 409);
+      // If an agent corrected the crop during inference, do not attach the old
+      // image interpretation to a newly positioned figure with the same id.
+      let fingerprint;
+      try { fingerprint = prepareVisionInput(body, current, request.params.figureId).sourceFingerprint; }
+      catch { throw new ApiError("The source figure changed while it was being analyzed. Retry using the current crop.", 409); }
+      if (fingerprint !== input.sourceFingerprint) throw new ApiError("The source figure changed while it was being analyzed.", 409);
+      const evidence = visualEvidenceRecord(input, markdown, language, selected);
+      paper.visualEvidence ||= [];
+      paper.visualEvidence.push(evidence);
+      await store.save();
+      response.json({ evidence, paper: publicPaper(paper) });
+    } finally { visionJobs.delete(paper.id); }
+  }));
+  app.patch("/api/papers/:id/visual-evidence/:evidenceId", wrap(async (request, response) => {
+    const paper = paperById(request.params.id);
+    const evidence = paper.visualEvidence?.find(item => item.id === request.params.evidenceId);
+    if (!evidence) throw new ApiError("Visual evidence not found in this paper.", 404);
+    const body = bodyOf(request);
+    if (typeof body.excluded !== "boolean" || Object.keys(body).some(key => key !== "excluded"))
+      throw new ApiError("Provide only excluded as a boolean.");
+    evidence.excluded = body.excluded;
+    evidence.updatedAt = new Date().toISOString();
+    await store.save();
+    response.json({ evidence, paper: publicPaper(paper) });
+  }));
+
+  app.get("/api/papers/:id/annotations", wrap(async (request, response) => {
+    const paper = paperById(request.params.id);
+    const includeDeleted = request.query.includeDeleted === "true";
+    response.json({ annotations: store.data.annotations.filter((item) => item.paperId === paper.id && (includeDeleted || !item.deletedAt)) });
+  }));
+  app.post("/api/papers/:id/annotations", wrap(async (request, response) => {
+    const paper = paperById(request.params.id);
+    const annotation = validateAnnotation(bodyOf(request), paper);
+    store.data.annotations.push(annotation);
+    await store.save();
+    response.status(201).json({ annotation });
+  }));
+  app.patch("/api/papers/:id/annotations/:annotationId", wrap(async (request, response) => {
+    const paper = paperById(request.params.id);
+    const index = store.data.annotations.findIndex((item) => item.paperId === paper.id && item.id === request.params.annotationId);
+    if (index < 0) throw new ApiError("Annotation not found in this paper.", 404);
+    const annotation = validateAnnotation(bodyOf(request), paper, store.data.annotations[index]);
+    store.data.annotations[index] = annotation;
+    await store.save();
+    response.json({ annotation });
+  }));
+  app.delete("/api/papers/:id/annotations/:annotationId", wrap(async (request, response) => {
+    const paper = paperById(request.params.id);
+    const annotation = store.data.annotations.find((item) => item.paperId === paper.id && item.id === request.params.annotationId);
+    if (!annotation) throw new ApiError("Annotation not found in this paper.", 404);
+    annotation.deletedAt ||= new Date().toISOString();
+    annotation.updatedAt = annotation.deletedAt;
+    await store.save();
+    response.json({ ok: true, annotation });
+  }));
+  app.get("/api/papers/:id/annotations/export", wrap(async (request, response) => {
+    const paper = paperById(request.params.id);
+    const format = request.query.format || "markdown";
+    if (!["markdown", "json"].includes(format)) throw new ApiError("Export format must be markdown or json.");
+    const annotations = store.data.annotations.filter((item) => item.paperId === paper.id && !item.deletedAt);
+    response.setHeader("Content-Disposition", `attachment; filename="paper-notes.${format === "json" ? "json" : "md"}"`);
+    if (format === "json") response.json({ version: 1, paper: { id: paper.id, title: paper.title, url: paper.url }, annotations });
+    else response.type("text/markdown").send(annotationMarkdown(paper, annotations));
+  }));
+
+  const passageRequest = (body, paper) => {
+    if (!["translation", "explanation"].includes(body.kind)) throw new ApiError("Assist kind must be translation or explanation.");
+    const common = {
+      kind: body.kind,
+      text: validateMarkdown(body.text ?? body.quote, "Selected text", 12000),
+      language: validateLanguage(body.language),
+    };
+    const sourceScope = body.sourceScope ?? (paper.filePath ? "pdf" : "source-text");
+    if (!["pdf", "source-text", "reading", "abstract"].includes(sourceScope))
+      throw new ApiError("sourceScope must be pdf, source-text, reading, or abstract.");
+    if (sourceScope === "reading" || sourceScope === "abstract") {
+      if (body.page !== undefined) throw new ApiError("Overview and abstract selections must not claim a PDF page anchor.");
+      if (sourceScope === "reading") {
+        if (typeof body.readingId !== "string" || !readingState(paper).readingVersions.some(version => version.id === body.readingId))
+          throw new ApiError("Reading version not found in this paper.", 404);
+        return { ...common, sourceScope, readingId: body.readingId };
+      }
+      if (!paper.abstract) throw new ApiError("No abstract exists for this paper.");
+      return { ...common, sourceScope };
+    }
+    if (sourceScope === "pdf" && !paper.filePath) throw new ApiError("A PDF selection requires a locally imported PDF.");
+    if (sourceScope === "source-text" && paper.filePath) throw new ApiError("Select PDF passages using the pdf source scope and their actual page.");
+    return { ...common, sourceScope, page: validatePage(body.page ?? 1, paper) };
+  };
+  app.get("/api/papers/:id/activities", wrap(async (request, response) => {
+    const paper = paperById(request.params.id);
+    const kind = request.query.kind;
+    if (kind && !["translation", "explanation"].includes(kind)) throw new ApiError("Activity kind must be translation or explanation.");
+    response.json({ activities: store.data.activities.filter((item) => item.paperId === paper.id && (!kind || item.kind === kind)).toReversed() });
+  }));
+  app.post("/api/papers/:id/activities", wrap(async (request, response) => {
+    const paper = paperById(request.params.id);
+    const body = bodyOf(request);
+    const passage = passageRequest(body, paper);
+    const source = body.source ? validateAgentSource(body.source) : { kind: "local" };
+    const result = {
+      text: validateMarkdown(typeof body.result === "string" ? body.result : body.result?.text, "result", 50000),
+      kind: passage.kind, language: passage.language, source, createdAt: new Date().toISOString(),
+    };
+    const activity = { id: randomUUID(), paperId: paper.id, ...passage, quote: passage.text, result, source, createdAt: result.createdAt };
+    store.data.activities.push(activity);
+    await store.save();
+    response.status(201).json({ activity });
+  }));
+  app.post("/api/papers/:id/assist", wrap(async (request, response) => {
+    const paper = paperById(request.params.id);
+    const passage = passageRequest(bodyOf(request), paper);
+    if (assistJobs.has(paper.id)) throw new ApiError("A passage request is already running for this paper.", 409);
+    assistRequests = assistRequests.filter((time) => Date.now() - time < 60000);
+    if (assistJobs.size >= 3 || assistRequests.length >= 30) throw new ApiError("Too many passage requests. Please retry shortly.", 429);
+    assistJobs.add(paper.id);
+    assistRequests.push(Date.now());
+    try {
+      const result = await assistPassage(paper, passage, { ...store.data.settings }, { fetchImpl });
+      if (!store.paper(paper.id)) throw new ApiError("The paper was deleted while processing the passage.", 409);
+      result.text = validateMarkdown(result.text, "result", 50000);
+      const activity = { id: randomUUID(), paperId: paper.id, ...passage, quote: passage.text, result, source: result.source, createdAt: result.createdAt };
+      store.data.activities.push(activity);
+      await store.save();
+      response.json({ result, activity });
+    } finally { assistJobs.delete(paper.id); }
+  }));
+
   app.post(
     "/api/papers/:id/report",
     wrap(async (request, response) => {
       const paper = paperById(request.params.id);
+      const body = request.body || {};
+      const format = readingFormat(body.format);
+      let original;
+      if (body.readingId !== undefined) {
+        if (format !== "interactive") throw new ApiError("An existing reading can only be converted to interactive format.");
+        original = readingState(paper).readingVersions.find(version => version.id === body.readingId);
+        if (!original) throw new ApiError("Reading version not found in this paper.", 404);
+      }
+      const preferences = readingPreferences(original || body);
+      const settings = { ...store.data.settings };
+      if (format === "interactive" && !canUseModel(settings))
+        throw new ApiError("Configure a model API or import an interactive reading from your external agent first.");
       if (reportJobs.has(paper.id))
         throw new ApiError(
           "A report is already being generated for this paper.",
@@ -397,26 +597,55 @@ export async function createApp({
         );
       reportJobs.add(paper.id);
       try {
-        const report = await generateReport(
+        const report = original ? {
+          markdown: original.markdown, language: original.language || "en", ...preferences,
+          mode: "model-interactive", createdAt: new Date().toISOString(), stages: [],
+          source: { kind: "model", model: settings.model },
+          ...(original.source ? { articleSource: original.source } : {}),
+          derivedFromReadingId: original.id,
+          figures: original.figures || paper.figures || [],
+        } : await generateReport(
           paper,
-          { ...store.data.settings },
+          settings,
           {
-            adversarial: request.body?.adversarial !== false,
-            language: validateLanguage(request.body?.language),
+            adversarial: body.adversarial !== false,
+            language: validateLanguage(body.language),
+            ...preferences,
             fetchImpl,
           },
         );
+        report.markdown = validateMarkdown(report.markdown);
+        report.format = format;
+        if (format === "interactive") {
+          try {
+            report.interactive = await generateInteractiveReading({
+              markdown: report.markdown, language: report.language, ...preferences,
+              figures: original?.figures || paper.figures || discoverFigures(paper), pageCount: paper.pages?.length,
+              callModel: (prompt) => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens || 4096 }),
+            });
+          } catch (error) {
+            // A conversion failure must not append a duplicate article. A fresh
+            // generation, however, already completed a valuable article: retain
+            // it transparently without presenting failed structure as success.
+            if (original || !(error instanceof ApiError)) throw error;
+            report.format = "article";
+            report.requestedFormat = "interactive";
+            report.interactiveGenerationError = "Interactive generation did not complete. The finished article was saved; retry conversion to create the interactive version.";
+          }
+        }
         if (!store.paper(paper.id))
           throw new ApiError(
             "The paper was deleted while its report was being generated.",
             409,
           );
+        materializeReadingVersions(paper);
         if (paper.report)
           paper.reportHistory = [...(paper.reportHistory || []), paper.report];
         paper.report = report;
         paper.figures ??= discoverFigures(paper);
+        const readingVersion = appendReadingVersion(paper, report, { ...preferences, target: "report", ...(original ? { figures: original.figures || paper.figures || [], title: original.title } : {}) });
         await store.save();
-        response.json({ report, paper: publicPaper(paper) });
+        response.json({ report, readingVersion, paper: publicPaper(paper) });
       } finally {
         reportJobs.delete(paper.id);
       }
@@ -426,32 +655,76 @@ export async function createApp({
     "/api/papers/:id/translate",
     wrap(async (request, response) => {
       const paper = paperById(request.params.id);
-      const { target, language: inputLanguage } = bodyOf(request);
+      const { target, language: inputLanguage, readingId } = bodyOf(request);
       const language = validateLanguage(inputLanguage);
+      if (target === "reading") {
+        const state = readingState(paper);
+        const version = state.readingVersions.find((item) => item.id === (readingId || state.activeReadingId));
+        if (!version) throw new ApiError("Reading version not found in this paper.", 404);
+        const sourceHash = contentHash(version.markdown);
+        const cached = version.translations?.[language];
+        const translationOptions = { language, pageCount: paper.pages?.length, figures: version.figures || paper.figures };
+        const reusableArticle = reusableTranslation(cached, sourceHash, version.createdAt);
+        const completeInteractive = !version.interactive || usableInteractiveTranslation(cached?.interactive, version.interactive, translationOptions);
+        if (reusableArticle && completeInteractive)
+          return response.json({ translation: publicReadingTranslation(cached, version, translationOptions), paper: publicPaper(paper) });
+        const key = JSON.stringify([paper.id, "reading", version.id, language, sourceHash]);
+        const translation = await coalesceTranslation(key, async () => {
+          const settings = { ...store.data.settings };
+          const cachedFingerprint = contentHash(JSON.stringify(cached || null));
+          const translated = reusableArticle ? { ...cached } : await translateContent(version.markdown, language, settings, { fetchImpl });
+          if (version.interactive) {
+            try {
+              translated.interactive = await translateInteractiveReading({
+                interactive: version.interactive, ...translationOptions,
+                callModel: (prompt) => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens || 4096 }),
+              });
+              delete translated.interactiveTranslationError;
+            } catch (error) {
+              if (!(error instanceof ApiError)) throw error;
+              // Keep a successful article and any prior raw blocks. Invalid
+              // display blocks are hidden by publicReadingTranslation, while
+              // another request can retry just this bounded conversion.
+              translated.interactiveTranslationError = interactiveTranslationFailure(error);
+            }
+          }
+          if (!store.paper(paper.id)) throw new ApiError("The paper was deleted while translating.", 409);
+          const saved = materializeReadingVersions(paper).find((item) => item.id === version.id);
+          if (!saved || contentHash(saved.markdown) !== sourceHash) throw new ApiError("Reading version changed while translating.", 409);
+          // An external agent may have published a translation while the model
+          // was running. Preserve that valid result instead of overwriting it.
+          const current = saved.translations?.[language];
+          if (reusableTranslation(current, sourceHash, saved.createdAt) && contentHash(JSON.stringify(current)) !== cachedFingerprint) return current;
+          Object.assign(translated, { sourceHash, sourceUpdatedAt: saved.createdAt });
+          saved.translations ||= {};
+          saved.translations[language] = translated;
+          await store.save();
+          return translated;
+        });
+        return response.json({ translation: publicReadingTranslation(translation, version, translationOptions), paper: publicPaper(paper) });
+      }
       const source = translationSource(paper, target);
       if (!source) throw new ApiError(`No ${target} exists to translate.`);
       const sourceUpdatedAt = sourceVersion(paper, target);
-      const translation = await translateContent(
-        source,
-        language,
-        { ...store.data.settings },
-        { fetchImpl },
-      );
-      if (
-        !store.paper(paper.id) ||
-        sourceVersion(paper, target) !== sourceUpdatedAt ||
-        translationSource(paper, target) !== source
-      )
-        throw new ApiError(
-          "The source changed while translating. Retry against the current content.",
-          409,
-        );
-      translation.sourceUpdatedAt = sourceUpdatedAt;
-      translation.sourceHash = contentHash(source);
-      paper.translations ||= {};
-      paper.translations[language] ||= {};
-      paper.translations[language][target] = translation;
-      await store.save();
+      const sourceHash = contentHash(source);
+      const cached = paper.translations?.[language]?.[target];
+      if (reusableTranslation(cached, sourceHash, sourceUpdatedAt))
+        return response.json({ translation: cached, paper: publicPaper(paper) });
+      const key = JSON.stringify([paper.id, target, language, sourceHash, sourceUpdatedAt]);
+      const translation = await coalesceTranslation(key, async () => {
+        const translated = await translateContent(source, language, { ...store.data.settings }, { fetchImpl });
+        if (!store.paper(paper.id) || sourceVersion(paper, target) !== sourceUpdatedAt || translationSource(paper, target) !== source)
+          throw new ApiError("The source changed while translating. Retry against the current content.", 409);
+        const current = paper.translations?.[language]?.[target];
+        if (reusableTranslation(current, sourceHash, sourceUpdatedAt)) return current;
+        Object.assign(translated, { sourceUpdatedAt, sourceHash });
+        paper.translations ||= {};
+        paper.translations[language] ||= {};
+        paper.translations[language][target] = translated;
+        syncReadingTranslations(paper);
+        await store.save();
+        return translated;
+      });
       response.json({ translation, paper: publicPaper(paper) });
     }),
   );
@@ -464,7 +737,10 @@ export async function createApp({
           "A report is being generated. Wait before importing replacement content.",
           409,
         );
-      const update = prepareInsights(bodyOf(request), paper);
+      const body = bodyOf(request);
+      const preferences = readingPreferences(body, body.summary && !body.report ? "quick" : "deep");
+      const update = prepareInsights(body, paper);
+      materializeReadingVersions(paper);
       for (const target of ["report", "summary"]) {
         if (update[target] && paper[target])
           update[`${target}History`] = [
@@ -474,6 +750,13 @@ export async function createApp({
       }
       Object.assign(paper, update);
       paper.figures ??= discoverFigures(paper);
+      for (const target of ["report", "summary"]) {
+        if (update[target]) appendReadingVersion(paper, update[target], {
+          ...preferences, target,
+          ...(body.style === undefined ? { style: target === "summary" ? "quick" : "deep" } : {}),
+        });
+      }
+      syncReadingTranslations(paper);
       await store.save();
       response.json({ paper: publicPaper(paper) });
     }),
@@ -483,6 +766,7 @@ export async function createApp({
     wrap(async (request, response) => {
       const body = bodyOf(request);
       const paperId = validatePaperContext(body.paperId ?? null);
+      const metadata = questionMetadata(body, paperId);
       const source = validateAgentSource(body.source);
       const question = validateMarkdown(body.question, "question", 12000);
       const answer = validateMarkdown(body.answer, "answer", 200000);
@@ -497,7 +781,7 @@ export async function createApp({
           "Conversation not found in this paper context.",
           404,
         );
-      conversation ||= createConversation(paperId);
+      conversation ||= createConversation(paperId, metadata);
       const createdAt = new Date().toISOString();
       const common = { paperId, conversationId: conversation.id, createdAt };
       const sources = paperId
@@ -519,7 +803,7 @@ export async function createApp({
         sources,
       };
       store.data.chats.push(
-        { ...common, id: randomUUID(), role: "user", content: question },
+        { ...common, id: randomUUID(), role: "user", content: question, ...(metadata ? { metadata } : {}) },
         message,
       );
       if (conversation.title === "New conversation")
@@ -537,7 +821,14 @@ export async function createApp({
   app.get("/api/chats", (request, response) => {
     const paperId =
       typeof request.query.paperId === "string" ? request.query.paperId : null;
-    const conversation = activeConversation(paperId || null);
+    const requestedId = request.query.conversationId;
+    if (requestedId !== undefined && (typeof requestedId !== "string" || !requestedId.trim()))
+      throw new ApiError("conversationId must be a nonempty string.");
+    const conversation = requestedId
+      ? store.data.conversations.find((item) => item.id === requestedId && item.paperId === (paperId || null))
+      : activeConversation(paperId || null);
+    if (requestedId && !conversation)
+      throw new ApiError("Conversation not found in this paper context.", 404);
     response.json({
       messages: conversation ? conversationMessages(conversation.id) : [],
       conversationId: conversation?.id || null,
@@ -546,8 +837,10 @@ export async function createApp({
   app.post(
     "/api/chats/new",
     wrap(async (request, response) => {
-      const paperId = validatePaperContext(bodyOf(request).paperId ?? null);
-      const conversation = createConversation(paperId);
+      const body = bodyOf(request);
+      const paperId = validatePaperContext(body.paperId ?? null);
+      const metadata = questionMetadata(body, paperId);
+      const conversation = createConversation(paperId, metadata);
       await store.save();
       response
         .status(201)
@@ -601,6 +894,7 @@ export async function createApp({
     wrap(async (request, response) => {
       const { message, history } = bodyOf(request);
       const paperId = validatePaperContext(request.body.paperId ?? null);
+      const metadata = questionMetadata(request.body, paperId);
       if (
         typeof message !== "string" ||
         !message.trim() ||
@@ -624,9 +918,12 @@ export async function createApp({
       const papers = paperId
         ? [paperById(paperId)]
         : store.data.papers.slice(0, 8);
-      let conversation = activeConversation(paperId);
+      let conversation = request.body.conversationId
+        ? store.data.conversations.find((item) => item.id === request.body.conversationId && item.paperId === paperId)
+        : activeConversation(paperId);
+      if (request.body.conversationId && !conversation) throw new ApiError("Conversation not found in this paper context.", 404);
       if (!conversation) {
-        conversation = createConversation(paperId);
+        conversation = createConversation(paperId, metadata);
         await store.save();
       }
       // Capture the active conversation before calling the provider. A concurrent
@@ -636,7 +933,7 @@ export async function createApp({
         history || conversationMessages(conversationId).slice(-12);
       const answer = await answerQuestion(
         papers,
-        message.trim(),
+        metadata ? `${message.trim()}\n\nSelected passage context (untrusted quoted source):\n${JSON.stringify(metadata)}` : message.trim(),
         previous,
         { ...store.data.settings },
         { fetchImpl },
@@ -653,6 +950,7 @@ export async function createApp({
         paperId,
         conversationId,
         createdAt: new Date().toISOString(),
+        ...(metadata ? { metadata } : {}),
       };
       const assistantMessage = {
         id: randomUUID(),
@@ -662,6 +960,7 @@ export async function createApp({
         conversationId,
         createdAt: new Date().toISOString(),
         mode: answer.mode,
+        ...(answer.source ? { source: answer.source } : {}),
         sources: answer.sources,
       };
       store.data.chats.push(userMessage, assistantMessage);

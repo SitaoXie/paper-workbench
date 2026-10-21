@@ -26,11 +26,13 @@ import {
   paperContextDetails,
   generateReport,
   answerQuestion,
+  callModel,
 } from "../server/models.mjs";
 import {
   defaultSettings,
   discoverFigures,
   publicPaper,
+  normalizeProfiles,
 } from "../server/storage.mjs";
 
 const webpage =
@@ -99,7 +101,7 @@ async function fixture(t, options = {}) {
     }
     return { status: result.status, data, headers: result.headers };
   };
-  return { api, base, directory, app };
+  return { api, base, directory, app, server };
 }
 
 test("public URL validation blocks private IPv4, IPv6, alternate encodings and mixed DNS answers", async () => {
@@ -1329,11 +1331,14 @@ test("language-specific report and independent translations preserve original co
   assert.equal(translated.data.paper.abstract, paper.abstract);
   assert.equal(translated.data.paper.translations.ja.report.language, "ja");
   truncated = true;
+  const priorCalls = calls.length;
+  assert.equal((await api(translationRoute, { method: "POST", body: { language: "ja", target: "report" } })).status, 200);
+  assert.equal(calls.length, priorCalls);
   assert.equal(
     (
       await api(translationRoute, {
         method: "POST",
-        body: { language: "ja", target: "report" },
+        body: { language: "fr", target: "report" },
       })
     ).status,
     502,
@@ -1641,4 +1646,887 @@ test("PDF glyph joining preserves words, CJK, whitespace and real line boundarie
     ]),
     "Vertical",
   );
+});
+
+test("page annotations persist, validate geometry, export, and support deletion with undo", async (t) => {
+  const { api, base, directory } = await fixture(t);
+  const form = new FormData();
+  form.set("file", new Blob([makePdf()], { type: "application/pdf" }), "notes.pdf");
+  const paper = (await (await fetch(`${base}/api/upload`, { method: "POST", body: form })).json()).paper;
+  const route = `/api/papers/${paper.id}/annotations`;
+  const created = await api(route, { method: "POST", body: {
+    kind: "highlight", page: 1, quote: "Reliable evidence", color: "green",
+    rects: [{ x: 0.1, y: 0.2, width: 0.4, height: 0.03 }], tags: ["method", "method"],
+  } });
+  assert.equal(created.status, 201);
+  const annotation = created.data.annotation;
+  assert.deepEqual(annotation.tags, ["method"]);
+  assert.equal(annotation.paperId, paper.id);
+  const edited = await api(`${route}/${annotation.id}`, { method: "PATCH", body: { body: "Compare this claim with the baseline.", color: "blue" } });
+  assert.equal(edited.status, 200);
+  assert.equal(edited.data.annotation.createdAt, annotation.createdAt);
+  assert.deepEqual(edited.data.annotation.rects, annotation.rects);
+  const ink = await api(route, { method: "POST", body: { kind: "ink", page: 1, strokes: [{ width: 0.003, points: [{ x: 0.1, y: 0.2, pressure: 0.5 }, { x: 0.3, y: 0.4 }] }] } });
+  assert.equal(ink.status, 201);
+  for (const body of [
+    { kind: "note", page: 2, body: "No such page" },
+    { kind: "highlight", page: 1, rects: [{ x: 0.8, y: 0, width: 0.5, height: 0.1 }] },
+    { kind: "highlight", page: 1 },
+    { kind: "ink", page: 1, strokes: [{ width: 4, points: [{ x: 0, y: 0 }] }] },
+    { kind: "ink", page: 1, strokes: [{ width: 0.001, points: [{ x: 2, y: 0 }] }] },
+    { kind: "note", page: 1, body: "<script>alert(1)</script>" },
+    { kind: "note", page: 1, body: "Private", paperId: "other" },
+  ]) assert.equal((await api(route, { method: "POST", body })).status, 400);
+  assert.equal((await api(route)).data.annotations.length, 2);
+  const reopened = await createApp({ dataDir: directory });
+  assert.equal(reopened.locals.store.data.annotations.length, 2);
+  await api(`${route}/${annotation.id}`, { method: "DELETE" });
+  assert.equal((await api(route)).data.annotations.length, 1);
+  assert.equal((await api(`${route}?includeDeleted=true`)).data.annotations.length, 2);
+  assert.ok((await api(`${route}/export?format=json`)).data.annotations.every((item) => !item.deletedAt));
+  assert.equal((await api(`${route}/${annotation.id}`, { method: "PATCH", body: { restore: true } })).status, 200);
+  assert.equal((await api(route)).data.annotations.length, 2);
+  const markdown = await (await fetch(`${base}${route}/export?format=markdown`)).text();
+  assert.match(markdown, /Reliable evidence/);
+  assert.match(markdown, /Compare this claim/);
+  assert.match(markdown, /stroke geometry/);
+  assert.equal((await api(`/api/chats?paperId=${paper.id}`)).data.messages.length, 0);
+  await api(`/api/papers/${paper.id}`, { method: "DELETE" });
+  assert.equal((await createApp({ dataDir: directory })).locals.store.data.annotations.length, 0);
+});
+
+test("inline help uses source context, keeps activities separate, and never fabricates a no-model translation", async (t) => {
+  const calls = [];
+  const { api, directory } = await fixture(t, {
+    download: async (url) => response(webpage, url),
+    fetchImpl: async (_url, options) => {
+      calls.push(JSON.parse(options.body));
+      return new Response(JSON.stringify({ choices: [{ message: { content: "基于来源的翻译或解释。[p.1]" } }] }));
+    },
+  });
+  const paper = (await api("/api/import", { method: "POST", body: { url: "https://example.com/inline" } })).data.paper;
+  const route = `/api/papers/${paper.id}`;
+  const passage = { kind: "translation", text: "Retrieval improves evidence attribution", page: 1, language: "zh-cn" };
+  assert.equal((await api(`${route}/assist`, { method: "POST", body: passage })).status, 400);
+  assert.deepEqual((await api(`${route}/activities`)).data.activities, []);
+  await api("/api/settings", { method: "PUT", body: { apiKey: "private-inline-key" } });
+  for (const kind of ["translation", "explanation"]) {
+    const result = await api(`${route}/assist`, { method: "POST", body: { ...passage, kind } });
+    assert.equal(result.status, 200);
+    assert.equal(result.data.result.kind, kind);
+    assert.equal(result.data.result.language, "zh-CN");
+    assert.equal(result.data.activity.quote, passage.text);
+    assert.ok(!JSON.stringify(result.data).includes("private-inline-key"));
+  }
+  assert.match(calls[0].messages[0].content, /Translate ONLY the selected passage/);
+  assert.match(calls[1].messages[0].content, /Explain the selected passage/);
+  assert.match(calls[0].messages[1].content, /held-out corpus/);
+  assert.equal((await api(`${route}/activities`)).data.activities.length, 2);
+  assert.equal((await api(`${route}/activities?kind=translation`)).data.activities.length, 1);
+  assert.deepEqual((await api(`${route}/annotations`)).data.annotations, []);
+  assert.deepEqual((await api(`/api/conversations?paperId=${paper.id}`)).data.conversations, []);
+  const external = await api(`${route}/activities`, { method: "POST", body: { ...passage, source: { agent: "Codex" }, result: "订阅会话的翻译" } });
+  assert.equal(external.status, 201);
+  assert.equal(external.data.activity.source.kind, "agent");
+  assert.equal((await createApp({ dataDir: directory })).locals.store.data.activities.length, 3);
+});
+
+test("inline requests reject duplicates and discard results after source deletion", async (t) => {
+  let release;
+  let started;
+  const ready = new Promise((resolve) => { started = resolve; });
+  const { api, app } = await fixture(t, {
+    download: async (url) => response(webpage, url),
+    fetchImpl: async () => {
+      started();
+      return new Promise((resolve) => { release = () => resolve(new Response(JSON.stringify({ choices: [{ message: { content: "Translated text" } }] }))); });
+    },
+  });
+  const paper = (await api("/api/import", { method: "POST", body: { url: "https://example.com/pending-inline" } })).data.paper;
+  await api("/api/settings", { method: "PUT", body: { apiKey: "key" } });
+  const route = `/api/papers/${paper.id}`;
+  const body = { kind: "translation", text: "Source text", page: 1, language: "en" };
+  const pending = api(`${route}/assist`, { method: "POST", body });
+  await ready;
+  assert.equal((await api(`${route}/assist`, { method: "POST", body })).status, 409);
+  await api(route, { method: "DELETE" });
+  release();
+  assert.equal((await pending).status, 409);
+  assert.equal(app.locals.store.data.activities.length, 0);
+  assert.equal(app.locals.store.data.chats.length, 0);
+});
+
+test("unified readings derive stable legacy versions and preserve all previous revisions and translations", async (t) => {
+  const { api, app, directory } = await fixture(t, { download: async (url) => response(webpage, url) });
+  const paper = (await api("/api/import", { method: "POST", body: { url: "https://example.com/reading-versions" } })).data.paper;
+  const stored = app.locals.store.paper(paper.id);
+  Object.assign(stored, {
+    reportHistory: [{ markdown: "Old report", createdAt: "2026-01-01T00:00:00.000Z", language: "en" }],
+    report: { markdown: "Current report", createdAt: "2026-01-02T00:00:00.000Z", language: "en" },
+    summary: { markdown: "Illustrated overview", createdAt: "2026-01-03T00:00:00.000Z", language: "en" },
+    translations: { "zh-CN": { summary: { markdown: "图文概览翻译", language: "zh-CN", sourceUpdatedAt: "2026-01-03T00:00:00.000Z" } } },
+  });
+  await app.locals.store.save();
+  const route = `/api/papers/${paper.id}`;
+  const first = (await api(route)).data.paper;
+  assert.equal(first.readingVersions.length, 3);
+  assert.equal(first.readingVersions.find((item) => item.id === first.activeReadingId).markdown, "Illustrated overview");
+  assert.equal(first.readingVersions.at(-1).translations["zh-CN"].markdown, "图文概览翻译");
+  assert.deepEqual((await api(route)).data.paper.readingVersions.map((item) => item.id), first.readingVersions.map((item) => item.id));
+  const olderId = first.readingVersions[0].id;
+  assert.equal((await api(route, { method: "PATCH", body: { activeReadingId: olderId } })).status, 200);
+  assert.equal((await api(route, { method: "PATCH", body: { activeReadingId: "another-paper" } })).status, 404);
+  assert.equal((await api(route)).data.paper.activeReadingId, olderId);
+  const imported = await api(`${route}/insights`, { method: "PUT", body: {
+    source: { agent: "Claude" }, style: "critical", focus: "基线可比性",
+    summary: { markdown: "New critical reading", language: "en" },
+  } });
+  assert.equal(imported.status, 200);
+  assert.equal(imported.data.paper.readingVersions.length, 4);
+  const version = imported.data.paper.readingVersions.find((item) => item.id === imported.data.paper.activeReadingId);
+  assert.equal(version.style, "critical");
+  assert.equal(version.focus, "基线可比性");
+  assert.equal(version.source.agent, "Claude");
+  assert.equal(imported.data.paper.summaryHistory[0].markdown, "Illustrated overview");
+  assert.equal(imported.data.paper.readingVersions.find((item) => item.id === first.activeReadingId).translations["zh-CN"].markdown, "图文概览翻译");
+  const reopened = publicPaper((await createApp({ dataDir: directory })).locals.store.paper(paper.id));
+  assert.equal(reopened.activeReadingId, version.id);
+  assert.deepEqual(reopened.readingVersions.map((item) => item.id), imported.data.paper.readingVersions.map((item) => item.id));
+});
+
+test("reading generation honors style and focus, translates selected revisions, and accepts external translations", async (t) => {
+  const calls = [];
+  const { api } = await fixture(t, {
+    download: async (url) => response(webpage, url),
+    fetchImpl: async (_url, options) => {
+      calls.push(JSON.parse(options.body));
+      return new Response(JSON.stringify({ choices: [{ message: { content: `Generated content ${calls.length}` } }] }));
+    },
+  });
+  const paper = (await api("/api/import", { method: "POST", body: { url: "https://example.com/style" } })).data.paper;
+  const route = `/api/papers/${paper.id}`;
+  await api("/api/settings", { method: "PUT", body: { apiKey: "key" } });
+  const generated = await api(`${route}/report`, { method: "POST", body: { style: "quick", focus: "Focus on baselines", language: "en", adversarial: true } });
+  assert.equal(generated.status, 200);
+  assert.equal(generated.data.paper.readingVersions.length, 1);
+  const version = generated.data.readingVersion;
+  assert.equal(version.style, "quick");
+  assert.equal(version.focus, "Focus on baselines");
+  assert.match(calls[0].messages[0].content, /quick reading overview/);
+  assert.match(calls[0].messages[1].content, /Focus on baselines/);
+  assert.match(calls[2].messages[1].content, /at most 250 words/);
+  await api(`${route}/report`, { method: "POST", body: { style: "deep", language: "en", adversarial: false } });
+  const translated = await api(`${route}/translate`, { method: "POST", body: { target: "reading", readingId: version.id, language: "zh-cn" } });
+  assert.equal(translated.status, 200);
+  assert.equal(translated.data.paper.readingVersions.length, 2);
+  const original = translated.data.paper.readingVersions.find((item) => item.id === version.id);
+  assert.equal(original.markdown, version.markdown);
+  assert.equal(original.translations["zh-CN"].markdown, "Generated content 5");
+  const agent = await api(`${route}/insights`, { method: "PUT", body: {
+    source: { agent: "Codex" }, translations: [{ target: "reading", readingId: version.id, language: "en", markdown: "External translation" }],
+  } });
+  assert.equal(agent.status, 200);
+  assert.equal(agent.data.paper.readingVersions.find((item) => item.id === version.id).translations.en.markdown, "External translation");
+  for (const body of [{ style: "other" }, { style: "quick", focus: "x".repeat(3001) }])
+    assert.equal((await api(`${route}/report`, { method: "POST", body })).status, 400);
+  assert.equal((await api(route)).data.paper.readingVersions.length, 2);
+});
+
+test("question sessions keep selected passage metadata and validate cross-paper session ids", async (t) => {
+  const { api } = await fixture(t, { download: async (url) => response(webpage, url) });
+  const paper = (await api("/api/import", { method: "POST", body: { url: "https://example.com/question-session" } })).data.paper;
+  const metadata = { quote: "Retrieval improves evidence attribution.", page: 1 };
+  const session = await api("/api/chats/new", { method: "POST", body: { paperId: paper.id, kind: "question", metadata } });
+  assert.equal(session.status, 201);
+  assert.equal(session.data.conversation.kind, "question");
+  assert.deepEqual(session.data.conversation.metadata, metadata);
+  const answer = await api("/api/chat", { method: "POST", body: { paperId: paper.id, conversationId: session.data.conversationId, message: "Explain retrieval", metadata } });
+  assert.equal(answer.status, 200);
+  assert.deepEqual((await api(`/api/chats?paperId=${paper.id}`)).data.messages[0].metadata, metadata);
+  assert.equal((await api("/api/chat", { method: "POST", body: { message: "Explain", conversationId: session.data.conversationId } })).status, 404);
+  assert.equal((await api("/api/chats/new", { method: "POST", body: { paperId: paper.id, kind: "translation" } })).status, 400);
+  assert.equal((await api("/api/chats/new", { method: "POST", body: { paperId: paper.id, metadata: { page: 2 } } })).status, 400);
+});
+
+test("explicit chat reads stay in their selected session when another agent changes the active session", async (t) => {
+  const { api } = await fixture(t, { download: async (url) => response(webpage, url) });
+  const paper = (await api("/api/import", { method: "POST", body: { url: "https://example.com/selected-chat" } })).data.paper;
+  const first = await api("/api/chats/new", { method: "POST", body: { paperId: paper.id } });
+  const firstId = first.data.conversationId;
+  await api("/api/chats/import", { method: "POST", body: { paperId: paper.id, conversationId: firstId, question: "First question", answer: "First answer", source: { agent: "Codex" } } });
+  const second = await api("/api/chats/new", { method: "POST", body: { paperId: paper.id } });
+  const secondId = second.data.conversationId;
+  await api("/api/chats/import", { method: "POST", body: { paperId: paper.id, conversationId: secondId, question: "Second question", answer: "Second answer", source: { agent: "Claude" } } });
+  const active = (await api(`/api/chats?paperId=${paper.id}`)).data;
+  assert.equal(active.conversationId, secondId);
+  assert.equal(active.messages[0].content, "Second question");
+  const pinned = await api(`/api/chats?paperId=${paper.id}&conversationId=${firstId}`);
+  assert.equal(pinned.status, 200);
+  assert.equal(pinned.data.conversationId, firstId);
+  assert.deepEqual(pinned.data.messages.map((message) => message.content), ["First question", "First answer"]);
+  assert.equal((await api(`/api/chats?paperId=${paper.id}`)).data.conversationId, secondId);
+  assert.equal((await api(`/api/chats?conversationId=${firstId}`)).status, 404);
+  assert.equal((await api(`/api/chats?paperId=other-paper&conversationId=${firstId}`)).status, 404);
+  assert.equal((await api(`/api/chats?paperId=${paper.id}&conversationId=missing`)).status, 404);
+  assert.equal((await api(`/api/chats?paperId=${paper.id}&conversationId=`)).status, 400);
+  const global = (await api("/api/chats/new", { method: "POST", body: {} })).data.conversationId;
+  assert.equal((await api(`/api/chats?conversationId=${global}`)).status, 200);
+  assert.equal((await api(`/api/chats?paperId=${paper.id}&conversationId=${global}`)).status, 404);
+});
+
+const visionPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6WQAAAAASUVORK5CYII=";
+const visionCrop = { x: 0.1, y: 0.1, width: 0.8, height: 0.4 };
+async function visionPaper(api, base) {
+  const form = new FormData();
+  form.set("file", new Blob([makePdf(["Figure 1: A comparison with error bars.", "Exact values require readable axes and labels."])], { type: "application/pdf" }), "vision-source.pdf");
+  const paper = (await (await fetch(`${base}/api/upload`, { method: "POST", body: form })).json()).paper;
+  const saved = await api(`/api/papers/${paper.id}/insights`, { method: "PUT", body: {
+    source: { agent: "Figure crop fixture" }, figures: [{ id: "chart", page: 1, crop: visionCrop, caption: "Comparison with uncertainty" }],
+  } });
+  assert.equal(saved.status, 200);
+  return saved.data.paper;
+}
+async function enableVision(api, provider = "openai") {
+  const current = (await api("/api/settings")).data;
+  const saved = await api("/api/settings", { method: "PUT", body: {
+    profiles: [
+      { ...current.profiles[0], model: "writer-v1", models: ["writer-v1"], modelCapabilities: { "writer-v1": "text" }, apiKey: "writer-private-key" },
+      { id: "vision-provider", name: "Figure reader", provider, baseUrl: "https://vision.example/v1", model: "reader-v1", models: ["reader-v1"], modelCapabilities: { "reader-v1": "vision" }, apiKey: "vision-private-key" },
+    ], activeProfileId: current.activeProfileId,
+    vision: { enabled: true, profileId: "vision-provider", model: "reader-v1" },
+  } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.data));
+  return saved.data;
+}
+const visionBody = () => ({ page: 1, crop: visionCrop, image: { mimeType: "image/png", data: visionPng }, language: "zh-CN", focus: "Inspect uncertainty and the legend." });
+
+test("vision is opt-in per model and never inferred from a model name", async (t) => {
+  const { api } = await fixture(t);
+  const initial = (await api("/api/settings")).data;
+  assert.deepEqual(initial.vision, { enabled: false });
+  assert.equal(initial.profiles[0].modelCapabilities[initial.model], "text");
+  const named = await api("/api/settings", { method: "PUT", body: { model: "super-vision-multimodal" } });
+  assert.equal(named.status, 200);
+  assert.equal(named.data.modelCapabilities["super-vision-multimodal"], "text");
+  assert.equal((await api("/api/settings", { method: "PUT", body: { vision: { enabled: true, profileId: initial.activeProfileId, model: "super-vision-multimodal" } } })).status, 400);
+  assert.equal((await api("/api/settings", { method: "PUT", body: { modelCapabilities: { missing: "vision" } } })).status, 400);
+  assert.equal((await api("/api/settings", { method: "PUT", body: { modelCapabilities: { "super-vision-multimodal": "automatic" } } })).status, 400);
+  const configured = await enableVision(api);
+  assert.equal(configured.model, "writer-v1");
+  assert.equal(configured.vision.model, "reader-v1");
+  assert.equal(configured.profiles.find(profile => profile.id === "vision-provider").modelCapabilities["reader-v1"], "vision");
+  assert.ok(!JSON.stringify(configured).includes("private-key"));
+  const switched = await api("/api/settings", { method: "PUT", body: { activeProfileId: "vision-provider" } });
+  assert.equal(switched.status, 200);
+  assert.equal(switched.data.vision.enabled, true);
+});
+
+test("OpenAI vision sends local crop pixels to the independent model and records unverified provenance without storing images", async (t) => {
+  const calls = [];
+  const { api, base, directory } = await fixture(t, { fetchImpl: async (url, options) => {
+    calls.push({ url, headers: options.headers, body: JSON.parse(options.body) });
+    return new Response(JSON.stringify({ choices: [{ message: { content: "The supplied crop is too small to read numerical values. No numerical claim is verified. [p.1]" } }] }));
+  } });
+  const paper = await visionPaper(api, base);
+  const route = `/api/papers/${paper.id}/figures/chart/analyze`;
+  assert.equal((await api(route, { method: "POST", body: visionBody() })).status, 400);
+  assert.equal(calls.length, 0);
+  await enableVision(api);
+  const analyzed = await api(route, { method: "POST", body: visionBody() });
+  assert.equal(analyzed.status, 200, JSON.stringify(analyzed.data));
+  const evidence = analyzed.data.evidence;
+  assert.equal(evidence.figureId, "chart"); assert.equal(evidence.source.model, "reader-v1");
+  assert.equal(evidence.pixelsProvided, true); assert.equal(evidence.analysisMethod, "vision-model");
+  assert.equal(evidence.modelUnverified, true); assert.equal(evidence.binding, "client-rendered-pdf-crop");
+  assert.ok(evidence.limitations.some(text => text.includes("not pixel-level correspondence")));
+  assert.equal(calls[0].headers.Authorization, "Bearer vision-private-key");
+  assert.equal(calls[0].body.model, "reader-v1");
+  assert.equal(calls[0].body.messages[1].content[1].image_url.url, `data:image/png;base64,${visionPng}`);
+  assert.match(calls[0].body.messages[0].content, /actual supplied PDF figure crop image/);
+  assert.ok(!JSON.stringify(analyzed.data).includes(visionPng));
+  assert.ok(!(await readFile(path.join(directory, "store.json"), "utf8")).includes(visionPng));
+  const generated = await api(`/api/papers/${paper.id}/report`, { method: "POST", body: { adversarial: false, style: "quick" } });
+  assert.equal(generated.status, 200);
+  assert.equal(calls[1].headers.Authorization, "Bearer writer-private-key");
+  assert.equal(calls[1].body.model, "writer-v1");
+  assert.ok(calls[1].body.messages.every(message => typeof message.content === "string"));
+  assert.match(calls[1].body.messages[1].content, /Visual model evidence/);
+  assert.match(calls[1].body.messages[1].content, /UNVERIFIED/);
+  assert.equal(generated.data.report.source.pixelsProvided, false);
+  assert.deepEqual(generated.data.report.source.visualEvidenceIds, [evidence.id]);
+  assert.equal(generated.data.report.source.visualEvidenceMode, "prior-vision-observations");
+  const answer = await api("/api/chat", { method: "POST", body: { paperId: paper.id, message: "What can we learn from the figure?" } });
+  assert.equal(answer.status, 200);
+  assert.deepEqual(answer.data.message.source.visualEvidenceIds, [evidence.id]);
+  assert.equal(answer.data.message.source.pixelsProvided, false);
+});
+
+test("Anthropic vision uses image blocks and unavailable models fail without leaking upstream secrets", async (t) => {
+  const calls = []; let reject = false;
+  const { api, base } = await fixture(t, { fetchImpl: async (_url, options) => {
+    calls.push({ headers: options.headers, body: JSON.parse(options.body) });
+    return reject ? new Response("Unsupported image modality. Authorization: vision-private-key", { status: 400 })
+      : new Response(JSON.stringify({ content: [{ type: "text", text: "Pixels were supplied, but this tiny crop has no readable labels." }] }));
+  } });
+  const paper = await visionPaper(api, base);
+  await enableVision(api, "anthropic");
+  const route = `/api/papers/${paper.id}/figures/chart/analyze`;
+  const first = await api(route, { method: "POST", body: visionBody() });
+  assert.equal(first.status, 200);
+  assert.equal(calls[0].headers["x-api-key"], "vision-private-key");
+  assert.equal(calls[0].body.messages[0].content[1].type, "image");
+  assert.deepEqual(calls[0].body.messages[0].content[1].source, { type: "base64", media_type: "image/png", data: visionPng });
+  reject = true;
+  const failed = await api(route, { method: "POST", body: visionBody() });
+  assert.equal(failed.status, 502); assert.match(failed.data.error, /HTTP 400/);
+  assert.ok(!JSON.stringify(failed.data).includes("private-key"));
+  assert.equal((await api(`/api/papers/${paper.id}`)).data.paper.visualEvidence.length, 1);
+});
+
+test("vision input validates paper binding, crop, MIME, decoded bytes and dimensions before inference", async (t) => {
+  let calls = 0;
+  const { api, base } = await fixture(t, { fetchImpl: async () => { calls++; throw new Error("should not reach inference"); } });
+  const paper = await visionPaper(api, base); await enableVision(api);
+  const route = `/api/papers/${paper.id}/figures/chart/analyze`;
+  const oversizedHeader = Buffer.from(visionPng, "base64"); oversizedHeader.writeUInt32BE(30000, 16);
+  for (const body of [
+    { ...visionBody(), page: 2 },
+    { ...visionBody(), crop: { ...visionCrop, x: 0.2 } },
+    { ...visionBody(), image: { mimeType: "image/svg+xml", data: visionPng } },
+    { ...visionBody(), image: { mimeType: "image/jpeg", data: visionPng } },
+    { ...visionBody(), image: { mimeType: "image/png", data: "https://example.com/image.png" } },
+    { ...visionBody(), image: { mimeType: "image/png", data: Buffer.from("not a png").toString("base64") } },
+    { ...visionBody(), image: { mimeType: "image/png", data: oversizedHeader.toString("base64") } },
+  ]) assert.equal((await api(route, { method: "POST", body })).status, 400);
+  assert.equal((await api(`/api/papers/${paper.id}/figures/not-this-paper/analyze`, { method: "POST", body: visionBody() })).status, 400);
+  await api(`/api/papers/${paper.id}/insights`, { method: "PUT", body: { source: { agent: "Caption fixture" }, figures: [{ id: "chart", page: 1, caption: "Caption-only candidate" }] } });
+  const caption = await api(route, { method: "POST", body: visionBody() });
+  assert.equal(caption.status, 400); assert.match(caption.data.error, /existing figure crop/);
+  assert.equal(calls, 0);
+});
+
+test("a crop changed during vision inference cannot receive the previous crop's interpretation", async (t) => {
+  let release; let started;
+  const ready = new Promise(resolve => { started = resolve; });
+  const { api, base } = await fixture(t, { fetchImpl: async () => { started(); return new Promise(resolve => { release = () => resolve(new Response(JSON.stringify({ choices: [{ message: { content: "Observation for the previous crop." } }] }))); }); } });
+  const paper = await visionPaper(api, base); await enableVision(api);
+  const route = `/api/papers/${paper.id}/figures/chart/analyze`;
+  const pending = api(route, { method: "POST", body: visionBody() });
+  await ready;
+  assert.equal((await api(route, { method: "POST", body: visionBody() })).status, 409);
+  await api(`/api/papers/${paper.id}/insights`, { method: "PUT", body: { source: { agent: "Crop correction" }, figures: [{ id: "chart", page: 1, crop: { ...visionCrop, y: 0.2 }, caption: "Corrected chart crop" }] } });
+  release();
+  assert.equal((await pending).status, 409);
+  assert.equal((await api(`/api/papers/${paper.id}`)).data.paper.visualEvidence, undefined);
+});
+
+test("overview and abstract inline help retain scope without inventing PDF page anchors", async (t) => {
+  const calls = [];
+  const { api } = await fixture(t, { download: async (url) => response(webpage, url), fetchImpl: async (_url, options) => {
+    calls.push(JSON.parse(options.body)); return new Response(JSON.stringify({ choices: [{ message: { content: "A scoped explanation without an invented page." } }] }));
+  } });
+  const paper = (await api("/api/import", { method: "POST", body: { url: "https://example.com/scoped-selection" } })).data.paper;
+  const saved = (await api(`/api/papers/${paper.id}/insights`, { method: "PUT", body: { source: { agent: "Codex" }, summary: { language: "en", markdown: "A generated overview can contain errors." } } })).data.paper;
+  await api("/api/settings", { method: "PUT", body: { apiKey: "key" } });
+  const body = { sourceScope: "reading", readingId: saved.activeReadingId, kind: "explanation", text: "A generated overview", language: "en" };
+  const explained = await api(`/api/papers/${paper.id}/assist`, { method: "POST", body });
+  assert.equal(explained.status, 200);
+  assert.equal(explained.data.activity.sourceScope, "reading");
+  assert.equal(explained.data.activity.readingId, saved.activeReadingId);
+  assert.equal(explained.data.activity.page, undefined);
+  assert.match(calls[0].messages[0].content, /GENERATED READING OVERVIEW/);
+  assert.match(calls[0].messages[0].content, /not a quotation from the original paper/);
+  assert.match(calls[0].messages[1].content, /sourceContext/);
+  assert.equal((await api(`/api/papers/${paper.id}/assist`, { method: "POST", body: { ...body, page: 1 } })).status, 400);
+  assert.equal((await api(`/api/papers/${paper.id}/assist`, { method: "POST", body: { ...body, readingId: "another-paper-version" } })).status, 404);
+  const translated = await api(`/api/papers/${paper.id}/assist`, { method: "POST", body: { sourceScope: "abstract", kind: "translation", text: paper.abstract, language: "zh-CN" } });
+  assert.equal(translated.status, 200);
+  assert.equal(translated.data.activity.page, undefined);
+  assert.equal(translated.data.activity.sourceScope, "abstract");
+  assert.match(calls[1].messages[0].content, /original abstract/);
+  assert.match(calls[1].messages[0].content, /do not invent a PDF page anchor/);
+});
+
+const interactiveFixture = () => ({ schemaVersion: 1, blocks: [
+  { id: "idea-1", type: "concept", title: "Uncertainty", text: "Compare readable labels before drawing numerical conclusions.", citations: [{ page: 1 }] },
+  { id: "chart-1", type: "figure", figureId: "chart", explanation: "Check the error bars and evaluation conditions.", citations: [{ page: 1 }] },
+  { id: "check-1", type: "question", question: "Is an unreadable number evidence?", answer: "No; inspect the source or state uncertainty.", citations: [{ page: 1 }] },
+] });
+const chineseInteractiveFixture = () => {
+  const translated = interactiveFixture();
+  Object.assign(translated.blocks[0], { title: "不确定性", text: "应先查看清晰的图例和标签，再作数值结论；不要将无法辨认的信息当作已经核实的证据。" });
+  translated.blocks[1].explanation = "应检查误差条和评测条件，保留实验范围与结果中明确存在的不确定性。";
+  Object.assign(translated.blocks[2], { question: "无法看清的数字能作为证据吗？", answer: "不能，必须检查来源或明确说明无法确认，不能推测原文未提供的信息。" });
+  return translated;
+};
+const interactiveDisplayMapping = value => value.blocks.map(block => ({ id: block.id,
+  fields: ["title", "text", "explanation", "question", "answer"].filter(name => Object.hasOwn(block, name)).map(name => ({ name, value: block[name] })),
+}));
+
+test("interactive generation retains a completed article when both structured attempts fail", async (t) => {
+  let malformed = false; const calls = [];
+  const { api, base } = await fixture(t, { fetchImpl: async (_url, options) => {
+    const body = JSON.parse(options.body); calls.push(body);
+    const structured = /^(Create an evidence-grounded interactive|Repair the previous interactive JSON)/.test(body.messages[0].content);
+    const content = structured ? malformed ? '{"schemaVersion":1,"blocks":[],"script":"blocked"}' : JSON.stringify(interactiveFixture()) : "# A careful reading\n\nInspect the source before drawing a numerical conclusion. [p.1]";
+    return new Response(JSON.stringify({ choices: [{ message: { content } }] }));
+  } });
+  const paper = await visionPaper(api, base); const route = `/api/papers/${paper.id}`;
+  const body = { format: "interactive", style: "quick", focus: "Uncertainty", language: "en", adversarial: false };
+  assert.equal((await api(`${route}/report`, { method: "POST", body })).status, 400);
+  assert.equal(calls.length, 0);
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const generated = await api(`${route}/report`, { method: "POST", body });
+  assert.equal(generated.status, 200, JSON.stringify(generated.data));
+  assert.equal(generated.data.paper.readingVersions.length, 1);
+  assert.equal(generated.data.readingVersion.format, "interactive");
+  assert.deepEqual(generated.data.readingVersion.interactive, interactiveFixture());
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].messages[0].content, /availableFigures/);
+  malformed = true;
+  const partial = await api(`${route}/report`, { method: "POST", body });
+  assert.equal(partial.status, 200);
+  assert.equal(partial.data.readingVersion.format, "article");
+  assert.equal(partial.data.readingVersion.requestedFormat, "interactive");
+  assert.equal(partial.data.readingVersion.interactive, undefined);
+  assert.match(partial.data.readingVersion.interactiveGenerationError, /finished article was saved/);
+  assert.equal(partial.data.readingVersion.markdown, generated.data.readingVersion.markdown);
+  assert.equal(calls.length, 5);
+  const persisted = (await api(route)).data.paper;
+  assert.equal(persisted.activeReadingId, partial.data.readingVersion.id);
+  assert.equal(persisted.readingVersions.length, 2);
+  assert.deepEqual(persisted.readingVersions.find(version => version.id === generated.data.readingVersion.id), generated.data.readingVersion);
+  assert.equal((await api(`${route}/report`, { method: "POST", body: { format: "executable-html" } })).status, 400);
+});
+
+test("agent interactive imports validate source bindings atomically and translation keeps immutable structure", async (t) => {
+  const { api, base, directory } = await fixture(t);
+  const paper = await visionPaper(api, base); const route = `/api/papers/${paper.id}`;
+  const body = { source: { agent: "Codex" }, summary: { markdown: "A grounded overview. [p.1]", language: "en" }, format: "interactive", interactive: interactiveFixture() };
+  const imported = await api(`${route}/insights`, { method: "PUT", body });
+  assert.equal(imported.status, 200, JSON.stringify(imported.data));
+  const readingId = imported.data.paper.activeReadingId;
+  const sourceVersion = imported.data.paper.readingVersions.find(version => version.id === readingId);
+  assert.equal(sourceVersion.format, "interactive");
+  assert.deepEqual(sourceVersion.interactive, interactiveFixture());
+  assert.deepEqual((await createApp({ dataDir: directory })).locals.store.paper(paper.id).readingVersions[0].interactive, interactiveFixture());
+  const invalid = interactiveFixture(); invalid.blocks[1].figureId = "nonexistent";
+  assert.equal((await api(`${route}/insights`, { method: "PUT", body: { ...body, interactive: invalid } })).status, 400);
+  assert.equal((await api(route)).data.paper.readingVersions.length, 1);
+  const translated = chineseInteractiveFixture();
+  const translation = { target: "reading", readingId, language: "zh-CN", markdown: "基于来源的解读。[p.1]", interactive: translated };
+  const result = await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Claude" }, translations: [translation] } });
+  assert.equal(result.status, 200, JSON.stringify(result.data));
+  assert.equal(result.data.paper.readingVersions[0].translations["zh-CN"].interactive.blocks[0].title, "不确定性");
+  const changedBinding = structuredClone(translated); changedBinding.blocks[0].id = "another-id";
+  assert.equal((await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Claude" }, translations: [{ ...translation, interactive: changedBinding }] } })).status, 400);
+  assert.deepEqual((await api(route)).data.paper.readingVersions[0].interactive, interactiveFixture());
+  assert.equal((await api(`${route}/insights`, { method: "PUT", body: { ...body, report: body.summary } })).status, 400);
+});
+
+test("interactive translation preserves a completed article when interactive source bindings cannot be repaired", async (t) => {
+  let changed = false; let calls = 0;
+  const { api, base } = await fixture(t, { fetchImpl: async (_url, options) => {
+    calls++; const body = JSON.parse(options.body);
+    let content = "翻译后的文章。[p.1]";
+    if (/^(Translate the following interactive|Repair the previous interactive translation mapping)/.test(body.messages[0].content)) {
+      const interactive = chineseInteractiveFixture();
+      if (changed) interactive.blocks[1].id = "changed-binding";
+      content = JSON.stringify(interactiveDisplayMapping(interactive));
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content } }] }));
+  } });
+  const paper = await visionPaper(api, base); const route = `/api/papers/${paper.id}`;
+  const imported = await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Codex" }, summary: { markdown: "Original reading. [p.1]", language: "en", interactive: interactiveFixture() } } });
+  const readingId = imported.data.paper.activeReadingId;
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const result = await api(`${route}/translate`, { method: "POST", body: { target: "reading", readingId, language: "zh-CN" } });
+  assert.equal(result.status, 200, JSON.stringify(result.data));
+  assert.equal(calls, 2);
+  assert.equal(result.data.translation.interactive.blocks[0].title, "不确定性");
+  assert.equal(result.data.paper.readingVersions[0].markdown, "Original reading. [p.1]");
+  changed = true;
+  const failed = await api(`${route}/translate`, { method: "POST", body: { target: "reading", readingId, language: "ja" } });
+  assert.equal(failed.status, 200);
+  assert.equal(failed.data.translation.markdown, "翻译后的文章。[p.1]");
+  assert.equal(failed.data.translation.interactive, undefined);
+  assert.match(failed.data.translation.interactiveTranslationError, /article remains available/);
+  assert.equal((await api(route)).data.paper.readingVersions[0].translations.ja.markdown, "翻译后的文章。[p.1]");
+});
+
+test("changed crops mark saved visual evidence stale and exclude it from later report context", async (t) => {
+  const calls = [];
+  const { api, base } = await fixture(t, { fetchImpl: async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "A cautious description. [p.1]" } }] }));
+  } });
+  const paper = await visionPaper(api, base); await enableVision(api);
+  const route = `/api/papers/${paper.id}`;
+  assert.equal((await api(`${route}/figures/chart/analyze`, { method: "POST", body: visionBody() })).status, 200);
+  await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Crop correction" }, figures: [{ id: "chart", page: 1, crop: { ...visionCrop, y: 0.2 }, caption: "Corrected crop" }] } });
+  const evidence = (await api(route)).data.paper.visualEvidence;
+  assert.equal(evidence.length, 1); assert.equal(evidence[0].stale, true);
+  const report = await api(`${route}/report`, { method: "POST", body: { adversarial: false } });
+  assert.equal(report.status, 200);
+  assert.equal(report.data.report.source.visualEvidenceMode, "none");
+  assert.deepEqual(report.data.report.source.visualEvidenceIds, []);
+  assert.ok(!calls[1].messages[1].content.includes(`[Visual evidence ${evidence[0].id}]`));
+});
+
+test("text synthesis uses only the latest analysis per figure and never falls back past a stale latest crop", async (t) => {
+  const calls = [];
+  const { api, base } = await fixture(t, { fetchImpl: async (_url, options) => {
+    const body = JSON.parse(options.body); calls.push(body);
+    return new Response(JSON.stringify({ choices: [{ message: { content: body.model === "reader-v1" ? `Vision observation ${calls.length}. [p.1]` : "A grounded synthesis. [p.1]" } }] }));
+  } });
+  const paper = await visionPaper(api, base); await enableVision(api);
+  const route = `/api/papers/${paper.id}`;
+  const analyze = async (body = visionBody()) => {
+    const response = await api(`${route}/figures/chart/analyze`, { method: "POST", body });
+    assert.equal(response.status, 200); return response.data.evidence;
+  };
+  const older = await analyze();
+  const latest = await analyze();
+  const report = await api(`${route}/report`, { method: "POST", body: { adversarial: false } });
+  assert.equal(report.status, 200);
+  assert.deepEqual(report.data.report.source.visualEvidenceIds, [latest.id]);
+  assert.match(calls.at(-1).messages[1].content, new RegExp(latest.id));
+  assert.ok(!calls.at(-1).messages[1].content.includes(older.id));
+  const answer = await api("/api/chat", { method: "POST", body: { paperId: paper.id, message: "Explain the chart evidence." } });
+  assert.equal(answer.status, 200);
+  assert.deepEqual(answer.data.message.source.visualEvidenceIds, [latest.id]);
+  assert.ok(!calls.at(-1).messages[0].content.includes(older.id));
+  const crop = { ...visionCrop, y: 0.2 };
+  const updateCrop = (next) => api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Crop fixture" }, figures: [{ id: "chart", page: 1, crop: next, caption: "Comparison" }] } });
+  assert.equal((await updateCrop(crop)).status, 200);
+  const newest = await analyze({ ...visionBody(), crop });
+  assert.equal((await updateCrop(visionCrop)).status, 200);
+  const current = (await api(route)).data.paper;
+  assert.equal(current.visualEvidence.length, 3);
+  assert.deepEqual(current.visualEvidence.map(item => item.stale), [false, false, true]);
+  const afterRevert = await api(`${route}/report`, { method: "POST", body: { adversarial: false } });
+  assert.equal(afterRevert.status, 200);
+  assert.equal(afterRevert.data.report.source.visualEvidenceMode, "none");
+  assert.deepEqual(afterRevert.data.report.source.visualEvidenceIds, []);
+  for (const record of [older, latest, newest]) assert.ok(!calls.at(-1).messages[1].content.includes(record.id));
+});
+
+test("in-flight text synthesis records the visual evidence actually sent even when a newer analysis arrives", async () => {
+  for (const kind of ["report", "question"]) {
+    const evidence = { id: "observed-at-start", figureId: "chart", page: 1, crop: visionCrop, markdown: "The chart needs careful interpretation.", pixelsProvided: true, analysisMethod: "vision-model", source: { model: "reader-v1" } };
+    const paper = { id: "snapshot-paper", title: "Evidence snapshot", authors: [], abstract: "An evaluation with uncertainty.", text: "The reported evaluation is limited.", filePath: "fixture.pdf", pages: [{ number: 1, text: "The reported evaluation is limited." }], figures: [{ id: "chart", page: 1, crop: visionCrop, caption: "Evaluation" }], visualEvidence: [evidence] };
+    const settings = { ...defaultSettings, apiKey: "fixture-key" };
+    const fetchImpl = async (_url, options) => {
+      assert.match(options.body, /observed-at-start/);
+      paper.visualEvidence.push({ ...evidence, id: "arrived-during-inference", markdown: "A newer observation." });
+      return new Response(JSON.stringify({ choices: [{ message: { content: "A source-bound answer. [p.1]" } }] }));
+    };
+    const result = kind === "report" ? await generateReport(paper, settings, { adversarial: false, fetchImpl }) : await answerQuestion([paper], "What does the chart show?", [], settings, { fetchImpl });
+    assert.deepEqual(result.source.visualEvidenceIds, ["observed-at-start"]);
+    assert.equal(result.source.visualEvidenceMode, "prior-vision-observations");
+    assert.equal(paper.visualEvidence.length, 2);
+  }
+});
+
+test("model request timeouts are profile-scoped, public, validated and default to 90 for old profiles", async (t) => {
+  const { api, directory } = await fixture(t);
+  const initial = (await api("/api/settings")).data;
+  assert.equal(initial.requestTimeoutSeconds, 90);
+  assert.equal(initial.profiles[0].requestTimeoutSeconds, 90);
+  for (const requestTimeoutSeconds of [14, 601, 90.5, "240", null])
+    assert.equal((await api("/api/settings", { method: "PUT", body: { requestTimeoutSeconds } })).status, 400);
+  const saved = await api("/api/settings", { method: "PUT", body: { requestTimeoutSeconds: 240 } });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.data.requestTimeoutSeconds, 240);
+  assert.equal((await createApp({ dataDir: directory })).locals.store.publicSettings().requestTimeoutSeconds, 240);
+  const profiles = [...saved.data.profiles, { ...saved.data.profiles[0], id: "patient-provider", name: "Patient provider", requestTimeoutSeconds: 600 }];
+  assert.equal((await api("/api/settings", { method: "PUT", body: { profiles } })).status, 200);
+  const switched = await api("/api/settings", { method: "PUT", body: { activeProfileId: "patient-provider" } });
+  assert.equal(switched.data.requestTimeoutSeconds, 600);
+  assert.equal(switched.data.profiles.find(profile => profile.id === initial.activeProfileId).requestTimeoutSeconds, 240);
+  const invalidProfiles = profiles.map(profile => ({ ...profile, requestTimeoutSeconds: 0 }));
+  assert.equal((await api("/api/settings", { method: "PUT", body: { profiles: invalidProfiles } })).status, 400);
+  const legacyProfile = { ...initial.profiles[0] }; delete legacyProfile.requestTimeoutSeconds;
+  assert.equal(normalizeProfiles({ profiles: [legacyProfile], activeProfileId: legacyProfile.id }).requestTimeoutSeconds, 90);
+});
+
+test("OpenAI and Anthropic request abort signals use the configured timeout while omitted settings retain 90 seconds", async (t) => {
+  const requestedTimeouts = [];
+  const signal = new AbortController().signal;
+  t.mock.method(AbortSignal, "timeout", milliseconds => { requestedTimeouts.push(milliseconds); return signal; });
+  for (const [provider, seconds] of [["openai", undefined], ["openai", 240], ["anthropic", 600], ["anthropic", 15]]) {
+    const settings = { ...defaultSettings, provider, apiKey: "fixture-key" };
+    if (seconds === undefined) delete settings.requestTimeoutSeconds;
+    else settings.requestTimeoutSeconds = seconds;
+    const output = await callModel(settings, [{ role: "user", content: "Test timeout configuration." }], { fetchImpl: async (_url, options) => {
+      assert.equal(options.signal, signal);
+      return new Response(JSON.stringify(provider === "anthropic" ? { content: [{ type: "text", text: "Ready" }] } : { choices: [{ message: { content: "Ready" } }] }));
+    } });
+    assert.equal(output, "Ready");
+  }
+  assert.deepEqual(requestedTimeouts, [90000, 240000, 600000, 15000]);
+  await assert.rejects(callModel({ ...defaultSettings, apiKey: "fixture-key" }, [{ role: "user", content: "Timeout" }], {
+    fetchImpl: async () => { throw Object.assign(new Error("private upstream detail"), { name: "TimeoutError" }); },
+  }), error => error.status === 502 && /requestTimeoutSeconds/.test(error.message) && !error.message.includes("private upstream detail"));
+});
+
+test("existing reading conversion only generates structure, preserves original revision, and never duplicates an article on failure", async (t) => {
+  let invalid = false; const prompts = [];
+  const { api, base } = await fixture(t, { fetchImpl: async (_url, options) => {
+    const body = JSON.parse(options.body); prompts.push(body.messages[0].content);
+    assert.equal(body.messages.length, 1);
+    assert.match(body.messages[0].content, /^(Create an evidence-grounded interactive|Repair the previous interactive JSON)/);
+    return new Response(JSON.stringify({ choices: [{ message: { content: invalid ? '{"schemaVersion":1,"blocks":[],"script":"disallowed"}' : JSON.stringify(interactiveFixture()) } }] }));
+  } });
+  const paper = await visionPaper(api, base); const route = `/api/papers/${paper.id}`;
+  const imported = await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Original agent" }, style: "critical", focus: "Original evidence limits", summary: { markdown: "## 原有解读\n\n文章正文保留。[p.1]", language: "zh-CN" } } });
+  const originalId = imported.data.paper.activeReadingId;
+  await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Translator" }, translations: [{ target: "reading", readingId: originalId, language: "en", markdown: "An existing translation." }] } });
+  const original = (await api(route)).data.paper.readingVersions.find(version => version.id === originalId);
+  // Conversion must use this version's figure snapshot, not the current list.
+  await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Figure update" }, figures: [] } });
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const converted = await api(`${route}/report`, { method: "POST", body: { readingId: originalId, format: "interactive", language: "en", style: "quick", focus: "Override that must be ignored", adversarial: true } });
+  assert.equal(converted.status, 200, JSON.stringify(converted.data));
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /Language: zh-CN/);
+  assert.match(prompts[0], /Style: critical/);
+  assert.match(prompts[0], /Original evidence limits/);
+  assert.ok(!prompts[0].includes("Override that must be ignored"));
+  const version = converted.data.readingVersion;
+  assert.notEqual(version.id, originalId);
+  assert.equal(version.derivedFromReadingId, originalId);
+  assert.equal(version.format, "interactive");
+  assert.equal(version.markdown, original.markdown);
+  assert.equal(version.language, original.language);
+  assert.equal(version.style, original.style);
+  assert.equal(version.focus, original.focus);
+  assert.deepEqual(version.figures, original.figures);
+  assert.deepEqual(version.translations, {});
+  assert.deepEqual(version.articleSource, original.source);
+  assert.deepEqual(version.stages, []);
+  assert.deepEqual(converted.data.paper.readingVersions.find(entry => entry.id === originalId), original);
+  assert.equal(converted.data.paper.readingVersions.length, 2);
+  invalid = true;
+  const failed = await api(`${route}/report`, { method: "POST", body: { readingId: originalId, format: "interactive" } });
+  assert.equal(failed.status, 502);
+  assert.equal(prompts.length, 3);
+  const afterFailure = (await api(route)).data.paper;
+  assert.equal(afterFailure.readingVersions.length, 2);
+  assert.equal(afterFailure.activeReadingId, version.id);
+  assert.equal((await api(`${route}/report`, { method: "POST", body: { readingId: "another-paper-reading", format: "interactive" } })).status, 404);
+  assert.equal((await api(`${route}/report`, { method: "POST", body: { readingId: originalId, format: "article" } })).status, 400);
+  assert.equal(prompts.length, 3);
+});
+
+test("a failed interactive provider keeps the completed article without persisting upstream details", async (t) => {
+  let calls = 0;
+  const { api, base } = await fixture(t, { fetchImpl: async () => {
+    calls++;
+    return calls === 1 ? new Response(JSON.stringify({ choices: [{ message: { content: "# Completed article\n\nA grounded finding. [p.1]" } }] })) : new Response("private-upstream-secret", { status: 500 });
+  } });
+  const paper = await visionPaper(api, base);
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const result = await api(`/api/papers/${paper.id}/report`, { method: "POST", body: { format: "interactive", adversarial: false } });
+  assert.equal(result.status, 200);
+  assert.equal(result.data.readingVersion.format, "article");
+  assert.equal(result.data.readingVersion.requestedFormat, "interactive");
+  assert.match(result.data.readingVersion.markdown, /Completed article/);
+  assert.ok(!JSON.stringify(result.data).includes("private-upstream-secret"));
+  assert.equal(result.data.paper.readingVersions.length, 1);
+  assert.equal(calls, 2);
+});
+
+test("excluding the latest visual observation is reversible, paper-bound and never revives an older interpretation", async (t) => {
+  const calls = [];
+  const { api, base, directory } = await fixture(t, { download: async url => response(webpage, url), fetchImpl: async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "An unverified observation. [p.1]" } }] }));
+  } });
+  const paper = await visionPaper(api, base); await enableVision(api);
+  const route = `/api/papers/${paper.id}`;
+  const older = (await api(`${route}/figures/chart/analyze`, { method: "POST", body: visionBody() })).data.evidence;
+  const latest = (await api(`${route}/figures/chart/analyze`, { method: "POST", body: visionBody() })).data.evidence;
+  const patchRoute = `${route}/visual-evidence/${latest.id}`;
+  for (const body of [{ excluded: "true" }, { excluded: 1 }, { excluded: null }, {}, { excluded: true, markdown: "replacement" }])
+    assert.equal((await api(patchRoute, { method: "PATCH", body })).status, 400);
+  const other = (await api("/api/import", { method: "POST", body: { url: "https://example.com/another-visual-context" } })).data.paper;
+  assert.equal((await api(`/api/papers/${other.id}/visual-evidence/${latest.id}`, { method: "PATCH", body: { excluded: true } })).status, 404);
+  const excluded = await api(patchRoute, { method: "PATCH", body: { excluded: true } });
+  assert.equal(excluded.status, 200);
+  assert.equal(excluded.data.evidence.excluded, true);
+  assert.ok(!Number.isNaN(Date.parse(excluded.data.evidence.updatedAt)));
+  assert.equal(excluded.data.paper.visualEvidence.length, 2);
+  assert.equal((await createApp({ dataDir: directory })).locals.store.paper(paper.id).visualEvidence.at(-1).excluded, true);
+  // Restoring the older record must not override the exclusion on the latest.
+  assert.equal((await api(`${route}/visual-evidence/${older.id}`, { method: "PATCH", body: { excluded: false } })).status, 200);
+  const report = await api(`${route}/report`, { method: "POST", body: { adversarial: false } });
+  assert.equal(report.status, 200);
+  assert.equal(report.data.report.source.visualEvidenceMode, "none");
+  assert.deepEqual(report.data.report.source.visualEvidenceIds, []);
+  for (const item of [older, latest]) assert.ok(!calls.at(-1).messages[1].content.includes(item.id));
+  const restored = await api(patchRoute, { method: "PATCH", body: { excluded: false } });
+  assert.equal(restored.status, 200);
+  assert.equal(restored.data.evidence.excluded, false);
+  assert.equal(restored.data.evidence.markdown, latest.markdown);
+  const question = await api("/api/chat", { method: "POST", body: { paperId: paper.id, message: "Inspect the chart evidence." } });
+  assert.equal(question.status, 200);
+  assert.deepEqual(question.data.message.source.visualEvidenceIds, [latest.id]);
+  assert.ok(!calls.at(-1).messages[0].content.includes(older.id));
+});
+
+test("concurrent translations share one inference and later requests reuse the valid saved result", async (t) => {
+  for (const target of ["reading", "abstract", "summary"]) {
+    let started, release; let calls = 0;
+    const ready = new Promise(resolve => { started = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const { api, server } = await fixture(t, { download: async url => response(webpage, url), fetchImpl: async () => {
+      calls++; started(); await gate;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "A shared complete translation." } }] }));
+    } });
+    const paper = (await api("/api/import", { method: "POST", body: { url: `https://example.com/coalesced-${target}` } })).data.paper;
+    const route = `/api/papers/${paper.id}`;
+    const imported = (await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: { markdown: "An immutable reading source.", language: "en" } } })).data.paper;
+    await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+    const body = { target, language: "zh-CN", ...(target === "reading" ? { readingId: imported.activeReadingId } : {}) };
+    const first = api(`${route}/translate`, { method: "POST", body });
+    await ready;
+    // Release inference only after a second HTTP request has delivered its body,
+    // so this checks a real overlap rather than two sequential cache hits.
+    server.once("request", request => request.once("end", () => setImmediate(release)));
+    const second = api(`${route}/translate`, { method: "POST", body });
+    const results = await Promise.all([first, second]);
+    assert.deepEqual(results.map(result => result.status), [200, 200]);
+    assert.equal(calls, 1, target);
+    assert.deepEqual(results[0].data.translation, results[1].data.translation);
+    await api("/api/settings", { method: "PUT", body: { clearApiKey: true } });
+    const cached = await api(`${route}/translate`, { method: "POST", body: { ...body, language: "zh-cn" } });
+    assert.equal(cached.status, 200);
+    assert.deepEqual(cached.data.translation, results[0].data.translation);
+    assert.equal(calls, 1, "Cached results need no provider key or additional inference");
+  }
+});
+
+test("a failed shared translation releases its job and can be retried without caching the failure", async (t) => {
+  let started, release; let calls = 0; let fail = true;
+  const ready = new Promise(resolve => { started = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const { api, server } = await fixture(t, { download: async url => response(webpage, url), fetchImpl: async () => {
+    calls++; started(); await gate;
+    return fail ? new Response("private provider failure", { status: 503 }) : new Response(JSON.stringify({ choices: [{ message: { content: "Successful retry." } }] }));
+  } });
+  const paper = (await api("/api/import", { method: "POST", body: { url: "https://example.com/retry-translation" } })).data.paper;
+  const route = `/api/papers/${paper.id}`;
+  const imported = (await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: { markdown: "Source.", language: "en" } } })).data.paper;
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const body = { target: "reading", readingId: imported.activeReadingId, language: "zh-CN" };
+  const first = api(`${route}/translate`, { method: "POST", body }); await ready;
+  server.once("request", request => request.once("end", () => setImmediate(release)));
+  const second = api(`${route}/translate`, { method: "POST", body });
+  assert.deepEqual((await Promise.all([first, second])).map(result => result.status), [502, 502]);
+  assert.equal(calls, 1);
+  assert.equal((await api(route)).data.paper.readingVersions[0].translations["zh-CN"], undefined);
+  fail = false;
+  const retried = await api(`${route}/translate`, { method: "POST", body });
+  assert.equal(retried.status, 200);
+  assert.equal(retried.data.translation.markdown, "Successful retry.");
+  assert.equal(calls, 2);
+  assert.equal((await api(`${route}/translate`, { method: "POST", body })).status, 200);
+  assert.equal(calls, 2);
+});
+
+test("an external translation published during inference is preserved instead of overwritten", async (t) => {
+  for (const target of ["reading", "summary"]) {
+    let started, release;
+    const ready = new Promise(resolve => { started = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const { api } = await fixture(t, { download: async url => response(webpage, url), fetchImpl: async () => {
+      started(); await gate;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "Late provider translation." } }] }));
+    } });
+    const paper = (await api("/api/import", { method: "POST", body: { url: `https://example.com/translation-race-${target}` } })).data.paper;
+    const route = `/api/papers/${paper.id}`;
+    const imported = (await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: { markdown: "Original revision.", language: "en" } } })).data.paper;
+    await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+    const body = { target, language: "zh-CN", ...(target === "reading" ? { readingId: imported.activeReadingId } : {}) };
+    const pending = api(`${route}/translate`, { method: "POST", body }); await ready;
+    assert.equal((await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Independent translator" }, translations: [{ ...body, markdown: "Agent translation to preserve." }] } })).status, 200);
+    release();
+    const result = await pending;
+    assert.equal(result.status, 200);
+    assert.equal(result.data.translation.markdown, "Agent translation to preserve.");
+    assert.equal(result.data.translation.source.agent, "Independent translator");
+    assert.equal((await api(`${route}/translate`, { method: "POST", body })).data.translation.markdown, "Agent translation to preserve.");
+  }
+});
+
+test("invalid legacy interactive language is hidden without deleting history and only blocks are retried", async (t) => {
+  const calls = []; let invalid = true; let release, started;
+  const gate = new Promise(resolve => { release = resolve; });
+  const ready = new Promise(resolve => { started = resolve; });
+  const { api, base, app, server } = await fixture(t, { fetchImpl: async (_url, options) => {
+    const prompt = JSON.parse(options.body).messages[0].content; calls.push(prompt);
+    assert.match(prompt, /^(Translate the following interactive|Repair the previous interactive translation mapping)/, "Cached article must not be translated again");
+    if (!invalid) { started(); await gate; }
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(interactiveDisplayMapping(invalid ? chineseInteractiveFixture() : interactiveFixture())) } }] }));
+  } });
+  const paper = await visionPaper(api, base); const route = `/api/papers/${paper.id}`;
+  const imported = await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: {
+    markdown: "中文原版解读。[p.1]", language: "zh-CN", interactive: chineseInteractiveFixture(),
+  } } });
+  const readingId = imported.data.paper.activeReadingId;
+  const body = { target: "reading", readingId, language: "en" };
+  const translated = { ...body, markdown: "A correct existing English article. [p.1]" };
+  assert.equal((await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, translations: [{ ...translated, interactive: chineseInteractiveFixture() }] } })).status, 400, "New agent imports must not publish untranslated display blocks");
+  assert.equal((await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, translations: [translated] } })).status, 200);
+  const rawPaper = app.locals.store.paper(paper.id);
+  rawPaper.readingVersions[0].translations.en.interactive = chineseInteractiveFixture(); // Historical bug fixture, never a provider call.
+  await app.locals.store.save();
+  const publicVersion = (await api(route)).data.paper.readingVersions[0];
+  assert.equal(publicVersion.translations.en.interactive, undefined);
+  assert.match(publicVersion.translations.en.interactiveTranslationError, /article remains available/);
+  assert.deepEqual(rawPaper.readingVersions[0].translations.en.interactive, chineseInteractiveFixture(), "Filtering cannot delete stored history");
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const partial = await api(`${route}/translate`, { method: "POST", body });
+  assert.equal(partial.status, 200);
+  assert.equal(partial.data.translation.markdown, translated.markdown);
+  assert.equal(partial.data.translation.interactive, undefined);
+  assert.match(partial.data.translation.interactiveTranslationError, /basic check for the requested language/);
+  assert.equal(calls.length, 2, "Invalid language gets exactly one repair attempt");
+  assert.deepEqual(rawPaper.readingVersions[0].translations.en.interactive, chineseInteractiveFixture());
+  invalid = false;
+  const first = api(`${route}/translate`, { method: "POST", body }); await ready;
+  server.once("request", request => request.once("end", () => setImmediate(release)));
+  const second = api(`${route}/translate`, { method: "POST", body });
+  const results = await Promise.all([first, second]);
+  assert.deepEqual(results.map(result => result.status), [200, 200]);
+  assert.equal(calls.length, 3, "Concurrent repair reuses the article and makes exactly one successful interactive call");
+  assert.deepEqual(results[0].data.translation, results[1].data.translation);
+  assert.deepEqual(results[0].data.translation.interactive, interactiveFixture());
+  assert.equal(results[0].data.translation.interactiveTranslationError, undefined);
+  assert.equal(results[0].data.translation.markdown, translated.markdown);
+  assert.equal((await api(`${route}/translate`, { method: "POST", body })).status, 200);
+  assert.equal(calls.length, 3, "Complete translated blocks become a reusable cache");
+});
+
+test("interactive timeout preserves a finished translated article and exposes only a safe retry diagnostic", async (t) => {
+  let calls = 0;
+  const { api, base } = await fixture(t, { fetchImpl: async (_url, options) => {
+    calls++;
+    if (JSON.parse(options.body).messages[0].content.startsWith("Translate the following interactive")) {
+      const error = new Error("private-model-url and credential must not escape"); error.name = "TimeoutError"; throw error;
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content: "The completed English article. [p.1]" } }] }));
+  } });
+  const paper = await visionPaper(api, base); const route = `/api/papers/${paper.id}`;
+  const imported = await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: { markdown: "中文解读。", language: "zh-CN", interactive: chineseInteractiveFixture() } } });
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const result = await api(`${route}/translate`, { method: "POST", body: { target: "reading", readingId: imported.data.paper.activeReadingId, language: "en" } });
+  assert.equal(result.status, 200);
+  assert.equal(calls, 2);
+  assert.equal(result.data.translation.markdown, "The completed English article. [p.1]");
+  assert.equal(result.data.translation.interactive, undefined);
+  assert.match(result.data.translation.interactiveTranslationError, /timed out/);
+  assert.ok(!JSON.stringify(result.data).includes("private-model-url"));
+  assert.equal((await api(route)).data.paper.readingVersions[0].translations.en.interactiveTranslationError, result.data.translation.interactiveTranslationError);
 });

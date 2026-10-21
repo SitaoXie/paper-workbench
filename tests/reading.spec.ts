@@ -58,7 +58,7 @@ test("subscription-only reading: JSON import, translation, original and inline f
   });
   await page.goto(`/?paper=${paper.id}`);
   await closeAssistant(page);
-  await page
+  await page.locator(".reading-tools")
     .getByRole("button", { name: "用 Codex / Claude", exact: true })
     .click();
   const prompt = await page.getByLabel("代理任务").inputValue();
@@ -122,7 +122,7 @@ test("subscription-only reading: JSON import, translation, original and inline f
   );
   // The figure is placed in reading order, not deferred to an unrelated gallery.
   const figure = page
-    .locator("figure")
+    .locator(".reading-prose figure")
     .filter({ hasText: "实验对照图：结论仍需独立验证。" })
     .first();
   await expect(figure).toHaveClass(/is-crop/);
@@ -176,11 +176,15 @@ test("subscription-only reading: JSON import, translation, original and inline f
     .click();
   await expect(page.locator(".abstract-section")).toContainText(paper.abstract);
   await page.getByRole("button", { name: "返回译文", exact: true }).click();
-  await page.getByLabel("阅读语言").selectOption("ja");
-  await expect(page.locator(".translation-missing").first()).toContainText(
-    "尚无 ja 译文",
+  await page.getByLabel("阅读语言").selectOption("en");
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page).toHaveURL(new RegExp(`/en/\\?paper=${paper.id}`));
+  await expect(page.locator(".reading-overview .translation-missing")).toContainText(
+    "This version has no translation in the selected language",
   );
-  await page.getByLabel("阅读语言").selectOption("zh-CN");
+  await expect(page.getByRole("heading", { name: "本次实验的中文解读" })).toBeVisible();
+  await page.getByLabel("Reading language").selectOption("zh-CN");
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
   await page.screenshot({
     path: info.outputPath("subscription-illustrated.png"),
     fullPage: false,
@@ -193,57 +197,51 @@ test("subscription-only reading: JSON import, translation, original and inline f
   ).toBe(true);
 });
 
-test("external translations preserve original and flag stale versions", async ({
+test("external translations preserve immutable versions and flag stale legacy translations", async ({
   page,
   request,
 }, info) => {
-  const paper = await paperFixture(
-    page,
-    request,
-    `translation-${info.project.name}`,
-  );
-  await insights(request, paper.id, {
+  const paper = await paperFixture(page, request, `translation-${info.project.name}`);
+  const original = await insights(request, paper.id, {
     source: { agent: "Claude Code" },
     summary: {
-      language: "en",
-      markdown: "## Original overview\nA first controlled result. [p.2]",
+      language: "zh-CN",
+      markdown: "## 初版中文解读\n第一次受控实验的结果。[p.2]",
     },
-    translations: [
-      {
-        target: "summary",
-        language: "ja",
-        markdown: "## 日本語の解説\n最初の対照実験です。[p.2]",
-      },
-    ],
+    translations: [{ target: "summary", language: "en", markdown: "## First English reading\nA first controlled result. [p.2]" }],
   });
-  await page.goto(`/?paper=${paper.id}`);
-  await closeAssistant(page);
-  await page.getByLabel("阅读语言").selectOption("ja");
-  await expect(
-    page.getByRole("heading", { name: "日本語の解説" }),
-  ).toBeVisible();
+  const firstVersion = original.activeReadingId;
+  expect(firstVersion).toBeTruthy();
+  await page.goto(`/en/?paper=${paper.id}`);
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.getByRole("heading", { name: "First English reading" })).toBeVisible();
+  await expect(page.locator(".reading-overview")).toHaveCount(1);
   const changed = await insights(request, paper.id, {
     source: { agent: "Codex" },
     summary: {
-      language: "en",
-      markdown:
-        "## Revised original overview\nThe uncertainty is larger than first estimated. [p.2]",
+      language: "zh-CN",
+      markdown: "## 修订后的中文解读\n不确定性比最初估计更大。[p.2]",
     },
   });
-  expect(changed.translations.ja.summary.stale).toBe(true);
-  expect(changed.summaryHistory[0].markdown).toContain("Original overview");
+  expect(changed.translations.en.summary.stale).toBe(true);
+  expect(changed.summaryHistory[0].markdown).toContain("初版中文解读");
+  // A translation remains valid for its immutable source revision. It must not
+  // silently become the translation of a newly generated reading.
+  expect(changed.readingVersions.find((version: any) => version.id === firstVersion).translations.en.markdown).toContain("First English reading");
+  expect(changed.activeReadingId).not.toBe(firstVersion);
   await page.reload();
-  await closeAssistant(page);
-  await page.getByLabel("阅读语言").selectOption("ja");
-  await expect(
-    page.getByText("原文已更新，当前译文需要重新生成。", { exact: false }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Revised original overview" }),
-  ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "日本語の解説" })).toHaveCount(
-    0,
-  );
+  await expect(page.getByRole("heading", { name: "修订后的中文解读" })).toBeVisible();
+  await expect(page.locator(".reading-overview .translation-missing")).toContainText("This version has no translation in the selected language");
+  await expect(page.getByRole("heading", { name: "First English reading" })).toHaveCount(0);
+  await page.getByLabel("Reading version").selectOption(firstVersion);
+  await expect(page.getByRole("heading", { name: "First English reading" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "修订后的中文解读" })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByLabel("Reading version")).toHaveValue(firstVersion);
+  await expect(page.getByRole("heading", { name: "First English reading" })).toBeVisible();
+  await page.getByRole("button", { name: "Show original", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "初版中文解读" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "First English reading" })).toHaveCount(0);
 });
 
 test("external subscription answer is persisted and visible without API key", async ({

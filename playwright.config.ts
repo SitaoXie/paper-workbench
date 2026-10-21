@@ -6,7 +6,7 @@ import { join } from "node:path";
 const baseURL = process.env.E2E_BASE_URL || "http://127.0.0.1:4319";
 export default defineConfig({
   testDir: "./tests",
-  testMatch: ["ui.spec.ts", "reading.spec.ts", "state.spec.ts", "dock.spec.ts"],
+  testMatch: ["ui.spec.ts", "reading.spec.ts", "state.spec.ts", "dock.spec.ts", "workspace.spec.ts", "annotations.spec.ts", "overview.spec.ts", "interactive.spec.ts"],
   fullyParallel: false,
   timeout: 45_000,
   expect: { timeout: 10_000 },

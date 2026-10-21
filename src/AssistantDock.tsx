@@ -1,9 +1,10 @@
+import { useLocale } from "./i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, GripVertical } from "lucide-react";
 
 const DESKTOP_MIN = 1000;
 const MIN_WIDTH = 420;
-const MAX_WIDTH = 720;
+const MAX_WIDTH = 960;
 const WIDTH_PREFERENCE = "paper-workbench:assistant-width";
 function savedAssistantWidth(): number | null {
   try {
@@ -14,11 +15,11 @@ function savedAssistantWidth(): number | null {
 function responsiveWidth(viewport: number) {
   // A phone width must never become the desktop width preference.
   const desktopViewport = viewport < DESKTOP_MIN ? 1440 : viewport;
-  return Math.round(Math.max(MIN_WIDTH, Math.min(maximumWidth(desktopViewport), desktopViewport * 0.46)));
+  return Math.round(Math.max(MIN_WIDTH, Math.min(maximumWidth(desktopViewport), desktopViewport * 0.5)));
 }
 function maximumWidth(viewport: number) {
   // Keep a useful reading column beside the rail, even on small laptops.
-  return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, viewport - 488));
+  return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, viewport - 408));
 }
 export function defaultAssistantWidth() {
   const viewport = typeof window === "undefined" ? 1440 : window.innerWidth;
@@ -30,11 +31,13 @@ type Props = {
   onWidthChange: (width: number) => void;
   onClose: () => void;
   children: ReactNode;
+  controls?: ReactNode;
 };
 
 /** A resizable reading companion. Its parent owns width and open state so
  * resizing or closing never remounts the PDF or discards the selected quote. */
-export default function AssistantDock({ width, onWidthChange, onClose, children }: Props) {
+export default function AssistantDock({ width, onWidthChange, onClose, children, controls }: Props) {
+  const { t } = useLocale();
   const [viewport, setViewport] = useState(() => window.innerWidth);
   const [resizing, setResizing] = useState(false);
   const host = useRef<HTMLDivElement>(null);
@@ -75,6 +78,7 @@ export default function AssistantDock({ width, onWidthChange, onClose, children 
 
   return <div
     ref={host}
+    id="paper-companion"
     className={`assistant-dock ${resizing ? "is-resizing" : ""}`}
     data-testid="assistant-dock"
     onKeyDown={event => {
@@ -91,13 +95,13 @@ export default function AssistantDock({ width, onWidthChange, onClose, children 
     <div
       className="assistant-dock-resizer"
       role="separator"
-      aria-label="调整助手宽度"
+      aria-label={t("调整助手宽度")}
       aria-orientation="vertical"
       aria-valuemin={MIN_WIDTH}
       aria-valuemax={maximumWidth(viewport)}
       aria-valuenow={Math.round(width)}
       tabIndex={0}
-      title="拖动调整宽度，或用左右方向键调整"
+      title={t("拖动调整宽度，或用左右方向键调整")}
       onPointerDown={event => {
         if (event.button !== 0 || viewport < DESKTOP_MIN) return;
         event.preventDefault();
@@ -123,7 +127,8 @@ export default function AssistantDock({ width, onWidthChange, onClose, children 
         change(next);
       }}
     ><GripVertical size={13}/></div>
-    <div className="assistant-dock-mobile-bar"><button onClick={onClose}><ArrowLeft size={17}/>返回论文</button></div>
+    <div className="assistant-dock-mobile-bar"><button onClick={onClose}><ArrowLeft size={17}/>{t("返回论文")}</button></div>
     {children}
+    {controls && <div className="companion-footer">{controls}</div>}
   </div>;
 }

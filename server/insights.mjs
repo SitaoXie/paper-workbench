@@ -1,6 +1,8 @@
 import { ApiError } from "./network.mjs";
 import { validateLanguage } from "./models.mjs";
 import { contentHash } from "./storage.mjs";
+import { readingState, readingFormat } from "./reading.mjs";
+import { validateInteractive, validateInteractiveTranslation } from "./interactive.mjs";
 
 export function validateAgentSource(source) {
   if (
@@ -127,12 +129,22 @@ export function validateFigures(figures, paper, source) {
 export function prepareInsights(body, paper) {
   const source = validateAgentSource(body.source);
   const update = {};
-  if (body.summary !== undefined)
-    update.summary = contentEntry(body.summary, source);
-  if (body.report !== undefined)
-    update.report = contentEntry(body.report, source);
   if (body.figures !== undefined)
     update.figures = validateFigures(body.figures, paper, source);
+  const figureContext = { pageCount: paper.pages?.length, figures: update.figures || paper.figures || [] };
+  if (body.interactive !== undefined && (body.summary === undefined) === (body.report === undefined))
+    throw new ApiError("Top-level interactive content requires exactly one summary or report.");
+  if (body.format !== undefined) readingFormat(body.format);
+  for (const target of ["summary", "report"]) {
+    if (body[target] === undefined) continue;
+    const input = body[target];
+    const entry = contentEntry(input, source);
+    const interactive = input.interactive ?? body.interactive;
+    entry.format = readingFormat(input.format ?? body.format ?? (interactive === undefined ? "article" : "interactive"));
+    if (entry.format === "interactive") entry.interactive = validateInteractive(interactive, figureContext);
+    else if (interactive !== undefined) throw new ApiError("Interactive blocks require the interactive reading format.");
+    update[target] = entry;
+  }
   if (body.translations !== undefined) {
     if (
       !Array.isArray(body.translations) ||
@@ -146,14 +158,37 @@ export function prepareInsights(body, paper) {
     for (const translation of body.translations) {
       if (
         !translation ||
-        !["abstract", "report", "summary"].includes(translation.target)
+        !["abstract", "report", "summary", "reading"].includes(translation.target)
       )
         throw new ApiError(
-          "Translation target must be abstract, report, or summary.",
+          "Translation target must be abstract, report, summary, or reading.",
         );
+      if (translation.target === "reading") {
+        const state = readingState(paper);
+        update.readingVersions ||= JSON.parse(JSON.stringify(state.readingVersions));
+        const version = update.readingVersions.find((item) => item.id === (translation.readingId || state.activeReadingId));
+        if (!version) throw new ApiError("Reading version not found in this paper.", 404);
+        const entry = contentEntry(translation, source);
+        if (translation.interactive !== undefined) {
+          if (!version.interactive) throw new ApiError("This reading version has no interactive content to translate.");
+          entry.interactive = validateInteractiveTranslation(translation.interactive, version.interactive, {
+            pageCount: paper.pages?.length, figures: version.figures || paper.figures || [], language: entry.language,
+          });
+        }
+        version.translations ||= {};
+        version.translations[entry.language] = { ...entry, sourceUpdatedAt: version.createdAt, sourceHash: contentHash(version.markdown) };
+        continue;
+      }
       if (!translationSource({ ...paper, ...update }, translation.target))
         throw new ApiError(`No ${translation.target} exists to translate.`);
       const entry = contentEntry(translation, source);
+      if (translation.interactive !== undefined) {
+        const original = update[translation.target] || paper[translation.target];
+        if (!original?.interactive) throw new ApiError("The translation source has no interactive content.");
+        entry.interactive = validateInteractiveTranslation(translation.interactive, original.interactive, {
+          pageCount: paper.pages?.length, figures: original.figures || figureContext.figures, language: entry.language,
+        });
+      }
       const version = sourceVersion(
         { ...paper, ...update },
         translation.target,

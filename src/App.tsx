@@ -10,6 +10,7 @@ import {
   ChevronRight,
   ChevronsLeft,
   Copy,
+  Code2,
   Download,
   ExternalLink,
   FilePlus2,
@@ -19,11 +20,13 @@ import {
   History,
   Layers3,
   Library,
+  Languages,
   Link2,
   Loader2,
   Menu,
   MessageSquare,
   Moon,
+  NotebookPen,
   PanelRightClose,
   Plus,
   Search,
@@ -35,11 +38,14 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import rehypeKatex from "rehype-katex";
-import "katex/dist/katex.min.css";
+import Mark from "./Markdown";
+import SelectionTools from "./SelectionTools";
+import ReadingOverview from "./ReadingOverview";
+import NotebookPanel from "./NotebookPanel";
+import ReadingHistory from "./ReadingHistory";
+import type { Annotation, AnnotationDraft } from "./reader-annotations";
+import type { Activity } from "./types";
+import { useLocale, t, getLocale } from "./i18n";
 import { lazy, Suspense } from "react";
 const PdfReader = lazy(() => import("./PdfReader"));
 import {
@@ -55,11 +61,11 @@ import ReadingTools, { ModelSelect } from "./ReadingTools";
 const PdfFigure = lazy(() => import("./PdfFigure"));
 
 type View = "discover" | "library" | "saved" | "research" | "paper";
-const suggestions = [
-  "这篇论文的核心贡献是什么？",
-  "方法有哪些假设与局限？",
-  "与已有方法相比有什么不同？",
-  "帮我制定一个复现清单",
+const suggestions = () => [
+  t("这篇论文的核心贡献是什么？"),
+  t("方法有哪些假设与局限？"),
+  t("与已有方法相比有什么不同？"),
+  t("帮我制定一个复现清单"),
 ];
 const welcomeQueries = [
   "Reinforcement learning",
@@ -68,90 +74,13 @@ const welcomeQueries = [
   "Computer vision",
 ];
 const exampleUrl = "https://arxiv.org/abs/1706.03762";
-function Mark({
-  children,
-  onPage,
-  figures,
-  pdfUrl,
-}: {
-  children: string;
-  onPage?: (page: number) => void;
-  figures?: Figure[];
-  pdfUrl?: string;
-}) {
-  if (figures && pdfUrl && /^:::figure[ \t]+[\w-]+[ \t]*$/m.test(children)) {
-    const parts = children.split(/^:::figure[ \t]+([\w-]+)[ \t]*$/m);
-    return (
-      <>
-        {parts.map((part, i) => {
-          if (i % 2 === 0)
-            return (
-              <Mark key={i} onPage={onPage}>
-                {part}
-              </Mark>
-            );
-          const figure = figures.find((f) => f.id === part);
-          return figure ? (
-            <Suspense key={i} fallback={<p>正在加载原文图表…</p>}>
-              <PdfFigure
-                url={pdfUrl}
-                page={figure.page}
-                crop={figure.crop}
-                caption={figure.caption}
-                onOpenPage={onPage}
-              />
-            </Suspense>
-          ) : (
-            <p key={i} className="muted-label">
-              图表 {part} 尚未附上源页。
-            </p>
-          );
-        })}
-      </>
-    );
-  }
-  const text = onPage
-    ? children.replace(
-        /\[p\.(\d+)(?:\s*[-–]\s*(?:p\.)?(\d+))?\]/g,
-        (_match, first, last) =>
-          `[p.${first}${last ? `–${last}` : ""}](#page=${first})`,
-      )
-    : children;
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeKatex]}
-      components={{
-        img: ({ alt }) => (
-          <span className="muted-label">
-            [图片：{alt || "外部图片，未自动加载"}]
-          </span>
-        ),
-        a: ({ children, href }) =>
-          href?.startsWith("#page=") && onPage ? (
-            <button
-              className="citation-link"
-              onClick={() => onPage(Number(href.split("=")[1]))}
-            >
-              {children}
-            </button>
-          ) : (
-            <a href={href} target="_blank" rel="noreferrer">
-              {children}
-            </a>
-          ),
-      }}
-    >
-      {text}
-    </ReactMarkdown>
-  );
-}
+
 function date(value?: string) {
-  if (!value) return "本地论文";
+  if (!value) return t("本地论文");
   const d = new Date(value);
   return isNaN(d.getTime())
-    ? "本地论文"
-    : d.toLocaleDateString("zh-CN", {
+    ? t("本地论文")
+    : d.toLocaleDateString(getLocale() === "zh" ? "zh-CN" : "en", {
         year: "numeric",
         month: "short",
         day: "numeric",
@@ -167,15 +96,27 @@ function download(text: string, name: string, type = "text/markdown") {
 }
 
 export default function App() {
+  const { locale, setLocale } = useLocale();
   const [view, setView] = useState<View>("discover");
   const [papers, setPapers] = useState<Paper[]>([]);
   const [paper, setPaper] = useState<Paper | null>(null);
   const [tab, setTab] = useState<"summary" | "paper">("summary");
   const [assistant, setAssistant] = useState(false);
+  const [notebook, setNotebook] = useState(false);
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [annotationsLoading, setAnnotationsLoading] = useState(false);
+  const [annotationFocus, setAnnotationFocus] = useState<{
+    id: string;
+    nonce: number;
+  }>();
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string>();
+  const [activities, setActivities] = useState<Activity[]>([]);
+  const [conversationId, setConversationId] = useState<string>();
   const [dockWidth, setDockWidth] = useState(defaultAssistantWidth);
   const [selectedPassage, setSelectedPassage] = useState<{
     text: string;
-    page: number;
+    page?: number;
+    sourceLabel?: string;
   } | null>(null);
   const [abstractOverflow, setAbstractOverflow] = useState(false);
   const abstractRef = useRef<HTMLDivElement>(null);
@@ -200,9 +141,12 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [reporting, setReporting] = useState(false);
-  const [language, setLanguage] = useState(
-    () => localStorage.getItem("pw-language") || "zh-CN",
+  const [language, setLanguage] = useState(() =>
+    locale === "en" ? "en" : "zh-CN",
   );
+  useEffect(() => {
+    setLanguage(locale === "en" ? "en" : "zh-CN");
+  }, [locale]);
   const [showOriginal, setShowOriginal] = useState(false);
   const [translating, setTranslating] = useState(false);
   useEffect(() => {
@@ -225,6 +169,108 @@ export default function App() {
   const chatEnd = useRef<HTMLDivElement>(null);
   const paperRef = useRef<string | undefined>(undefined);
   const searchToken = useRef(0);
+  const paperMutation = useRef(0);
+  const annotationMutation = useRef(0);
+  useEffect(() => {
+    if (view !== "paper" || !paper?.id) return;
+    const id = paper.id;
+    let disposed = false;
+    setAnnotationsLoading(true);
+    setAnnotations([]);
+    setSelectedAnnotationId(undefined);
+    setAnnotationFocus(undefined);
+    api<{ annotations: Annotation[] }>(`/papers/${id}/annotations`)
+      .then((r) => {
+        if (!disposed) setAnnotations(r.annotations || []);
+      })
+      .catch((e) => {
+        if (!disposed) setError(e.message);
+      })
+      .finally(() => {
+        if (!disposed) setAnnotationsLoading(false);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [view, paper?.id]);
+  async function createAnnotation(
+    draft: AnnotationDraft,
+  ): Promise<Annotation | void> {
+    const id = paper?.id;
+    if (!id) return;
+    annotationMutation.current++;
+    const result = await api<{ annotation: Annotation }>(
+      `/papers/${id}/annotations`,
+      { method: "POST", body: JSON.stringify(draft) },
+    );
+    annotationMutation.current++;
+    if (paperRef.current === id)
+      setAnnotations((old) => [...old.filter(a => a.id !== result.annotation.id), result.annotation]);
+    return result.annotation;
+  }
+  async function mutateAnnotation(
+    id: string,
+    patch?: Partial<Annotation>,
+    remove = false,
+    restore = false,
+  ) {
+    const paperId = paper?.id;
+    if (!paperId) return;
+    annotationMutation.current++;
+    const result = await api<{ annotation: Annotation }>(
+      `/papers/${paperId}/annotations/${id}`,
+      {
+        method: remove ? "DELETE" : "PATCH",
+        ...(remove
+          ? {}
+          : { body: JSON.stringify(restore ? { restore: true } : patch) }),
+      },
+    );
+    annotationMutation.current++;
+    if (paperRef.current !== paperId) return;
+    setAnnotations((old) =>
+      remove
+        ? old.filter((a) => a.id !== id)
+        : restore
+          ? [...old.filter((a) => a.id !== id), result.annotation]
+          : old.map((a) => (a.id === id ? result.annotation : a)),
+    );
+  }
+  function selectAnnotation(entry: Annotation) {
+    setSelectedAnnotationId(entry.id || undefined);
+    if (entry.id) {
+      setAnnotationFocus({ id: entry.id, nonce: Date.now() });
+      goToPage(entry.page);
+    }
+  }
+  async function inlineAssist(input: {
+    text: string;
+    page: number;
+    kind: "translation" | "explanation";
+    language?: string;
+  }) {
+    if (!paper) throw new Error(t("请先打开论文。", "Open a paper first."));
+    const response = await api<{
+      result: {
+        text: string;
+        source?: Record<string, string>;
+        createdAt?: string;
+      };
+      activity: Activity;
+    }>(`/papers/${paper.id}/assist`, {
+      method: "POST",
+      body: JSON.stringify({ ...input, language: input.language || language }),
+    });
+    if (paperRef.current === paper.id)
+      setActivities((old) => [response.activity, ...old]);
+    return {
+      ...response.result,
+      source:
+        response.result.source?.model ||
+        response.result.source?.agent ||
+        response.result.source?.kind,
+    };
+  }
   // External agent results arrive through the same API; keep a visible paper live.
   useEffect(() => {
     if (view !== "paper" || !paper?.id || conversationBusy) return;
@@ -234,23 +280,29 @@ export default function App() {
     const update = async () => {
       if (document.hidden || pending) return;
       pending = true;
+      const revision = paperMutation.current, annotationRevision = annotationMutation.current;
       try {
         const r = await api<{ paper: Paper }>(
           `/papers/${encodeURIComponent(id)}`,
         );
-        if (!disposed && paperRef.current === id)
+        if (!disposed && paperRef.current === id && revision === paperMutation.current)
           setPaper((old) =>
             JSON.stringify(old) === JSON.stringify(r.paper) ? old : r.paper,
           );
-        const c = await api<{ messages: Message[] }>(
-          `/chats?paperId=${encodeURIComponent(id)}`,
+        const c = await api<{ messages: Message[]; conversationId?: string }>(
+          `/chats?paperId=${encodeURIComponent(id)}${conversationId ? `&conversationId=${encodeURIComponent(conversationId)}` : ""}`,
         );
-        if (!disposed && paperRef.current === id && !chatting)
+        if (!disposed && paperRef.current === id && !chatting) {
+          if (!conversationId && c.conversationId) setConversationId(c.conversationId);
           setChat((old) =>
             JSON.stringify(old) === JSON.stringify(c.messages)
               ? old
               : c.messages,
           );
+        }
+        const notes = await api<{annotations: Annotation[]}>(`/papers/${id}/annotations`);
+        if (!disposed && paperRef.current === id && annotationRevision === annotationMutation.current)
+          setAnnotations(old => JSON.stringify(old) === JSON.stringify(notes.annotations) ? old : notes.annotations || []);
       } catch {
         /* Visible requests surface their own actionable errors. */
       } finally {
@@ -264,7 +316,7 @@ export default function App() {
       clearInterval(timer);
       window.removeEventListener("focus", update);
     };
-  }, [view, paper?.id, chatting, conversationBusy]);
+  }, [view, paper?.id, chatting, conversationBusy, conversationId]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -341,9 +393,13 @@ export default function App() {
     if (v !== "paper") paperRef.current = undefined;
     if (v === "research") {
       setChat([]);
-      api<{ messages: Message[] }>("/chats")
+      setConversationId(undefined);
+      setPrompt("");
+      setSelectedPassage(null);
+      setShowHistory(false);
+      api<{ messages: Message[]; conversationId?: string }>("/chats")
         .then((r) => {
-          if (paperRef.current === undefined) setChat(r.messages);
+          if (paperRef.current === undefined) { setChat(r.messages); setConversationId(r.conversationId); }
         })
         .catch(() => {});
     }
@@ -353,22 +409,32 @@ export default function App() {
     setPaper(p);
     setView("paper");
     setExpanded(false);
-    setTab("summary");
-    setPdfPage(1);
+    setTab(new URLSearchParams(location.search).has("page") ? "paper" : "summary");
+    setPrompt("");
+    setShowHistory(false);
+    setPdfPage(
+      Math.max(
+        1,
+        Number(new URLSearchParams(location.search).get("page")) || 1,
+      ),
+    );
     setSelectedPassage(null);
+    setActivities([]);
+    setConversationId(undefined);
     setChat([]);
     setError("");
     history.replaceState({}, "", `?paper=${encodeURIComponent(p.id)}`);
     try {
       const [detail, r] = await Promise.all([
         api<{ paper: Paper }>(`/papers/${encodeURIComponent(p.id)}`),
-        api<{ messages: Message[] }>(
+        api<{ messages: Message[]; conversationId?: string }>(
           `/chats?paperId=${encodeURIComponent(p.id)}`,
         ),
       ]);
       if (paperRef.current === p.id) {
         setPaper(detail.paper);
         setChat(r.messages);
+        setConversationId(r.conversationId);
       }
     } catch (e) {
       setError((e as Error).message);
@@ -387,7 +453,7 @@ export default function App() {
       openPaper(r.paper);
       setShowImport(false);
       setUrl("");
-      setNotice("论文已加入你的文库");
+      setNotice(t("论文已加入你的文库"));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -397,7 +463,7 @@ export default function App() {
   async function upload(file?: File) {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".pdf")) {
-      setError("请选择 PDF 文件。");
+      setError(t("请选择 PDF 文件。"));
       return;
     }
     setImporting(true);
@@ -412,7 +478,7 @@ export default function App() {
       await refresh();
       openPaper(r.paper);
       setShowImport(false);
-      setNotice("PDF 已解析并加入文库");
+      setNotice(t("PDF 已解析并加入文库"));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -473,7 +539,7 @@ export default function App() {
       });
       if (paperRef.current === id) setPaper(r.paper);
       await refresh();
-      setNotice("报告已生成");
+      setNotice(t("报告已生成"));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -494,7 +560,7 @@ export default function App() {
         setPaper(r.paper);
         setShowOriginal(false);
       }
-      setNotice("译文已保存，原文保持不变");
+      setNotice(t("译文已保存，原文保持不变"));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -507,7 +573,7 @@ export default function App() {
     const previous = chat;
     const passage = selectedPassage;
     const message = passage
-      ? `${text.trim()}\n\n选中的原文 [p.${passage.page}]：\n> ${passage.text.replace(/\n/g, "\n> ")}`
+      ? `${text.trim()}\n\n${passage.sourceLabel || t("选中的原文", "Selected passage")}${passage.page ? ` [p.${passage.page}]` : ""}:\n> ${passage.text.replace(/\n/g, "\n> ")}`
       : text.trim();
     setPrompt("");
     setSelectedPassage(null);
@@ -519,6 +585,7 @@ export default function App() {
         method: "POST",
         body: JSON.stringify({
           paperId: id,
+          conversationId,
           message,
           history: previous,
         }),
@@ -536,7 +603,7 @@ export default function App() {
     }
   }
   async function remove(p: Paper) {
-    if (!confirm(`从本地文库删除《${p.title}》及其报告？`)) return;
+    if (!confirm(t(`从本地文库删除《${p.title}》及其解读、笔记和会话？`, `Delete “${p.title}” and its overviews, notes and conversations from your local library?`))) return;
     try {
       await api(`/papers/${p.id}`, { method: "DELETE" });
       await refresh();
@@ -544,7 +611,7 @@ export default function App() {
         setPaper(null);
         navigate("library");
       }
-      setNotice("已从本地文库删除");
+      setNotice(t("已从本地文库删除"));
     } catch (e) {
       setError((e as Error).message);
     }
@@ -555,7 +622,7 @@ export default function App() {
       setCopyState(true);
       setTimeout(() => setCopyState(false), 1800);
     } catch {
-      setError("无法访问剪贴板，请使用下载。");
+      setError(t("无法访问剪贴板，请使用下载。"));
     }
   }
   const modelReady =
@@ -571,7 +638,7 @@ export default function App() {
   const translationFor = (target: "abstract" | "summary" | "report") =>
     translations?.[target]?.stale ? undefined : translations?.[target];
   const agentQuestion = selectedPassage
-    ? `${prompt.trim() || "请解释这段原文"}\n\n选中的原文 [p.${selectedPassage.page}]：\n${selectedPassage.text}`
+    ? `${prompt.trim() || t("请解释这段原文")}\n\n${selectedPassage.sourceLabel || t("选中的原文", "Selected passage")}${selectedPassage.page ? ` [p.${selectedPassage.page}]` : ""}:\n${selectedPassage.text}`
     : prompt;
   const abstractText =
     translationFor("abstract")?.markdown ||
@@ -585,13 +652,17 @@ export default function App() {
   function translationStatus(target: "abstract" | "summary" | "report") {
     if (showOriginal) return null;
     const sourceLanguage =
-      target === "abstract" ? "原文" : paper?.[target]?.language || "原文";
-    if (translationFor(target) || sourceLanguage === language) return null;
+      target === "abstract"
+        ? t("原文")
+        : paper?.[target]?.language || t("原文");
+    const sourceText = target === "abstract" ? paper?.abstract || "" : "";
+    const inferredLanguage = sourceText ? (/[\u4e00-\u9fff]/.test(sourceText) ? "zh" : /[a-zA-Z]/.test(sourceText) ? "en" : "") : "";
+    if (translationFor(target) || sourceLanguage === language || (inferredLanguage && language.startsWith(inferredLanguage))) return null;
     return (
       <p className="translation-missing">
         {translations?.[target]?.stale
-          ? "原文已更新，当前译文需要重新生成。"
-          : `尚无 ${language} 译文，正在显示${sourceLanguage === "原文" ? "原文" : sourceLanguage + " 内容"}。`}
+          ? t("原文已更新，当前译文需要重新生成。")
+          : t(`尚无 ${language} 译文，正在显示${sourceLanguage === t("原文") ? t("原文") : sourceLanguage + t(" 内容")}。`, `No ${language} translation yet; showing ${sourceLanguage}.`)}
         <button
           className="text-button"
           disabled={translating}
@@ -599,7 +670,7 @@ export default function App() {
             modelReady ? translate(target) : setShowSettings(true)
           }
         >
-          翻译此段
+          {t("翻译此段")}
         </button>
       </p>
     );
@@ -623,38 +694,58 @@ export default function App() {
       return () => clearTimeout(timer);
     }
   }, [assistant]);
-  function askSelection(selection: {
+  async function askSelection(selection: {
     text: string;
-    page: number;
+    page?: number;
+    sourceLabel?: string;
     intent?: "ask" | "explain" | "translate";
     question?: string;
   }) {
-    setSelectedPassage({ text: selection.text, page: selection.page });
-    setPrompt(
-      selection.question?.trim() ||
-        (selection.intent === "translate"
-          ? `请将选中的原文翻译为 ${language}，保留数学符号和术语。`
-          : selection.intent === "explain"
-            ? "请用通俗语言解释这段内容，并说明它与论文核心结论的关系。"
-            : "关于这段原文，"),
-    );
-    setAssistant(true);
-    requestAnimationFrame(() =>
-      composerRef.current?.focus({ preventScroll: true }),
-    );
+    if (chatting || conversationBusy || !paper) return;
+    const id = paper.id;
+    setConversationBusy(true);
+    setError("");
+    try {
+      const response = await api<{ conversationId: string }>("/chats/new", {
+        method: "POST",
+        body: JSON.stringify({
+          paperId: id,
+          kind: "question",
+          metadata: { quote: selection.text, page: selection.page },
+        }),
+      });
+      if (paperRef.current !== id) return;
+      setConversationId(response.conversationId);
+      setChat([]);
+      setShowHistory(false);
+      setSelectedPassage({ text: selection.text, page: selection.page, sourceLabel: selection.sourceLabel });
+      setPrompt(
+        selection.question?.trim() ||
+          t("关于这段原文，", "About this passage, "),
+      );
+      setNotebook(false);
+      setAssistant(true);
+      requestAnimationFrame(() =>
+        composerRef.current?.focus({ preventScroll: true }),
+      );
+    } catch (e) {
+      if (paperRef.current === id) setError((e as Error).message);
+    } finally {
+      setConversationBusy(false);
+    }
   }
   const updateCurrentPaper = (updated: Paper) => {
-    if (paperRef.current === updated.id) setPaper(updated);
+    if (paperRef.current === updated.id) { paperMutation.current++; setPaper(updated); }
   };
 
   const bib = paper
     ? `@misc{${paper.id.replace(/[^a-z0-9]/gi, "")},\n  title = {${paper.title}},\n  author = {${paper.authors.join(" and ")}},\n  year = {${new Date(paper.publishedAt || paper.createdAt).getFullYear()}},\n  url = {${paper.url}}\n}`
     : "";
   const navItems: [View, typeof Search, string][] = [
-    ["discover", Search, "搜索"],
-    ["library", Library, "文库"],
-    ["saved", Bookmark, "收藏"],
-    ["research", Sparkles, "研究助手"],
+    ["discover", Search, t("搜索")],
+    ["library", Library, t("文库")],
+    ["saved", Bookmark, t("收藏")],
+    ["research", Sparkles, t("研究助手")],
   ];
   const list =
     view === "saved"
@@ -667,13 +758,14 @@ export default function App() {
     setConversationBusy(true);
     const context = view === "paper" ? paper?.id : undefined;
     try {
-      await api("/chats/new", {
+      const created = await api<{ conversationId: string }>("/chats/new", {
         method: "POST",
         body: JSON.stringify({
           paperId: view === "paper" ? paper?.id : undefined,
         }),
       });
       if (paperRef.current !== context) return;
+      setConversationId(created.conversationId);
       setChat([]);
       setPrompt("");
       setSelectedPassage(null);
@@ -699,6 +791,13 @@ export default function App() {
       );
       if (paperRef.current !== context) return;
       setConversations(r.conversations);
+      if (context) {
+        const result = await api<{ activities: Activity[] }>(
+          `/papers/${context}/activities`,
+        );
+        if (paperRef.current !== context) return;
+        setActivities(result.activities || []);
+      }
       setShowHistory(!showHistory);
     } catch (e) {
       setError((e as Error).message);
@@ -720,6 +819,9 @@ export default function App() {
       });
       if (paperRef.current !== context) return;
       setChat(r.messages);
+      setConversationId(id);
+      setPrompt("");
+      setSelectedPassage(null);
       setShowHistory(false);
     } catch (e) {
       setError((e as Error).message);
@@ -735,17 +837,17 @@ export default function App() {
     return (
       <aside
         className={`assistant-panel ${full ? "full-assistant" : "assistant-docked"}`}
-        aria-label="研究助手"
+        aria-label={t("研究助手")}
       >
         <div className="assistant-header">
           <span>
-            <Sparkles size={17} /> 研究助手
+            <Sparkles size={17} /> {t("研究助手")}
           </span>
           <div>
             <button
               className="icon-button"
-              title="对话历史"
-              aria-label="对话历史"
+              title={t("对话历史")}
+              aria-label={t("对话历史")}
               disabled={chatting || conversationBusy}
               onClick={listConversations}
             >
@@ -753,8 +855,8 @@ export default function App() {
             </button>
             <button
               className="icon-button"
-              title="新对话"
-              aria-label="新对话"
+              title={t("新对话")}
+              aria-label={t("新对话")}
               disabled={chatting || conversationBusy}
               onClick={newConversation}
             >
@@ -763,7 +865,7 @@ export default function App() {
             {!full && (
               <button
                 className="icon-button"
-                aria-label="关闭助手"
+                aria-label={t("关闭助手")}
                 onClick={() => setAssistant(false)}
               >
                 <PanelRightClose size={17} />
@@ -773,33 +875,52 @@ export default function App() {
         </div>
         <>
           {showHistory && (
-            <div className="conversation-history">
-              <div>
-                对话历史
-                <button
-                  className="icon-button"
-                  aria-label="关闭对话历史"
-                  onClick={() => setShowHistory(false)}
-                >
-                  <X size={14} />
-                </button>
-              </div>
-              {conversations.length ? (
-                conversations.map((c) => (
-                  <button
-                    key={c.id}
-                    disabled={conversationBusy || chatting}
-                    onClick={() => selectConversation(c.id)}
-                  >
-                    <MessageSquare size={13} />
-                    <span>{c.title}</span>
-                    <small>{c.messageCount}</small>
-                  </button>
-                ))
-              ) : (
-                <p>还没有保存的对话。</p>
-              )}
-            </div>
+            <ReadingHistory
+              paper={view === "paper" ? paper : undefined}
+              conversations={conversations}
+              activities={activities}
+              busy={conversationBusy || chatting}
+              onClose={() => setShowHistory(false)}
+              onConversation={selectConversation}
+              onPage={(page) => {
+                goToPage(page);
+                setShowHistory(false);
+                setAssistant(false);
+              }}
+              onOverview={() => {
+                setTab("summary");
+                setShowHistory(false);
+                setAssistant(false);
+              }}
+              onVersion={async (id) => {
+                if (!paper) return;
+                try {
+                  const r = await api<{ paper: Paper }>(`/papers/${paper.id}`, {
+                    method: "PATCH",
+                    body: JSON.stringify({ activeReadingId: id }),
+                  });
+                  updateCurrentPaper(r.paper);
+                  setTab("summary");
+                  setShowHistory(false);
+                  setAssistant(false);
+                } catch (e) {
+                  setError((e as Error).message);
+                }
+              }}
+              onSaveActivity={async (activity) => {
+                if (!activity.page || (activity.sourceScope && activity.sourceScope !== "pdf")) return;
+                await createAnnotation({
+                  kind: activity.kind,
+                  page: activity.page,
+                  quote: activity.quote || activity.text,
+                  body:
+                    typeof activity.result === "string"
+                      ? activity.result
+                      : activity.result?.text || "",
+                  color: "blue",
+                });
+              }}
+            />
           )}
         </>
         <div className="conversation">
@@ -811,25 +932,25 @@ export default function App() {
               <h2>
                 {full ? (
                   <>
-                    让好问题，
+                    {t("让好问题，")}
                     <br />
-                    带你走得更远。
+                    {t("带你走得更远。")}
                   </>
                 ) : (
                   <>
-                    理解、质疑，
+                    {t("理解、质疑，")}
                     <br />
-                    或在这篇论文的基础上探索。
+                    {t("或在这篇论文的基础上探索。")}
                   </>
                 )}
               </h2>
               <p>
                 {full
-                  ? "连接你的模型，探索文库中的想法与证据。"
-                  : "从一个问题开始，找到值得深究的线索。"}
+                  ? t("连接你的模型，探索文库中的想法与证据。")
+                  : t("从一个问题开始，找到值得深究的线索。")}
               </p>
               <div className="suggestion-grid">
-                {suggestions.map((s, i) => (
+                {suggestions().map((s, i) => (
                   <button key={s} onClick={() => ask(s)} disabled={chatting}>
                     <span>
                       {
@@ -853,7 +974,7 @@ export default function App() {
                 <div key={i} className={`message ${m.role}`}>
                   {m.role === "assistant" && (
                     <div className="message-label">
-                      <Sparkles size={14} /> 研究助手
+                      <Sparkles size={14} /> {t("研究助手")}
                     </div>
                   )}
                   <Mark onPage={view === "paper" ? goToPage : undefined}>
@@ -863,7 +984,7 @@ export default function App() {
               ))}
               {chatting && (
                 <div className="thinking">
-                  <Loader2 size={16} className="spin" /> 正在阅读与思考…
+                  <Loader2 size={16} className="spin" /> {t("正在阅读与思考…")}
                 </div>
               )}
               <div ref={chatEnd} />
@@ -874,24 +995,21 @@ export default function App() {
           {!modelReady && (
             <button
               className="setup-hint"
-              onClick={() => setShowSettings(true)}
+              onClick={() => { setMobileNav(false); setShowSettings(true); }}
             >
-              <Settings2 size={13} /> 配置模型 API，开启完整问答{" "}
+              <Settings2 size={13} /> {t("配置模型 API，开启完整问答")}{" "}
               <ChevronRight size={13} />
             </button>
           )}
           {selectedPassage && (
             <div className="selected-passage">
               <div>
-                <button
-                  className="citation-link"
-                  onClick={() => goToPage(selectedPassage.page)}
-                >
-                  已选原文 · p.{selectedPassage.page}
-                </button>
+                {selectedPassage.page ? <button className="citation-link" onClick={() => goToPage(selectedPassage.page!)}>
+                  {t("已选原文 · p.")}{selectedPassage.page}
+                </button> : <span>{selectedPassage.sourceLabel || t("已选文本", "Selected text")}</span>}
                 <button
                   className="icon-button"
-                  aria-label="移除选中原文"
+                  aria-label={t("移除选中原文")}
                   onClick={() => setSelectedPassage(null)}
                 >
                   <X size={13} />
@@ -908,9 +1026,11 @@ export default function App() {
             }}
           >
             <textarea
-              aria-label="向研究助手提问"
+              aria-label={t("向研究助手提问")}
               ref={composerRef}
-              placeholder={full ? "问一个研究问题…" : "询问有关这篇论文的问题…"}
+              placeholder={
+                full ? t("问一个研究问题…") : t("询问有关这篇论文的问题…")
+              }
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               onKeyDown={(e) => {
@@ -928,7 +1048,7 @@ export default function App() {
               <button
                 type="button"
                 className="icon-button"
-                aria-label="上传论文到助手"
+                aria-label={t("上传论文到助手")}
                 onClick={() => fileRef.current?.click()}
                 disabled={importing || chatting}
               >
@@ -939,17 +1059,33 @@ export default function App() {
                 onChange={setSettings}
                 disabled={chatting || reporting || translating}
               />
+              {paper && view === "paper" && (
+                <button
+                  type="button"
+                  className="icon-button subscription-chat"
+                  aria-label={copyState ? t("任务已复制 · 在代理会话中粘贴") : t("用 Codex / Claude 订阅回答 · 复制任务")}
+                  title={copyState ? t("任务已复制 · 在代理会话中粘贴") : t("用 Codex / Claude 订阅回答 · 复制任务")}
+                  onClick={() =>
+                    copy(
+                      `在 Paper Workbench 项目中使用 skills/paper-workbench/SKILL.md。工作台 ${location.origin}，论文 ID ${paper.id}。读取 source 后，用当前已登录的代理会话回答：${agentQuestion.trim() || t("这篇论文的核心贡献和证据边界是什么？")}。用 ${language} 回答，附页码证据；不要调用工作台模型生成接口。通过 CLI answer 写回问题和答案，不覆盖对话历史。`,
+                    )
+                  }
+                >
+                  {copyState ? <Check size={17} /> : <Code2 size={17} />}
+                </button>
+              )}
               <button
                 type="button"
                 className="icon-button"
-                aria-label="管理模型连接"
-                onClick={() => setShowSettings(true)}
+                aria-label={t("管理模型连接")}
+                title={`${t("管理模型连接")} · ${modelReady ? t("AI 回答可能有误，请核对原文证据。") : t("未连接模型 · 当前仅提供原文摘录")}`}
+                onClick={() => { setMobileNav(false); setShowSettings(true); }}
               >
                 <Settings2 size={14} />
               </button>
               <button
                 className="send-button"
-                aria-label="发送问题"
+                aria-label={t("发送问题")}
                 disabled={!prompt.trim() || chatting || conversationBusy}
               >
                 {chatting ? (
@@ -960,34 +1096,29 @@ export default function App() {
               </button>
             </div>
           </form>
-          {paper && view === "paper" && (
-            <button
-              type="button"
-              className="subscription-chat"
-              onClick={() =>
-                copy(
-                  `在 Paper Workbench 项目中使用 skills/paper-workbench/SKILL.md。工作台 ${location.origin}，论文 ID ${paper.id}。读取 source 后，用当前已登录的代理会话回答：${agentQuestion.trim() || "这篇论文的核心贡献和证据边界是什么？"}。用 ${language} 回答，附页码证据；不要调用工作台模型生成接口。通过 CLI answer 写回问题和答案，不覆盖对话历史。`,
-                )
-              }
-            >
-              {copyState
-                ? "任务已复制 · 在代理会话中粘贴"
-                : "用 Codex / Claude 订阅回答 · 复制任务"}{" "}
-              <ArrowUpRight size={11} />
-            </button>
-          )}
-          <div className="composer-note">
-            {modelReady
-              ? "AI 回答可能有误，请核对原文证据。"
-              : "未连接模型 · 当前仅提供原文摘录"}
-          </div>
         </div>
       </aside>
     );
   }
+  function companionToggle() {
+    const open = assistant || notebook;
+    return <div className="companion-actions">
+      <button className={`companion-note-toggle ${notebook ? "is-open" : ""}`}
+        aria-label={notebook ? t("收起笔记", "Collapse notebook") : t("打开笔记", "Open notebook")}
+        title={notebook ? t("收起笔记", "Collapse notebook") : t("打开笔记", "Open notebook")} aria-expanded={notebook}
+        onClick={()=>{ setNotebook(!notebook); setAssistant(false); setMobileNav(false); }}><NotebookPen size={20}/></button>
+      <button className={`assistant-bubble ${assistant ? "is-open" : ""}`}
+        aria-label={assistant ? t("收起悬浮助手") : t("打开悬浮助手")}
+        title={assistant ? t("收起助手", "Collapse assistant") : t("问论文")}
+        aria-expanded={assistant} aria-controls={open ? "paper-companion" : undefined}
+        onClick={() => { setAssistant(!assistant); setNotebook(false); setMobileNav(false); }}>
+        <MessageSquare size={23}/><span>{t("问论文")}</span>
+      </button>
+    </div>;
+  }
   return (
     <div
-      className={`app-shell ${view !== "paper" ? "expanded-navigation" : ""} ${view === "paper" && assistant ? "has-assistant-dock" : ""}`}
+      className={`app-shell ${view !== "paper" ? "expanded-navigation" : ""} ${view === "paper" && (assistant || notebook) ? "has-assistant-dock" : ""}`}
       style={{ "--assistant-width": `${dockWidth}px` } as CSSProperties}
     >
       <input
@@ -999,18 +1130,18 @@ export default function App() {
       />
       <button
         className="mobile-menu icon-button"
-        aria-label="展开导航"
+        aria-label={t("展开导航")}
         onClick={() => setMobileNav(!mobileNav)}
       >
         <Menu />
       </button>
       <nav
         className={`rail ${mobileNav ? "mobile-open" : ""}`}
-        aria-label="主导航"
+        aria-label={t("主导航")}
       >
         <button
           className="brand"
-          aria-label="Paper Workbench 首页"
+          aria-label={t("Paper Workbench 首页")}
           onClick={() => navigate("discover")}
         >
           p<span>·</span>
@@ -1022,9 +1153,10 @@ export default function App() {
               className={`rail-item ${view === id ? "active" : ""}`}
               onClick={() => navigate(id)}
               title={label}
+              aria-label={label}
             >
               <Icon size={21} strokeWidth={1.6} />
-              <span>{label}</span>
+              <span>{id === "research" && locale === "en" ? "Research" : label}</span>
             </button>
           ))}
           <div className="rail-divider" />
@@ -1033,43 +1165,49 @@ export default function App() {
             onClick={() => {
               setError("");
               setShowImport(true);
+              setMobileNav(false);
             }}
-            title="导入论文"
+            title={t("导入论文")}
           >
             <FilePlus2 size={21} strokeWidth={1.6} />
-            <span>导入</span>
+            <span>{t("导入")}</span>
           </button>
         </div>
         <div className="rail-bottom">
+          <button className="rail-item" aria-label={t("切换为英文", "Switch to Chinese")} title={t("切换为英文", "Switch to Chinese")} onClick={() => setLocale(locale === "zh" ? "en" : "zh")}>
+            <Languages size={20} strokeWidth={1.6} /><span>{locale === "zh" ? "English" : "中文"}</span>
+          </button>
           <button
             className="rail-item"
-            title="模型设置"
-            onClick={() => setShowSettings(true)}
+            title={t("模型设置")}
+            onClick={() => { setMobileNav(false); setShowSettings(true); }}
           >
             <Settings2 size={20} strokeWidth={1.6} />
-            <span>模型</span>
+            <span>{t("模型")}</span>
           </button>
           <button
             className="icon-button theme-toggle"
-            aria-label={theme === "light" ? "切换深色主题" : "切换浅色主题"}
+            aria-label={
+              theme === "light" ? t("切换深色主题") : t("切换浅色主题")
+            }
             onClick={() => setTheme(theme === "light" ? "dark" : "light")}
           >
             {theme === "light" ? <Moon size={19} /> : <Sun size={19} />}
           </button>
-          <div className="local-avatar" title="本地工作区">
+          <div className="local-avatar" title={t("本地工作区")}>
             <span />
           </div>
         </div>
       </nav>
       <main
-        className={`workspace ${view === "paper" ? "paper-workspace" : ""} ${view === "paper" && assistant ? "has-docked-assistant" : ""} ${tab === "paper" ? "continuous-reading" : ""}`}
+        className={`workspace ${view === "paper" ? "paper-workspace" : ""} ${view === "paper" && (assistant || notebook) ? "has-docked-assistant" : ""} ${tab === "paper" ? "continuous-reading" : ""}`}
       >
         {error && (
           <div className="error-banner" role="alert">
             <span>{error}</span>
             <button
               className="icon-button"
-              aria-label="关闭错误提示"
+              aria-label={t("关闭错误提示")}
               onClick={() => setError("")}
             >
               <X size={15} />
@@ -1083,7 +1221,7 @@ export default function App() {
                 className="back-button"
                 onClick={() => navigate("library")}
               >
-                <ChevronLeft size={15} /> 文库
+                <ChevronLeft size={15} /> {t("文库")}
               </button>
               <div className="segmented" role="tablist">
                 <button
@@ -1092,7 +1230,7 @@ export default function App() {
                   className={tab === "summary" ? "selected" : ""}
                   onClick={() => setTab("summary")}
                 >
-                  <Sparkles size={14} /> 摘要
+                  <Sparkles size={14} /> {t("摘要")}
                 </button>
                 <button
                   role="tab"
@@ -1100,16 +1238,31 @@ export default function App() {
                   className={tab === "paper" ? "selected" : ""}
                   onClick={() => setTab("paper")}
                 >
-                  <FileText size={14} /> 论文
+                  <FileText size={14} /> {t("论文")}
                 </button>
               </div>
               <button
+                className={`toolbar-notebook ${notebook ? "is-open" : ""}`}
+                title={t("笔记与批注", "Notes & annotations")}
+                onClick={() => {
+                  setNotebook(!notebook);
+                  setAssistant(false);
+                }}
+              >
+                <NotebookPen size={17} />
+                <span>{t("笔记", "Notes")}</span>
+                <small>{annotations.length || ""}</small>
+              </button>
+              <button
                 className={`toolbar-assistant ${assistant ? "is-open" : ""}`}
-                onClick={() => setAssistant(!assistant)}
-                title="切换助手"
+                onClick={() => {
+                  setAssistant(!assistant);
+                  setNotebook(false);
+                }}
+                title={t("切换助手")}
               >
                 <MessageSquare size={17} />
-                <span>助手</span>
+                <span>{t("助手")}</span>
               </button>
             </header>
             <div
@@ -1123,7 +1276,8 @@ export default function App() {
                     <div className="paper-date">
                       <span>{date(paper.publishedAt || paper.createdAt)}</span>
                       <span className="language-label">
-                        {paper.source === "pdf" ? "PDF" : "论文"} · 本地文库
+                        {paper.source === "pdf" ? "PDF" : t("论文")}{" "}
+                        {t("· 本地文库")}
                       </span>
                     </div>
                     <h1>{paper.title}</h1>
@@ -1131,7 +1285,7 @@ export default function App() {
                       {paper.authors.length ? (
                         paper.authors.map((a) => <span key={a}>{a}</span>)
                       ) : (
-                        <span>本地导入文献</span>
+                        <span>{t("本地导入文献")}</span>
                       )}
                     </div>
                     <div className="tag-list">
@@ -1144,7 +1298,9 @@ export default function App() {
                         <div className="coverage-warning">
                           <FileText size={14} />
                           <span>
-                            仅获取到摘要与元数据，未获取全文。报告和问答将明确标注这一限制。
+                            {t(
+                              "仅获取到摘要与元数据，未获取全文。报告和问答将明确标注这一限制。",
+                            )}
                           </span>
                         </div>
                       )}
@@ -1166,11 +1322,11 @@ export default function App() {
                     />
                     <section className="abstract-section">
                       <h2>
-                        原始摘要{" "}
+                        {t("原始摘要")}{" "}
                         <span>
                           {translationFor("abstract")
                             ? `译文 · ${language}`
-                            : "Abstract · 原文"}
+                            : t("Abstract · 原文")}
                         </span>
                       </h2>
                       {translationStatus("abstract")}
@@ -1178,16 +1334,16 @@ export default function App() {
                         ref={abstractRef}
                         className={`abstract-text ${expanded ? "expanded" : ""}`}
                       >
-                        <Mark>
-                          {abstractText.replace(/\\emph\{([^}]+)\}/g, "*$1*")}
-                        </Mark>
+                        <SelectionTools paperId={paper.id} scope="abstract" language={language} model={settings.model} onAsk={(text, sourceLabel)=>void askSelection({text,sourceLabel})}>
+                          <Mark>{abstractText.replace(/\\emph\{([^}]+)\}/g, "*$1*")}</Mark>
+                        </SelectionTools>
                       </div>
                       {(abstractOverflow || expanded) && (
                         <button
                           className="expand-abstract"
                           onClick={() => setExpanded(!expanded)}
                         >
-                          {expanded ? "收起摘要" : "展开摘要"}
+                          {expanded ? t("收起摘要") : t("展开摘要")}
                           <ChevronDown
                             size={13}
                             className={expanded ? "rotate" : ""}
@@ -1200,7 +1356,7 @@ export default function App() {
                         className="primary-button"
                         onClick={() => setTab("paper")}
                       >
-                        <BookOpen size={15} /> 阅读论文
+                        <BookOpen size={15} /> {t("阅读论文")}
                       </button>
                       {paper.url && (
                         <a
@@ -1209,13 +1365,15 @@ export default function App() {
                           target="_blank"
                           rel="noreferrer"
                         >
-                          <ExternalLink size={14} /> 原文
+                          <ExternalLink size={14} /> {t("原文")}
                         </a>
                       )}
                       <div className="action-spacer" />
                       <button
                         className={`icon-button ${paper.favorite ? "bookmarked" : ""}`}
-                        aria-label={paper.favorite ? "取消收藏" : "收藏论文"}
+                        aria-label={
+                          paper.favorite ? t("取消收藏") : t("收藏论文")
+                        }
                         onClick={() => favorite(paper)}
                       >
                         <Bookmark
@@ -1227,265 +1385,33 @@ export default function App() {
                         className="soft-button"
                         onClick={() => setShowCite(true)}
                       >
-                        <span className="quote-icon">“</span> 引用
+                        <span className="quote-icon">“</span> {t("引用")}
                       </button>
                     </div>
-                    {paper.summary && (
-                      <section className="insight-summary">
-                        <div className="section-heading">
-                          <h2>
-                            <Sparkles size={19} /> 图文解读
-                          </h2>
-                          <span className="insight-origin">
-                            {paper.summary.source?.agent || "AI"} ·{" "}
-                            {translationFor("summary")
-                              ? language
-                              : paper.summary.language}
-                          </span>
-                        </div>
-                        {translationStatus("summary")}
-                        <div className="prose">
-                          <Mark
-                            onPage={goToPage}
-                            figures={paper.figures}
-                            pdfUrl={pdfSource}
-                          >
-                            {summaryText}
-                          </Mark>
-                        </div>
-                      </section>
-                    )}
-                    {!!paper.figures?.filter(
-                      (f) => !summaryText.includes(`:::figure ${f.id}`),
-                    ).length &&
-                      pdfSource && (
-                        <section
-                          className="summary-figures"
-                          aria-label="论文图表"
-                        >
-                          <div className="section-heading">
-                            <h2>论文图表</h2>
-                            <span className="muted-label">
-                              来自原始 PDF · 点击定位
-                            </span>
-                          </div>
-                          <Suspense
-                            fallback={
-                              <p className="muted-label">正在加载论文图表…</p>
-                            }
-                          >
-                            {paper.figures
-                              .filter(
-                                (f) =>
-                                  !summaryText.includes(`:::figure ${f.id}`),
-                              )
-                              .slice(0, 1)
-                              .map((f) => (
-                                <PdfFigure
-                                  key={f.id}
-                                  url={pdfSource}
-                                  page={f.page}
-                                  crop={f.crop}
-                                  caption={f.caption}
-                                  onOpenPage={goToPage}
-                                />
-                              ))}
-                            {paper.figures.filter(
-                              (f) => !summaryText.includes(`:::figure ${f.id}`),
-                            ).length > 1 && (
-                              <details className="more-figures">
-                                <summary>查看更多图表源页</summary>
-                                {paper.figures
-                                  .filter(
-                                    (f) =>
-                                      !summaryText.includes(
-                                        `:::figure ${f.id}`,
-                                      ),
-                                  )
-                                  .slice(1)
-                                  .map((f) => (
-                                    <PdfFigure
-                                      key={f.id}
-                                      url={pdfSource}
-                                      page={f.page}
-                                      crop={f.crop}
-                                      caption={f.caption}
-                                      onOpenPage={goToPage}
-                                    />
-                                  ))}
-                              </details>
-                            )}
-                          </Suspense>
-                        </section>
-                      )}
-                    <section className="overview-section">
-                      <div className="report-model-row">
-                        <span>生成 / 翻译模型</span>
-                        <ModelSelect
-                          settings={settings}
-                          onChange={setSettings}
-                          disabled={chatting || reporting || translating}
-                        />
-                      </div>
-                      <div className="section-heading">
-                        <h2>
-                          <Sparkles size={20} /> AI 研读报告
-                        </h2>
-                        {paper.report && (
-                          <div>
-                            <button
-                              className="icon-button"
-                              title="复制报告"
-                              aria-label="复制报告"
-                              onClick={() => copy(reportText)}
-                            >
-                              {copyState ? (
-                                <Check size={15} />
-                              ) : (
-                                <Copy size={15} />
-                              )}
-                            </button>
-                            <button
-                              className="icon-button"
-                              title="下载 Markdown 报告"
-                              aria-label="下载报告"
-                              onClick={() =>
-                                download(
-                                  reportText,
-                                  `${paper.title.slice(0, 80)}.md`,
-                                )
-                              }
-                            >
-                              <Download size={16} />
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                      {paper.report ? (
-                        <>
-                          <div
-                            className={`report-meta ${paper.report.mode === "extractive" ? "extractive" : ""}`}
-                          >
-                            <ShieldCheck size={13} />
-                            {paper.report.mode === "extractive"
-                              ? "原文摘录 · 未使用 AI 模型"
-                              : paper.report.source?.agent
-                                ? `${paper.report.source.agent} 注入 · ${paper.report.language || "原文"}`
-                                : `模型生成 · ${paper.report.coverage === "full-text-extracted" ? "覆盖提取全文" : "基于原文节选"}`}
-                            {translationFor("report") && (
-                              <span>译文 · {language}</span>
-                            )}
-                            <span>{date(paper.report.createdAt)}</span>
-                          </div>
-                          {paper.report.mode !== "extractive" && (
-                            <p className="report-reading-note">
-                              请对照引用页码核实。
-                              {paper.report.mode === "model-adversarial"
-                                ? "多个角色由同一模型承担，复核意见不等于独立验证。"
-                                : "代理解读与原文分别保存。"}
-                            </p>
-                          )}
-                          {translationStatus("report")}
-                          <div className="prose report-prose">
-                            <Mark onPage={goToPage}>{reportText}</Mark>
-                          </div>
-                          {paper.report.stages &&
-                            paper.report.stages.length > 1 && (
-                              <details className="review-trace">
-                                <summary>
-                                  <ShieldCheck size={14} /> 查看多角色复核过程{" "}
-                                  <span>
-                                    {paper.report.stages.length} 个阶段
-                                  </span>
-                                </summary>
-                                {paper.report.stages
-                                  .filter((s) => s.role !== "editor")
-                                  .map((s) => (
-                                    <div className="prose" key={s.role}>
-                                      <h3>
-                                        {s.role === "researcher"
-                                          ? "研究者 · 初稿"
-                                          : "质疑者 · 审阅"}
-                                      </h3>
-                                      <Mark onPage={goToPage}>{s.content}</Mark>
-                                    </div>
-                                  ))}
-                              </details>
-                            )}
-                          <button
-                            className="text-button"
-                            onClick={generate}
-                            disabled={reporting}
-                          >
-                            {reporting ? (
-                              <Loader2 size={14} className="spin" />
-                            ) : (
-                              <Sparkles size={14} />
-                            )}
-                            重新生成报告
-                          </button>
-                        </>
-                      ) : (
-                        <div className="generate-card">
-                          <div className="generate-icon">
-                            <Sparkles size={25} />
-                          </div>
-                          <h3>从读过，到读懂。</h3>
-                          <p>
-                            提炼核心贡献、梳理方法与证据，
-                            <br />
-                            通过多角色复核，找到值得追问的地方。
-                          </p>
-                          <div className="agent-flow">
-                            <span>
-                              <BookOpen size={12} /> 研究者
-                            </span>
-                            <ChevronRight size={12} />
-                            <span>
-                              <FlaskConical size={12} /> 质疑者
-                            </span>
-                            <ChevronRight size={12} />
-                            <span>
-                              <FileText size={12} /> 编辑
-                            </span>
-                          </div>
-                          <button
-                            className="primary-button"
-                            disabled={reporting}
-                            onClick={generate}
-                          >
-                            {reporting ? (
-                              <Loader2 size={15} className="spin" />
-                            ) : (
-                              <Sparkles size={15} />
-                            )}{" "}
-                            {reporting
-                              ? "正在研读与交叉核验…"
-                              : modelReady
-                                ? "生成研读报告"
-                                : "生成原文摘录"}
-                          </button>
-                          {!modelReady && (
-                            <button
-                              className="text-button"
-                              onClick={() => setShowSettings(true)}
-                            >
-                              连接模型，启用 AI 研读 <ArrowUpRight size={12} />
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </section>
+                    <ReadingOverview
+                      key={paper.id}
+                      paper={paper}
+                      language={language}
+                      original={showOriginal}
+                      settings={settings}
+                      onSettings={setSettings}
+                      onConfigure={() => setShowSettings(true)}
+                      onUpdated={updateCurrentPaper}
+                      onPage={goToPage}
+                      onError={setError}
+                      onBusy={setReporting}
+                      onAskSelection={(text,sourceLabel)=>void askSelection({text,sourceLabel})}
+                    />
                     <section className="source-section">
                       <div>
                         <Link2 size={15} />
-                        <span>来源与证据</span>
+                        <span>{t("来源与证据")}</span>
                       </div>
                       <p>
                         {paper.pageCount
-                          ? `已解析 ${paper.pageCount} 页 PDF`
-                          : "已导入可提取的正文"}{" "}
-                        · 保存在本地工作区
+                          ? t(`已解析 ${paper.pageCount} 页 PDF`, `${paper.pageCount} PDF pages extracted`)
+                          : t("已导入可提取的正文")}{" "}
+                        {t("· 保存在本地工作区")}
                       </p>
                       {paper.url && (
                         <a href={paper.url} target="_blank" rel="noreferrer">
@@ -1502,7 +1428,7 @@ export default function App() {
                         fallback={
                           <div className="loading-state">
                             <Loader2 className="spin" />
-                            <p>正在加载论文阅读器…</p>
+                            <p>{t("正在加载论文阅读器…")}</p>
                           </div>
                         }
                       >
@@ -1511,28 +1437,39 @@ export default function App() {
                           page={pdfPage}
                           onPage={goToPage}
                           onAskSelection={askSelection}
+                          annotations={annotations}
+                          onCreateAnnotation={createAnnotation}
+                          onSelectAnnotation={(id) => {
+                            const entry = annotations.find((a) => a.id === id);
+                            if (entry) selectAnnotation(entry);
+                            setNotebook(true);
+                            setAssistant(false);
+                          }}
+                          onInlineAssist={inlineAssist}
+                          language={language}
+                          annotationFocus={annotationFocus}
                         />
                       </Suspense>
                     ) : (
                       <div className="text-reader">
                         <div className="reader-note">
-                          <FileText size={16} /> 正文阅读 · 此来源没有可用的 PDF
-                          文件
+                          <FileText size={16} />{" "}
+                          {t("正文阅读 · 此来源没有可用的 PDF 文件")}
                         </div>
                         <h1>{paper.title}</h1>
                         <div>{paper.text || paper.abstract}</div>
                       </div>
                     )}
                     <div className="reader-fallback">
-                      PDF 无法显示时，可{" "}
+                      {t("PDF 无法显示时，可")}{" "}
                       <a
                         href={pdfSource || paper.url}
                         target="_blank"
                         rel="noreferrer"
                       >
-                        打开原始文件 <ArrowUpRight size={12} />
+                        {t("打开原始文件")} <ArrowUpRight size={12} />
                       </a>{" "}
-                      或{" "}
+                      {t("或")}{" "}
                       <button
                         onClick={() =>
                           download(
@@ -1542,44 +1479,71 @@ export default function App() {
                           )
                         }
                       >
-                        下载提取正文
+                        {t("下载提取正文")}
                       </button>
                       。
                     </div>
                   </>
                 )}
               </article>
-              {assistant ? (
-                <AssistantDock width={dockWidth} onWidthChange={setDockWidth} onClose={() => setAssistant(false)}>
-                  {assistantPanel()}
+              {assistant || notebook ? (
+                <AssistantDock
+                  controls={companionToggle()}
+                  width={dockWidth}
+                  onWidthChange={setDockWidth}
+                  onClose={() => {
+                    setAssistant(false);
+                    setNotebook(false);
+                  }}
+                >
+                  {notebook ? (
+                    <NotebookPanel
+                      key={paper.id}
+                      paperId={paper.id}
+                      annotations={annotations}
+                      selectedId={selectedAnnotationId}
+                      page={pdfPage}
+                      loading={annotationsLoading}
+                      onClose={() => setNotebook(false)}
+                      onSelect={(entry, locate = true) => { if (locate) selectAnnotation(entry); else setSelectedAnnotationId(entry.id || undefined); }}
+                      onCreate={createAnnotation}
+                      onUpdate={(id, patch) => mutateAnnotation(id, patch)}
+                      onDelete={(id) => mutateAnnotation(id, undefined, true)}
+                      onRestore={(id) =>
+                        mutateAnnotation(id, undefined, false, true)
+                      }
+                    />
+                  ) : (
+                    assistantPanel()
+                  )}
                 </AssistantDock>
               ) : tab !== "paper" ? (
                 <aside className="paper-details">
                   <div className="detail-heading">
-                    <FlaskConical size={17} /> 研究工作区
+                    <FlaskConical size={17} /> {t("研究工作区")}
                   </div>
-                  <p>沿着论文中的证据，探索下一个问题。</p>
+                  <p>{t("沿着论文中的证据，探索下一个问题。")}</p>
                   <button
                     className="primary-button"
                     onClick={() => setAssistant(true)}
                   >
-                    <Sparkles size={14} /> 打开助手
+                    <Sparkles size={14} /> {t("打开助手")}
                   </button>
                   <hr />
                   <div className="detail-line">
-                    <span>来源</span>
+                    <span>{t("来源")}</span>
                     <b>{paper.source}</b>
                   </div>
                   <div className="detail-line">
-                    <span>阅读状态</span>
-                    <b>已保存</b>
+                    <span>{t("阅读状态")}</span>
+                    <b>{t("已保存")}</b>
                   </div>
                   <hr />
                   <div className="detail-heading">
                     BibTeX
                     <button
                       className="icon-button"
-                      aria-label="复制引用"
+                      aria-label={t("复制引用")}
                       onClick={() => copy(bib)}
                     >
                       <Copy size={14} />
@@ -1590,7 +1554,7 @@ export default function App() {
                     className="text-button danger"
                     onClick={() => remove(paper)}
                   >
-                    <Trash2 size={14} /> 删除论文
+                    <Trash2 size={14} /> {t("删除论文")}
                   </button>
                 </aside>
               ) : null}
@@ -1600,10 +1564,10 @@ export default function App() {
           <div className="research-page">
             <header className="page-header">
               <div className="breadcrumb">
-                <Sparkles size={16} /> 研究助手
+                <Sparkles size={16} /> {t("研究助手")}
               </div>
               <span className="local-badge">
-                <span /> 本地工作区
+                <span /> {t("本地工作区")}
               </span>
             </header>
             {assistantPanel(true)}
@@ -1620,20 +1584,20 @@ export default function App() {
                   <Library size={16} />
                 )}{" "}
                 {view === "discover"
-                  ? "探索"
+                  ? t("探索")
                   : view === "saved"
-                    ? "收藏"
-                    : "我的文库"}
+                    ? t("收藏")
+                    : t("我的文库")}
               </div>
               <div className="header-actions">
                 <span className="local-badge">
-                  <span /> 本地工作区
+                  <span /> {t("本地工作区")}
                 </span>
                 <button
                   className="soft-button"
                   onClick={() => setShowImport(true)}
                 >
-                  <Plus size={15} /> 导入论文
+                  <Plus size={15} /> {t("导入论文")}
                 </button>
               </div>
             </header>
@@ -1642,13 +1606,13 @@ export default function App() {
             >
               {view === "discover" ? (
                 <section className="discovery-hero">
-                  <h1>追踪最新研究</h1>
-                  <p>探索值得阅读的论文，发现下一个研究方向。</p>
+                  <h1>{t("追踪最新研究")}</h1>
+                  <p>{t("探索值得阅读的论文，发现下一个研究方向。")}</p>
                   <div className="discovery-prompts">
                     {[
-                      "最近有哪些值得读的论文？",
-                      "谁在研究这个方向？",
-                      "帮我整理有据可查的综述",
+                      t("最近有哪些值得读的论文？"),
+                      t("谁在研究这个方向？"),
+                      t("帮我整理有据可查的综述"),
                     ].map((s, i) => (
                       <button
                         key={s}
@@ -1680,14 +1644,14 @@ export default function App() {
                   >
                     <Search size={21} />
                     <input
-                      aria-label="搜索论文或粘贴网址"
-                      placeholder="搜索论文，或粘贴 arXiv / 论文网址…"
+                      aria-label={t("搜索论文或粘贴网址")}
+                      placeholder={t("搜索论文，或粘贴 arXiv / 论文网址…")}
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                     />
                     <button
                       type="submit"
-                      aria-label="搜索"
+                      aria-label={t("搜索")}
                       disabled={searching || importing}
                     >
                       {searching || importing ? (
@@ -1700,9 +1664,9 @@ export default function App() {
                   <div className="search-options">
                     <div className="search-sources">
                       {[
-                        ["all", "全部来源"],
+                        ["all", t("全部来源")],
                         ["arxiv", "arXiv"],
-                        ["local", "本地文库"],
+                        ["local", t("本地文库")],
                       ].map(([s, label]) => (
                         <button
                           key={s}
@@ -1721,7 +1685,7 @@ export default function App() {
                       onClick={() => fileRef.current?.click()}
                       disabled={importing}
                     >
-                      <Upload size={13} /> 上传 PDF
+                      <Upload size={13} /> {t("上传 PDF")}
                     </button>
                   </div>
                   {results === null && (
@@ -1739,18 +1703,20 @@ export default function App() {
                 <div className="library-heading">
                   <div>
                     <span className="eyebrow">YOUR RESEARCH, TOGETHER</span>
-                    <h1>{view === "saved" ? "值得再次阅读。" : "我的文库"}</h1>
+                    <h1>
+                      {view === "saved" ? t("值得再次阅读。") : t("我的文库")}
+                    </h1>
                     <p>
                       {view === "saved"
-                        ? "收藏重要的论文，让想法随时可及。"
-                        : "你的论文、阅读记录与研究报告，都在这里。"}
+                        ? t("收藏重要的论文，让想法随时可及。")
+                        : t("你的论文、阅读记录与研究报告，都在这里。")}
                     </p>
                   </div>
                   <button
                     className="primary-button"
                     onClick={() => setShowImport(true)}
                   >
-                    <Plus size={16} /> 导入论文
+                    <Plus size={16} /> {t("导入论文")}
                   </button>
                 </div>
               )}
@@ -1758,10 +1724,10 @@ export default function App() {
                 <div className="section-heading">
                   <h2>
                     {view === "discover" && results !== null
-                      ? "搜索结果"
+                      ? t("搜索结果")
                       : view === "saved"
-                        ? "已收藏"
-                        : "最近阅读"}
+                        ? t("已收藏")
+                        : t("最近阅读")}
                     <span className="count">{list.length}</span>
                   </h2>
                   {view === "discover" && results !== null ? (
@@ -1772,19 +1738,19 @@ export default function App() {
                         setQuery("");
                       }}
                     >
-                      清除搜索
+                      {t("清除搜索")}
                       <X size={13} />
                     </button>
                   ) : (
                     <span className="muted-label">
-                      <History size={13} /> 按添加时间
+                      <History size={13} /> {t("按添加时间")}
                     </span>
                   )}
                 </div>
                 {searching ? (
                   <div className="loading-state">
                     <Loader2 className="spin" size={25} />
-                    <p>正在搜索研究文献…</p>
+                    <p>{t("正在搜索研究文献…")}</p>
                   </div>
                 ) : list.length ? (
                   <div className="paper-list">
@@ -1812,14 +1778,14 @@ export default function App() {
                                 ? "PDF"
                                 : p.source === "arxiv"
                                   ? "arXiv"
-                                  : "论文"}
+                                  : t("论文")}
                             </span>
                             <span>·</span>
                             {date(p.publishedAt || p.createdAt)}
                           </div>
                           <h3>{p.title}</h3>
                           <div className="card-authors">
-                            {p.authors?.join(" · ") || "本地导入文献"}
+                            {p.authors?.join(" · ") || t("本地导入文献")}
                           </div>
                           <p>{p.abstract || p.text?.slice(0, 300)}</p>
                           <div className="card-tags">
@@ -1828,7 +1794,7 @@ export default function App() {
                             ))}
                             {p.report && (
                               <span className="report-tag">
-                                <Sparkles size={11} /> 已生成报告
+                                <Sparkles size={11} /> {t("已生成报告")}
                               </span>
                             )}
                           </div>
@@ -1864,7 +1830,9 @@ export default function App() {
                           {papers.some((x) => x.id === p.id) && (
                             <button
                               className={`icon-button ${p.favorite ? "bookmarked" : ""}`}
-                              aria-label={p.favorite ? "取消收藏" : "收藏论文"}
+                              aria-label={
+                                p.favorite ? t("取消收藏") : t("收藏论文")
+                              }
                               onClick={() => favorite(p)}
                             >
                               <Bookmark
@@ -1887,17 +1855,17 @@ export default function App() {
                     </div>
                     <h3>
                       {results !== null
-                        ? "还没有找到相关论文"
+                        ? t("还没有找到相关论文")
                         : view === "saved"
-                          ? "把值得记住的论文留在这里"
-                          : "你的下一篇好论文，在这里。"}
+                          ? t("把值得记住的论文留在这里")
+                          : t("你的下一篇好论文，在这里。")}
                     </h3>
                     <p>
                       {results !== null
-                        ? "换个关键词，或选择其他搜索来源再试一次。"
+                        ? t("换个关键词，或选择其他搜索来源再试一次。")
                         : view === "saved"
-                          ? "在论文页面点击收藏，即可加入这份阅读清单。"
-                          : "粘贴一个网址，或上传 PDF，开启你的研究工作区。"}
+                          ? t("在论文页面点击收藏，即可加入这份阅读清单。")
+                          : t("粘贴一个网址，或上传 PDF，开启你的研究工作区。")}
                     </p>
                     {results === null && view !== "saved" && (
                       <div>
@@ -1905,14 +1873,14 @@ export default function App() {
                           className="primary-button"
                           onClick={() => setShowImport(true)}
                         >
-                          <Plus size={15} /> 导入第一篇论文
+                          <Plus size={15} /> {t("导入第一篇论文")}
                         </button>
                         <button
                           className="text-button example-link"
                           disabled={importing}
                           onClick={() => importUrl(exampleUrl)}
                         >
-                          试读示例论文 <ArrowUpRight size={13} />
+                          {t("试读示例论文")} <ArrowUpRight size={13} />
                         </button>
                       </div>
                     )}
@@ -1925,24 +1893,16 @@ export default function App() {
                 </span>
                 <span>Paper Workbench</span>
                 <span className="footer-separator">/</span>
-                <span>为开放的研究而构建</span>
-                <span className="footer-right">本地存储 · 自由选择模型</span>
+                <span>{t("为开放的研究而构建")}</span>
+                <span className="footer-right">
+                  {t("本地存储 · 自由选择模型")}
+                </span>
               </footer>
             </div>
           </>
         )}
       </main>
-      {view === "paper" && (
-        <button
-          className={`assistant-bubble ${assistant ? "is-open" : ""}`}
-          aria-label={assistant ? "收起悬浮助手" : "打开悬浮助手"}
-          aria-expanded={assistant}
-          onClick={() => setAssistant(!assistant)}
-        >
-          {assistant ? <X size={23} /> : <MessageSquare size={24} />}
-          <span>{assistant ? "收起" : "问论文"}</span>
-        </button>
-      )}
+      {view === "paper" && !assistant && !notebook && companionToggle()}
       {notice && (
         <div className="toast" role="status">
           <Check size={16} />
@@ -1966,18 +1926,18 @@ export default function App() {
             <div className="modal-heading">
               <div>
                 <span className="eyebrow">ADD TO YOUR LIBRARY</span>
-                <h2 id="import-title">让一篇论文，成为起点。</h2>
+                <h2 id="import-title">{t("让一篇论文，成为起点。")}</h2>
               </div>
               <button
                 className="icon-button"
                 disabled={importing}
-                aria-label="关闭导入"
+                aria-label={t("关闭导入")}
                 onClick={() => setShowImport(false)}
               >
                 <X size={19} />
               </button>
             </div>
-            <p>导入论文网址或 PDF，保存在你的本地文库。</p>
+            <p>{t("导入论文网址或 PDF，保存在你的本地文库。")}</p>
             {error && (
               <div className="form-error" role="alert">
                 {error}
@@ -1989,7 +1949,7 @@ export default function App() {
                 importUrl();
               }}
             >
-              <label htmlFor="paper-url">论文网址</label>
+              <label htmlFor="paper-url">{t("论文网址")}</label>
               <div className="url-input">
                 <Link2 size={17} />
                 <input
@@ -2003,7 +1963,7 @@ export default function App() {
                 />
               </div>
               <p className="field-hint">
-                支持 arXiv、alphaXiv、公开网页和 PDF 链接
+                {t("支持 arXiv、alphaXiv、公开网页和 PDF 链接")}
               </p>
               <button
                 className="primary-button wide"
@@ -2014,12 +1974,12 @@ export default function App() {
                 ) : (
                   <ArrowUpRight size={16} />
                 )}{" "}
-                {importing ? "正在获取与解析…" : "导入论文"}
+                {importing ? t("正在获取与解析…") : t("导入论文")}
               </button>
             </form>
             <div className="or-divider">
               <span />
-              或者
+              {t("或者")}
               <span />
             </div>
             <button
@@ -2033,12 +1993,12 @@ export default function App() {
               }}
             >
               <Upload size={24} strokeWidth={1.3} />
-              <b>拖放 PDF 文件到这里</b>
-              <span>或点击选择文件 · 最大 25 MB · 文本型 PDF</span>
+              <b>{t("拖放 PDF 文件到这里")}</b>
+              <span>{t("或点击选择文件 · 最大 25 MB · 文本型 PDF")}</span>
             </button>
             <div className="modal-footnote">
-              <ShieldCheck size={13} /> 文件保存在本机；生成 AI
-              内容时会将正文发送给你配置的模型。
+              <ShieldCheck size={13} />{" "}
+              {t("文件保存在本机；生成 AI 内容时会将正文发送给你配置的模型。")}
             </div>
           </section>
         </div>
@@ -2049,7 +2009,7 @@ export default function App() {
           onClose={() => setShowSettings(false)}
           onSaved={(s) => {
             setSettings(s);
-            setNotice("模型配置已更新");
+            setNotice(t("模型配置已更新"));
           }}
         />
       )}
@@ -2067,10 +2027,10 @@ export default function App() {
             aria-labelledby="cite-title"
           >
             <div className="modal-heading">
-              <h2 id="cite-title">引用这篇论文</h2>
+              <h2 id="cite-title">{t("引用这篇论文")}</h2>
               <button
                 className="icon-button"
-                aria-label="关闭引用"
+                aria-label={t("关闭引用")}
                 onClick={() => setShowCite(false)}
               >
                 <X size={18} />
@@ -2079,7 +2039,7 @@ export default function App() {
             <pre>{bib}</pre>
             <button className="primary-button" onClick={() => copy(bib)}>
               {copyState ? <Check size={15} /> : <Copy size={15} />}{" "}
-              {copyState ? "已复制" : "复制 BibTeX"}
+              {copyState ? t("已复制") : t("复制 BibTeX")}
             </button>
             <button
               className="soft-button"
@@ -2088,7 +2048,7 @@ export default function App() {
                 download(bib, "citation.bib", "application/x-bibtex")
               }
             >
-              <Download size={15} /> 下载 BibTeX
+              <Download size={15} /> {t("下载 BibTeX")}
             </button>
           </section>
         </div>

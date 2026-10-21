@@ -1,4 +1,7 @@
 export type Report = {
+  requestedFormat?: ReadingFormat;
+  interactiveGenerationError?: string;
+  derivedFromReadingId?: string;
   markdown: string;
   mode: string;
   createdAt: string;
@@ -10,6 +13,8 @@ export type Report = {
   source?: { kind?: string; agent?: string; model?: string };
 };
 export type Insight = {
+  interactive?: InteractiveData;
+  interactiveTranslationError?: string;
   markdown: string;
   language: string;
   createdAt?: string;
@@ -21,6 +26,67 @@ export type Figure = {
   page: number;
   caption: string;
   crop?: { x: number; y: number; width: number; height: number };
+};
+export type VisionSettings = {
+  enabled: boolean;
+  profileId?: string;
+  model?: string;
+};
+export type ModelCapability = "text" | "vision";
+export type VisualEvidence = {
+  id: string;
+  excluded?: boolean;
+  updatedAt?: string;
+  figureId: string;
+  page: number;
+  crop: NonNullable<Figure["crop"]>;
+  caption?: string;
+  markdown: string;
+  language: string;
+  focus?: string;
+  imageHash: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  createdAt: string;
+  source: { kind: "model"; model: string; profileId: string };
+  pixelsProvided: true;
+  analysisMethod: "vision-model";
+  modelUnverified: true;
+  stale?: boolean;
+  binding: "client-rendered-pdf-crop";
+  limitations: string[];
+};
+export type ReadingStyle = "quick" | "deep" | "critical";
+export type ReadingVersion = Report & {
+  format?: ReadingFormat;
+  interactive?: InteractiveData;
+  id: string;
+  title?: string;
+  style: ReadingStyle;
+  focus?: string;
+  figures?: Figure[];
+  translations?: Record<string, Insight>;
+};
+export type Activity = {
+  id: string;
+  sourceScope?: "pdf" | "source-text" | "reading" | "abstract";
+  readingId?: string;
+  kind: "translation" | "explanation";
+  text?: string;
+  quote?: string;
+  result?: { text: string; source?: Record<string, string> };
+  page?: number;
+  language?: string;
+  createdAt: string;
+  source?: Record<string, string>;
+};
+export type Conversation = {
+  id: string;
+  title: string;
+  messageCount: number;
+  kind?: string;
+  createdAt?: string;
 };
 export type Paper = {
   id: string;
@@ -40,9 +106,14 @@ export type Paper = {
   tags: string[];
   favorite: boolean;
   report?: Report;
+  readingVersions?: ReadingVersion[];
+  activeReadingId?: string;
+  summaryHistory?: Insight[];
+  reportHistory?: Report[];
   pageCount?: number;
   summary?: Insight;
   figures?: Figure[];
+  visualEvidence?: VisualEvidence[];
   translations?: Record<
     string,
     Partial<Record<"abstract" | "report" | "summary", Insight>>
@@ -57,10 +128,16 @@ export type Settings = {
   extraBody?: Record<string, unknown>;
   contextChars?: number;
   maxOutputTokens?: number;
+  requestTimeoutSeconds?: number;
   activeProfileId?: string;
   profiles?: ModelProfile[];
+  modelCapabilities?: Record<string, ModelCapability>;
+  vision?: VisionSettings;
 };
-export type ModelProfile = Omit<Settings, "profiles" | "activeProfileId"> & {
+export type ModelProfile = Omit<
+  Settings,
+  "profiles" | "activeProfileId" | "vision"
+> & {
   id: string;
   name: string;
   models: string[];
@@ -83,3 +160,30 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (!r.ok) throw new Error(data.error || `请求失败 (${r.status})`);
   return data;
 }
+
+export type ReadingFormat = "article" | "interactive";
+export type InteractiveCitation = { page?: number; label?: string };
+export type InteractiveBlock =
+  | {
+      id: string;
+      type: "concept";
+      title: string;
+      text: string;
+      citations: InteractiveCitation[];
+    }
+  | {
+      id: string;
+      type: "figure";
+      figureId: string;
+      explanation: string;
+      citations: InteractiveCitation[];
+    }
+  | {
+      id: string;
+      type: "question";
+      question: string;
+      answer: string;
+      explanation?: string;
+      citations: InteractiveCitation[];
+    };
+export type InteractiveData = { schemaVersion: 1; blocks: InteractiveBlock[] };

@@ -629,3 +629,554 @@
     opacity: 1;
   }
 }
+
+/* Annotations are independent of the PDF text layer and retain page coordinates. */
+.reader-annotation-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.reader-annotation-paint {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+}
+.reader-annotation-paint .is-focused {
+  filter: drop-shadow(0 0 0.001px #8562a5);
+}
+.reader-annotation-marker {
+  position: absolute;
+  right: 4px;
+  z-index: 1;
+  width: 25px;
+  height: 25px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--annotation-color, #f0c83b);
+  border: 1px solid #0002;
+  color: #342c3c;
+  pointer-events: auto;
+  box-shadow: 0 1px 3px #0002;
+}
+.reader-annotation-marker:hover,
+.reader-annotation-marker.is-focused {
+  outline: 2px solid #925779;
+  outline-offset: 1px;
+}
+.reader-ink-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: crosshair;
+}
+.reader-annotation-layer.is-drawing {
+  z-index: 5;
+}
+.pdf-annotation-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  padding: 5px 9px;
+  min-height: 42px;
+  font-size: 11px;
+}
+.pdf-annotation-toolbar > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 34px;
+  border-radius: 6px;
+  padding: 4px 8px;
+  color: var(--secondary);
+}
+.pdf-annotation-toolbar > button:hover,
+.pdf-annotation-toolbar .is-active {
+  color: var(--accent);
+  background: var(--tint);
+}
+.pdf-paper-colors {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--secondary);
+  flex: none;
+}
+.pdf-paper-colors select {
+  min-height: 34px;
+  min-width: 0;
+  max-width: 150px;
+  padding: 5px 24px 5px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.pdf-theme-color-notice {
+  display: none;
+  flex-basis: 100%;
+  color: var(--secondary);
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 0 1px 2px;
+}
+/* Only the viewing canvas is adapted. Text, annotations, figures rendered
+   outside this reader, downloaded files and exported crops stay unfiltered. */
+html[data-theme="dark"] .pdf-reader[data-paper-colors="theme"] {
+  & .pdf-continuous-page,
+  & .pdf-page-surface {
+    background: #1a1a1a;
+  }
+  & .pdf-page-surface canvas {
+    filter: invert(0.9) hue-rotate(180deg);
+  }
+  & .pdf-text-layer {
+    color-scheme: only dark;
+    caret-color: #e6e6e6;
+  }
+  & .pdf-text-layer ::selection {
+    background: #8fc7ff66;
+  }
+  & .pdf-text-layer br::selection {
+    background: transparent;
+  }
+  & .reader-annotation-paint {
+    mix-blend-mode: screen;
+  }
+  & .reader-annotation-marker.is-focused,
+  & .reader-annotation-marker:hover {
+    outline-color: #f0d7f3;
+  }
+  & .pdf-annotation-layer a:hover,
+  & .pdf-annotation-layer a:focus-visible {
+    background: #8fc7ff33;
+    outline-color: #8fc7ff;
+    box-shadow: 0 1px 0 #8fc7ff;
+  }
+  & .pdf-theme-color-notice {
+    display: block;
+  }
+}
+.pdf-ink-hint {
+  color: var(--muted);
+  flex: 1;
+  font-size: 11px;
+}
+.pdf-ink-count {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.pdf-annotation-status {
+  color: var(--accent);
+  margin-left: auto;
+  font-size: 11px;
+}
+.pdf-annotation-status.is-error {
+  color: #b93844;
+}
+.pdf-annotation-colors {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pdf-annotation-colors > button,
+.pdf-selection-menu .pdf-annotation-colors > button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  color: #2d2733;
+  box-shadow: inset 0 0 0 1px #0001;
+}
+.pdf-annotation-colors > button.is-selected {
+  outline: 2px solid var(--secondary);
+  outline-offset: 2px;
+}
+.pdf-annotation-colors > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.pdf-selection-menu {
+  width: min(420px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+}
+.pdf-selection-menu .pdf-popover-close {
+  min-width: 30px;
+  max-width: 30px;
+  min-height: 30px;
+  padding: 4px;
+  background: transparent;
+  color: var(--muted);
+}
+.pdf-selection-annotations {
+  margin-top: 6px;
+  border-top: 1px solid var(--line);
+  padding: 10px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pdf-selection-annotations > .pdf-annotation-colors {
+  padding: 0 7px;
+}
+.pdf-selection-actions button:disabled,
+.pdf-inline-assist button:disabled,
+.pdf-note-editor button:disabled,
+.pdf-annotation-toolbar button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.pdf-inline-assist,
+.pdf-note-editor {
+  position: fixed;
+  z-index: 82;
+  display: flex;
+  flex-direction: column;
+  width: min(420px, calc(100vw - 24px));
+  max-height: min(440px, calc(100dvh - 24px));
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow:
+    0 7px 28px #20101724,
+    0 1px 4px #20101712;
+  overflow: hidden;
+  font-size: 13px;
+}
+.pdf-inline-assist > header,
+.pdf-note-editor > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 48px;
+  padding: 6px 10px 6px 14px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+.pdf-inline-assist > header strong,
+.pdf-note-editor > header strong {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  font-size: 13px;
+}
+.pdf-inline-assist > header > div {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.pdf-inline-assist > header button,
+.pdf-note-editor > header button {
+  display: grid;
+  place-items: center;
+  min-width: 34px;
+  min-height: 34px;
+  border-radius: 6px;
+  color: var(--secondary);
+}
+.pdf-inline-assist > header button:hover,
+.pdf-note-editor > header button:hover {
+  background: var(--hover);
+}
+.pdf-inline-assist select {
+  max-width: 100px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--secondary);
+  border-radius: 5px;
+  font-size: 12px;
+}
+.pdf-inline-scroll {
+  padding: 12px 15px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-height: 80px;
+  user-select: text;
+}
+.pdf-inline-scroll details {
+  color: var(--secondary);
+  font-size: 12px;
+}
+.pdf-inline-scroll summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.pdf-inline-assist blockquote,
+.pdf-note-editor blockquote {
+  border-left: 3px solid var(--line);
+  margin: 9px 0 12px;
+  padding: 3px 0 3px 10px;
+  color: var(--secondary);
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.pdf-inline-markdown {
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+.pdf-inline-markdown p {
+  margin: 10px 0;
+}
+.pdf-inline-markdown p:last-child {
+  margin-bottom: 0;
+}
+.pdf-inline-markdown :is(ul, ol) {
+  padding-left: 22px;
+  margin: 10px 0;
+}
+.pdf-inline-markdown :is(h1, h2, h3, h4) {
+  font-size: 14px;
+  margin: 15px 0 8px;
+}
+.pdf-inline-markdown pre {
+  background: var(--subtle);
+  border-radius: 6px;
+  padding: 9px;
+  overflow-x: auto;
+}
+.pdf-inline-markdown table {
+  border-collapse: collapse;
+  max-width: 100%;
+  display: block;
+  overflow: auto;
+}
+.pdf-inline-markdown :is(th, td) {
+  padding: 5px;
+  border: 1px solid var(--line);
+}
+.pdf-inline-markdown a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.pdf-inline-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 20px 0;
+  color: var(--secondary);
+}
+.pdf-inline-assist > footer,
+.pdf-note-editor > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+}
+.pdf-inline-assist > footer button,
+.pdf-note-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: var(--accent);
+  background: var(--tint);
+  font-size: 12px;
+}
+.pdf-inline-assist > footer button:first-child {
+  color: var(--secondary);
+  background: transparent;
+}
+.pdf-popover-error {
+  color: #b93844;
+  padding: 5px 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 0;
+}
+.pdf-note-editor > blockquote {
+  flex: none;
+  max-height: 75px;
+  overflow: auto;
+  margin: 10px 14px;
+}
+.pdf-note-editor > textarea {
+  min-height: 100px;
+  resize: vertical;
+  margin: 0 12px 8px;
+  border: 1px solid var(--line);
+  padding: 10px;
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 6px;
+  font: inherit;
+  line-height: 1.6;
+}
+.pdf-note-editor > input {
+  margin: 0 12px 10px;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  color: var(--text);
+  background: var(--panel);
+  border-radius: 6px;
+  font-size: 12px;
+}
+@media (max-width: 600px) {
+  .pdf-annotation-toolbar {
+    gap: 5px;
+    padding: 3px 5px;
+  }
+  .pdf-annotation-toolbar > button {
+    min-height: 40px;
+  }
+  .pdf-annotation-toolbar .pdf-ink-hint {
+    display: none;
+  }
+  .pdf-annotation-toolbar .pdf-annotation-status {
+    width: 100%;
+    font-size: 10px;
+  }
+  .pdf-annotation-colors > button,
+  .pdf-selection-menu .pdf-annotation-colors > button {
+    width: 28px;
+    height: 28px;
+    min-height: 28px;
+  }
+  .pdf-inline-assist > footer button,
+  .pdf-note-save,
+  .pdf-inline-assist > header button,
+  .pdf-note-editor > header button {
+    min-height: 44px;
+  }
+}
+
+/* The reader can be narrow in a wide desktop window when the assistant expands.
+   Its controls adapt to the actual column, independently of viewport breakpoints. */
+.pdf-reader {
+  container-name: paper-reader;
+  container-type: inline-size;
+}
+.pdf-zoom-toolbar {
+  flex-wrap: wrap;
+}
+.pdf-selection-hint-compact {
+  display: none;
+}
+@container paper-reader (max-width: 760px) {
+  .pdf-continuous-indicator,
+  .pdf-selection-hint-full {
+    display: none;
+  }
+  .pdf-selection-hint-compact {
+    display: inline;
+  }
+  .pdf-zoom-toolbar {
+    gap: 4px 6px;
+  }
+  .pdf-zoom-actions,
+  .pdf-source-actions {
+    flex: none;
+  }
+}
+@container paper-reader (max-width: 480px) {
+  .pdf-zoom-toolbar {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr) max-content;
+    gap: 2px 4px;
+    padding: 4px 7px;
+  }
+  .pdf-page-navigation {
+    grid-column: 1;
+    grid-row: 1;
+    gap: 1px;
+  }
+  .pdf-selection-hint {
+    display: block;
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: center;
+    margin: 0;
+    white-space: normal;
+    text-align: center;
+    font-size: 10px;
+    line-height: 1.3;
+  }
+  .pdf-source-actions {
+    grid-column: 3;
+    grid-row: 1;
+    margin-left: 0;
+    gap: 2px;
+  }
+  .pdf-zoom-actions {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: center;
+    gap: 8px;
+    min-width: 0;
+    padding-top: 2px;
+    border-top: 1px solid var(--line);
+  }
+  .pdf-page-navigation .icon-button,
+  .pdf-zoom-actions .icon-button,
+  .pdf-source-actions a {
+    width: 32px;
+    height: 40px;
+    min-width: 32px;
+  }
+  .pdf-fit-button {
+    min-height: 40px;
+    font-size: 11px;
+    padding: 6px 9px;
+    margin-left: 6px;
+  }
+  .pdf-annotation-toolbar {
+    padding: 4px 7px;
+    gap: 5px 7px;
+  }
+  .pdf-annotation-toolbar .pdf-ink-hint {
+    display: none;
+  }
+  .pdf-annotation-toolbar .pdf-annotation-status {
+    flex-basis: 100%;
+    margin-left: 0;
+    overflow-wrap: anywhere;
+  }
+}
+@container paper-reader (max-width: 280px) {
+  .pdf-zoom-toolbar {
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+  .pdf-selection-hint {
+    display: none;
+  }
+  .pdf-source-actions {
+    grid-column: 2;
+  }
+  .pdf-zoom-actions {
+    gap: 3px;
+  }
+  .pdf-fit-button {
+    padding: 6px;
+    margin-left: 0;
+  }
+}
+
+.pdf-selection-language { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 11px; color: var(--secondary); }
+.pdf-selection-language select { width: auto; min-height: 36px; margin: 0; padding: 4px 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }

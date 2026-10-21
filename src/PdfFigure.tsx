@@ -1,3 +1,4 @@
+import { useLocale } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import {
   getDocument,
@@ -78,6 +79,7 @@ export default function PdfFigure({
   caption,
   onOpenPage,
 }: Props) {
+  const { t, locale } = useLocale();
   const host = useRef<HTMLElement>(null);
   const canvasHost = useRef<HTMLDivElement>(null);
   const [enlarged, setEnlarged] = useState(false);
@@ -156,7 +158,7 @@ export default function PdfFigure({
       canvas.setAttribute("role", "img");
       canvas.setAttribute(
         "aria-label",
-        caption || `论文第 ${page} 页${crop ? "图表" : "预览"}`,
+        caption || t(`论文第 ${page} 页${crop ? "图表" : "预览"}`, `${crop ? "Figure" : "Preview"} on page ${page}`),
       );
       canvas.dataset.figurePage = String(page);
       canvas.style.width = "100%";
@@ -196,7 +198,7 @@ export default function PdfFigure({
       }
       element.replaceChildren();
     };
-  }, [url, page, x, y, cropWidth, cropHeight, nearby, width, retry]);
+  }, [url, page, x, y, cropWidth, cropHeight, nearby, width, retry, caption, locale]);
   return (
     <figure
       className={`pdf-source-figure ${crop ? "is-crop" : "is-page-preview"}`}
@@ -210,42 +212,42 @@ export default function PdfFigure({
         {!loading && !error && (
           <button
             className="pdf-figure-enlarge"
-            aria-label={`放大第 ${page} 页图表`}
+            aria-label={t(`放大第 ${page} 页图表`, `Enlarge figure on page ${page}`)}
             onClick={() => setEnlarged(true)}
           >
             <span>
-              <Maximize2 size={15} /> 放大图表
+              <Maximize2 size={15} /> {t("放大图表")}
             </span>
           </button>
         )}
         {loading && (
           <span className="pdf-figure-status" role="status">
             <Loader2 className="spin" size={17} />
-            加载论文原图
+            {t("加载论文原图")}
           </span>
         )}
         {error && (
           <span className="pdf-figure-status" role="alert">
-            原图暂不可用{" "}
+            {t("原图暂不可用")}{" "}
             <button
               className="soft-button"
               onClick={() => setRetry((n) => n + 1)}
             >
               <RefreshCw size={13} />
-              重试
+              {t("重试")}
             </button>
           </span>
         )}
       </div>
       <figcaption>
-        <span>{caption || (crop ? "论文原图" : "论文页面预览")}</span>
+        <span>{caption || (crop ? t("论文原图") : t("论文页面预览"))}</span>
         <button
           className="pdf-figure-citation"
-          aria-label={`在论文中查看第 ${page} 页图表`}
+          aria-label={t(`在论文中查看第 ${page} 页图表`, `View figure on page ${page} in the paper`)}
           disabled={!onOpenPage}
           onClick={() => onOpenPage?.(page)}
         >
-          {crop ? "查看原图" : "整页预览"} · p.{page} <ArrowUpRight size={12} />
+          {crop ? t("查看原图") : t("整页预览")} · p.{page} <ArrowUpRight size={12} />
         </button>
       </figcaption>
       {enlarged && (
@@ -269,6 +271,7 @@ function FigureLightbox({
   caption,
   onClose,
 }: Omit<Props, "onOpenPage"> & { onClose: () => void }) {
+  const { t, locale } = useLocale();
   const dialog = useRef<HTMLDialogElement>(null);
   const scrollArea = useRef<HTMLDivElement>(null);
   const canvasHost = useRef<HTMLDivElement>(null);
@@ -331,7 +334,7 @@ function FigureLightbox({
       canvas.style.width = `${displayWidth}px`;
       canvas.style.height = `${displayHeight}px`;
       canvas.setAttribute("role", "img");
-      canvas.setAttribute("aria-label", caption || `第 ${page} 页图表放大预览`);
+      canvas.setAttribute("aria-label", caption || t(`第 ${page} 页图表放大预览`, `Enlarged figure on page ${page}`));
       canvas.dataset.figurePage = String(page);
       element.replaceChildren(canvas);
       task = pdfPage.render({
@@ -376,12 +379,13 @@ function FigureLightbox({
     zoom,
     retry,
     caption,
+    locale,
   ]);
   return (
     <dialog
       ref={dialog}
       className="pdf-figure-lightbox"
-      aria-label={`论文原图 · 第 ${page} 页`}
+      aria-label={t(`论文原图 · 第 ${page} 页`, `Source figure · Page ${page}`)}
       onCancel={(event) => {
         event.preventDefault();
         onClose();
@@ -392,26 +396,26 @@ function FigureLightbox({
     >
       <div className="pdf-figure-lightbox-shell">
         <header className="pdf-figure-lightbox-toolbar">
-          <span>论文原图 · p.{page}</span>
+          <span>{t("论文原图 · p.")}{page}</span>
           <div>
             <button
-              aria-label="缩小图表"
+              aria-label={t("缩小图表")}
               disabled={zoom <= 1}
               onClick={() => setZoom((z) => Math.max(1, z - 0.25))}
             >
               <ZoomOut size={18} />
             </button>
-            <button aria-label="图表适应窗口" onClick={() => setZoom(1)}>
+            <button aria-label={t("图表适应窗口")} onClick={() => setZoom(1)}>
               {Math.round(zoom * 100)}%
             </button>
             <button
-              aria-label="放大图表"
+              aria-label={t("放大图表")}
               disabled={zoom >= 3}
               onClick={() => setZoom((z) => Math.min(3, z + 0.25))}
             >
               <ZoomIn size={18} />
             </button>
-            <button aria-label="关闭图表" onClick={onClose} autoFocus>
+            <button aria-label={t("关闭图表")} onClick={onClose} autoFocus>
               <X size={20} />
             </button>
           </div>
@@ -420,19 +424,19 @@ function FigureLightbox({
           className="pdf-figure-lightbox-scroll"
           ref={scrollArea}
           tabIndex={0}
-          aria-label="可滚动的图表预览"
+          aria-label={t("可滚动的图表预览")}
         >
           <div className="pdf-figure-lightbox-canvas" ref={canvasHost} />
         </div>
         {status === "loading" && (
           <div className="pdf-figure-lightbox-status" role="status">
-            <Loader2 size={16} className="spin" /> 加载原图…
+            <Loader2 size={16} className="spin" /> {t("加载原图…")}
           </div>
         )}
         {status === "error" && (
           <div className="pdf-figure-lightbox-status" role="alert">
-            原图暂不可用{" "}
-            <button onClick={() => setRetry((n) => n + 1)}>重试</button>
+            {t("原图暂不可用")}{" "}
+            <button onClick={() => setRetry((n) => n + 1)}>{t("重试")}</button>
           </div>
         )}
         {caption && <footer>{caption}</footer>}

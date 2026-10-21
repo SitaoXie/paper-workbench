@@ -1,6 +1,9 @@
 import { mkdir, readFile, writeFile, rename, chmod } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID, createHash } from "node:crypto";
+import { readingState } from "./reading.mjs";
+import { visualEvidenceMatches } from "./vision.mjs";
+import { usableInteractiveTranslation, INTERACTIVE_TRANSLATION_INCOMPLETE } from "./interactive.mjs";
 
 export const defaultSettings = {
   provider: "openai",
@@ -10,11 +13,12 @@ export const defaultSettings = {
   extraBody: {},
   contextChars: 44000,
   maxOutputTokens: 4096,
+  requestTimeoutSeconds: 90,
 };
 
 // Keep the active profile mirrored at top level for older clients and callers.
 export function normalizeProfiles(settings = defaultSettings) {
-  const { profiles: existing, activeProfileId, ...legacy } = settings;
+  const { profiles: existing, activeProfileId, vision, ...legacy } = settings;
   const profiles =
     Array.isArray(existing) && existing.length
       ? existing
@@ -27,9 +31,13 @@ export function normalizeProfiles(settings = defaultSettings) {
             models: [legacy.model || defaultSettings.model],
           },
         ];
+  for (const profile of profiles) {
+    profile.modelCapabilities = Object.fromEntries((profile.models || [profile.model]).map(model => [model, profile.modelCapabilities?.[model] === "vision" ? "vision" : "text"]));
+    profile.requestTimeoutSeconds ??= defaultSettings.requestTimeoutSeconds;
+  }
   const active =
     profiles.find((profile) => profile.id === activeProfileId) || profiles[0];
-  return { ...active, profiles, activeProfileId: active.id };
+  return { ...active, profiles, activeProfileId: active.id, vision: vision || { enabled: false } };
 }
 
 export class Store {
@@ -75,6 +83,9 @@ export class Store {
         await this.save();
       }
       this.data.activeConversations ||= {};
+      this.data.annotations ||= [];
+      this.data.activities ||= [];
+      for (const conversation of this.data.conversations) conversation.kind ||= "question";
     } catch (error) {
       if (error.code !== "ENOENT")
         throw new Error(
@@ -86,6 +97,8 @@ export class Store {
         chats: [],
         conversations: [],
         activeConversations: {},
+        annotations: [],
+        activities: [],
         settings: normalizeProfiles(defaultSettings),
       };
       await this.save();
@@ -159,8 +172,31 @@ export function contentHash(text) {
     .digest("hex");
 }
 
+/** Filter invalid legacy display blocks without mutating or discarding stored history. */
+export function publicReadingTranslation(translation, original, { language, pageCount, figures = [] } = {}) {
+  if (!translation || !original?.interactive) return translation;
+  const result = { ...translation };
+  if (usableInteractiveTranslation(translation.interactive, original.interactive, {
+    language, pageCount, figures: original.figures || figures,
+  })) {
+    delete result.interactiveTranslationError;
+  } else {
+    delete result.interactive;
+    result.interactiveTranslationError = typeof translation.interactiveTranslationError === "string"
+      ? translation.interactiveTranslationError.slice(0, 1000) : INTERACTIVE_TRANSLATION_INCOMPLETE;
+  }
+  return result;
+}
+
 export function publicPaper(paper, full = true) {
   const { filePath, ...result } = paper;
+  Object.assign(result, readingState(paper));
+  result.readingVersions = result.readingVersions.map(version => ({ ...version,
+    translations: Object.fromEntries(Object.entries(version.translations || {}).map(([language, translation]) => [
+      language, publicReadingTranslation(translation, version, { language, pageCount: paper.pages?.length, figures: paper.figures }),
+    ])),
+  }));
+  if (paper.visualEvidence) result.visualEvidence = paper.visualEvidence.map(evidence => ({ ...evidence, stale: !visualEvidenceMatches(paper, evidence) }));
   if (filePath) {
     result.hasPdf = true;
     result.localPdfUrl = `/api/papers/${encodeURIComponent(paper.id)}/file`;
@@ -187,7 +223,7 @@ export function publicPaper(paper, full = true) {
             return [
               target,
               {
-                ...translation,
+                ...publicReadingTranslation(translation, paper[target], { language, pageCount: paper.pages?.length, figures: paper.figures }),
                 stale: translation.sourceHash
                   ? translation.sourceHash !== contentHash(source)
                   : translation.sourceUpdatedAt !== updatedAt,

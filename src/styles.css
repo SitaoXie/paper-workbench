@@ -2796,16 +2796,7 @@ a svg {
 .continuous-reading:not(.with-assistant) .paper-toolbar {
   margin-right: 0;
 }
-.subscription-chat {
-  padding: 7px 0 0;
-  font-size: 10px;
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  width: 100%;
-}
+.composer-bottom .subscription-chat { flex: 0 0 29px; color: var(--muted); }
 @media (min-width: 1200px) {
   .with-assistant .paper-layout {
     grid-template-columns: minmax(0, 1fr) minmax(360px, 40%);
@@ -2875,7 +2866,7 @@ a svg {
   height: 58px;
   padding: 0 19px;
   border-radius: 30px;
-  color: #fff;
+  color: var(--bg);
   background: var(--accent);
   box-shadow: 0 7px 25px #56333b35;
   border: 1px solid #ffffff35;

@@ -57,6 +57,9 @@ async function mockAPI(page: Page) {
     profiles: [initialProfile],
   };
   const chats = new Map<string, any[]>();
+  const conversations = new Map<string, any>();
+  const activeConversations = new Map<string, string>();
+  const activities: any[] = [];
   await page.route("**/api/**", async (route) => {
     const req = route.request(),
       url = new URL(req.url()),
@@ -123,9 +126,24 @@ async function mockAPI(page: Page) {
             .includes((url.searchParams.get("q") || "").toLowerCase()),
         ),
       };
+    else if (/^\/papers\/[^/]+\/annotations$/.test(path)) result = { annotations: [] };
+    else if (/^\/papers\/[^/]+\/activities$/.test(path)) result = { activities };
+    else if (/^\/papers\/[^/]+\/assist$/.test(path)) {
+      const resultText = body.kind === "translation" ? "独立试验确认了观测趋势，并明确指出局限。" : "The passage describes independent replication while acknowledging limits.";
+      const activity = { id: `activity-${activities.length + 1}`, kind: body.kind, page: body.page, quote: body.text, text: resultText, createdAt: new Date().toISOString() };
+      activities.push(activity);
+      result = { result: { text: resultText, source: { kind: "model", model: "test-model" } }, activity };
+    } else if (path === "/chats/new") {
+      const conversationId = `conversation-${conversations.size + 1}`;
+      conversations.set(conversationId, { id: conversationId, paperId: body.paperId, kind: body.kind || "question", metadata: body.metadata, title: "New conversation", messageCount: 0 });
+      activeConversations.set(body.paperId || "general", conversationId);
+      chats.set(body.paperId || "general", []);
+      result = { conversationId, messages: [] };
+    } else if (path === "/conversations") result = { conversations: [...conversations.values()] };
     else if (path === "/chats")
       result = {
         messages: chats.get(url.searchParams.get("paperId") || "general") || [],
+        conversationId: activeConversations.get(url.searchParams.get("paperId") || "general") || null,
       };
     else if (path === "/chat") {
       const message = {
@@ -138,7 +156,7 @@ async function mockAPI(page: Page) {
         { role: "user", content: body.message },
         message,
       ]);
-      result = { message };
+      result = { message, conversationId: activeConversations.get(body.paperId || "general") || null };
     } else if (/^\/papers\/[^/]+\/report$/.test(path)) {
       const p = papers.find((p) => p.id === path.split("/")[2]);
       p.report = {
@@ -197,6 +215,8 @@ test.describe("Repeatable UI acceptance", () => {
       .getByLabel("预填模型列表")
       .fill("test-model\ntest-reasoning\ntest-fast");
     await dialog.getByLabel("模型名称").fill("test-model");
+    await dialog.locator(".advanced-settings summary").click();
+    await dialog.getByLabel("单次模型请求超时（秒）", { exact: true }).fill("240");
     await dialog.getByLabel("API Key", { exact: true }).fill("fake-e2e-key");
     await dialog.getByRole("button", { name: "测试连接" }).click();
     await expect(dialog.getByText("连接成功，模型已响应。")).toBeVisible();
@@ -210,6 +230,7 @@ test.describe("Repeatable UI acceptance", () => {
       model: "test-model",
       models: ["test-model", "test-reasoning", "test-fast"],
       apiKey: "fake-e2e-key",
+      requestTimeoutSeconds: 240,
     });
     await expect(dialog.getByText("配置已保存")).toBeVisible();
     await expect(dialog.locator("#api-key")).toHaveValue("");
@@ -290,11 +311,14 @@ test.describe("Repeatable UI acceptance", () => {
     );
     await page.reload();
     await page.getByText(title, { exact: true }).click();
-    await page
-      .getByRole("button", { name: "生成研读报告", exact: true })
-      .click();
-    await expect(page.getByText("模型生成 · 基于原文节选")).toBeVisible();
-    await page.getByText("查看多角色复核过程").click();
+    await page.getByRole("radio", { name: /深入研读/ }).click();
+    await page.getByLabel("解读侧重点").fill("Check uncertainty and limitations.");
+    const generation = page.waitForRequest(request => request.url().endsWith("/api/papers/ui-paper/report") && request.method() === "POST");
+    await page.getByRole("button", { name: "生成解读", exact: true }).click();
+    expect((await generation).postDataJSON()).toMatchObject({ style: "deep", focus: "Check uncertainty and limitations.", adversarial: true, language: "zh-CN" });
+    await expect(page.getByRole("heading", { name: "Reviewed report", exact: true })).toBeVisible();
+    await expect(page.locator(".reading-provenance")).toContainText("深入研读");
+    await page.getByText("复核过程", { exact: false }).click();
     await expect(
       page.getByText("Initial evidence-based draft.", { exact: true }),
     ).toBeVisible();
@@ -388,6 +412,7 @@ test.describe("Repeatable UI acceptance", () => {
             source: "pdf",
             pdfUrl: "/test-continuous.pdf",
             pageCount: 20,
+            summary: { language: "zh-CN", markdown: "## Trial evidence\n\n:::figure figure-1\n\nSource evidence is available on the cited page.", createdAt: seed.createdAt, source: { kind: "agent", agent: "Test agent" } },
             figures: [
               {
                 id: "figure-1",
@@ -407,10 +432,11 @@ test.describe("Repeatable UI acceptance", () => {
         .isVisible()
     )
       await page.getByRole("button", { name: "关闭助手", exact: true }).click();
-    const figure = page.locator(
+    const reading = page.locator(".reading-prose");
+    const figure = reading.locator(
       'canvas[data-figure-page="2"][data-rendered="true"]',
     );
-    await page.locator(".pdf-source-figure").scrollIntoViewIfNeeded();
+    await reading.locator(".pdf-source-figure").scrollIntoViewIfNeeded();
     await expect(figure).toBeVisible();
     expect(
       await figure.evaluate((canvas: HTMLCanvasElement) => {
@@ -494,7 +520,12 @@ test.describe("Repeatable UI acceptance", () => {
       }),
     );
     let sent = 0;
+    const startedSessions: any[] = [];
+    const inlineRequests: any[] = [];
     page.on("request", (request) => {
+      const path = new URL(request.url()).pathname;
+      if (path === "/api/chats/new" && request.method() === "POST") startedSessions.push(request.postDataJSON());
+      if (path === "/api/papers/ui-paper/assist" && request.method() === "POST") inlineRequests.push(request.postDataJSON());
       if (
         new URL(request.url()).pathname === "/api/chat" &&
         request.method() === "POST"
@@ -566,6 +597,7 @@ test.describe("Repeatable UI acceptance", () => {
     );
     await expect(menu).toHaveCount(0);
     expect(sent).toBe(0);
+    expect(startedSessions).toEqual([{ paperId: "ui-paper", kind: "question", metadata: { quote: selected, page: 1 } }]);
     await page
       .context()
       .grantPermissions(["clipboard-read", "clipboard-write"]);
@@ -627,12 +659,15 @@ test.describe("Repeatable UI acceptance", () => {
     await menu
       .getByRole("button", { name: "翻译选中内容", exact: true })
       .click();
-    await expect(page.getByLabel("向研究助手提问")).toHaveValue(
-      /请将选中的原文翻译/,
-    );
-    await expect(
-      page.getByRole("button", { name: "已选原文 · p.2", exact: true }),
-    ).toBeVisible();
+    const inline = page.getByRole("dialog", { name: "就地阅读助手", exact: true });
+    await expect(inline).toBeVisible();
+    await expect(inline).toContainText("独立试验确认了观测趋势，并明确指出局限。");
+    expect(inlineRequests).toHaveLength(1);
+    expect(inlineRequests[0]).toMatchObject({ kind: "translation", page: 2, language: "zh-CN" });
+    expect(inlineRequests[0].text).toContain("Independent trials");
+    await expect(page.getByTestId("assistant-dock")).toHaveCount(0);
+    await expect(page.getByLabel("PDF 页码", { exact: true })).toHaveValue("2");
+    expect(startedSessions).toHaveLength(1);
     expect(sent).toBe(1);
     await page.screenshot({
       path: info.outputPath("pdf-selection-assistant.png"),
@@ -710,7 +745,7 @@ test.describe("Repeatable UI acceptance", () => {
       page.getByRole("heading", { name: "Research report", exact: true }),
     ).toBeVisible();
     const download = page.waitForEvent("download");
-    await page.getByRole("button", { name: "下载报告", exact: true }).click();
+    await page.getByRole("button", { name: "下载解读", exact: true }).click();
     const file = await download;
     expect(file.suggestedFilename()).toMatch(/\.md$/);
     expect(await readFile((await file.path())!, "utf8")).toContain(
@@ -822,7 +857,7 @@ test("real backend: PDF upload, extractive report, question and persisted favori
   await page.getByRole("button", { name: "适合宽度", exact: true }).click();
   await expect(renderedCanvas).toBeVisible();
   await page.getByRole("tab", { name: "摘要", exact: true }).click();
-  await page.getByRole("button", { name: /生成原文摘录|重新生成报告/ }).click();
+  await page.getByRole("button", { name: "生成原文摘录", exact: true }).click();
   await expect(page.getByText(/LOCAL EXTRACTIVE REPORT/)).toBeVisible();
   const favorite = page.getByRole("button", { name: "收藏论文", exact: true });
   if (await favorite.isVisible()) await favorite.click();
