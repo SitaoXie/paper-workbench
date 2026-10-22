@@ -12,6 +12,7 @@ import { t } from "./i18n";
 import type { Figure } from "./types";
 import { figureCaption, type FigureCaptionPresentation } from "./figure-captions";
 import { readingFigureSlots } from "./reading-figures";
+import RecoverableFeature from "./RecoverableFeature";
 const PdfFigure = lazy(() => import("./PdfFigure"));
 export default function Mark({
   children,
@@ -67,7 +68,7 @@ export default function Mark({
             );
           const figure = figures.find((f) => f.id === part.figure);
           return figure ? (
-            <Suspense key={i} fallback={<p>{t("正在加载原文图表…", "Loading source figure…")}</p>}>
+            <RecoverableFeature key={`${i}:${pdfUrl}`} feature="figure" onExit={onPage ? () => onPage(figure.page) : undefined}><Suspense fallback={<p>{t("正在加载原文图表…", "Loading source figure…")}</p>}>
               <PdfFigure
                 url={pdfUrl}
                 page={figure.page}
@@ -76,6 +77,7 @@ export default function Mark({
                 onOpenPage={onPage}
               />
             </Suspense>
+            </RecoverableFeature>
           ) : (
             <p key={i} className="muted-label">
               {t(`图表 ${part.figure} 尚未附上源页。`, `Figure ${part.figure} has no attached source page.`)}

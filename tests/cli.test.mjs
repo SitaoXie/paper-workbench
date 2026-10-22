@@ -65,8 +65,11 @@ test('subscription CLI preserves version identity, separate notes/activities, an
   const emptyScopedSession = await cli(['conversation',paper.id,scopedSession.conversationId]);
   assert.deepEqual(emptyScopedSession.conversation.metadata,scoped);
   assert.deepEqual(emptyScopedSession.messages,[]);
-  await cli(['answer',paper.id,'-'],{conversationId:scopedSession.conversationId,source:{agent:'CLI integration fixture'},question:'Explain this generated interpretation.',answer:'Check its claims against the source.'});
-  assert.deepEqual((await cli(['conversation',paper.id,scopedSession.conversationId])).messages[0].metadata,scoped);
+  const questionTaskId='d9748cfb-4fd0-4fa2-b880-48f1a2967e72';
+  await cli(['answer',paper.id,'-'],{conversationId:scopedSession.conversationId,agentTaskId:questionTaskId,source:{agent:'CLI integration fixture'},question:'Explain this generated interpretation.',answer:'Check its claims against the source.'});
+  const importedQuestion=(await cli(['conversation',paper.id,scopedSession.conversationId])).messages;
+  assert.deepEqual(importedQuestion[0].metadata,scoped);
+  assert.deepEqual(importedQuestion.map(message=>message.agentTaskId),[questionTaskId,questionTaskId]);
   await assert.rejects(cli(['new-session',paper.id,'--quote','Wrong source','--source-scope','reading','--reading','missing-version']),/HTTP 404/);
   await assert.rejects(cli(['new-session',paper.id,'--quote','Wrong anchor','--source-scope','abstract','--page','1']),/HTTP 400/);
   await assert.rejects(cli(['new-session',paper.id,'--quote','Missing scope','--reading',id]),/HTTP 400/);

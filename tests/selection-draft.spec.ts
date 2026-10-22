@@ -166,7 +166,10 @@ for(const mode of ['automatic','manual','expanded'] as const)test(`assistant con
   if(mode==='automatic')await away(page);else if(mode==='manual')await dialog.getByRole('button',{name:'Minimize selection draft',exact:true}).click();
   await page.getByRole('button',{name:'Open floating assistant',exact:true}).click();await expect(page.getByTestId('assistant-dock')).toBeVisible();await expect(page.locator('.selection-draft-chip')).toHaveCount(1);await expect(dialog).toBeHidden();
   await page.getByRole('button',{name:'Close floating assistant',exact:true}).click();const chip=page.getByRole('region',{name:'Selection draft',exact:true});await expect(chip).toBeVisible();
-  await chip.getByRole('button',{name:'Return to selected draft',exact:true}).click();await expect(dialog).toBeVisible();await expect(question).toHaveValue(`Preserve this ${mode} question with its exact source.`);await expect(dialog.getByLabel('Selection result language',{exact:true})).toHaveValue('zh-CN');await expect(dialog.getByLabel('Selection processing method',{exact:true})).toHaveValue('agent');await expect(dialog.locator('blockquote')).toHaveText(evidence);expect(await page.evaluate(()=>getSelection()?.toString())).toBe(evidence);expect(f.modelCalls()).toEqual([]);
+  await chip.getByRole('button',{name:'Return to selected draft',exact:true}).click();await expect(dialog).toBeVisible();await expect(question).toHaveValue(`Preserve this ${mode} question with its exact source.`);await expect(dialog.getByLabel('Selection result language',{exact:true})).toHaveValue('zh-CN');await expect(dialog.getByLabel('Selection processing method',{exact:true})).toHaveValue('agent');await expect(dialog.locator('blockquote')).toHaveText(evidence);
+  // Restore focuses the question and reapplies the exact document Range in the
+  // next animation frame; a visible popup can precede that browser selection.
+  await expect.poll(()=>page.evaluate(()=>getSelection()?.toString()),{timeout:2000}).toBe(evidence);expect(f.modelCalls()).toEqual([]);
 });
 
 test('outside source clicks fold a prepared subscription task but dismiss a purely empty selection menu',async({page})=>{

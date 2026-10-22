@@ -63,6 +63,8 @@ The [portable skill](skills/paper-workbench/SKILL.md) lets your already logged-i
 
 The paper assistant has an explicit question-processing selector. Without a configured API it defaults to **Codex / Claude subscription**: Enter or **Prepare subscription task** creates a fixed conversation task, copies it when permitted, and retains your draft. The inline task also supports manual copying and refreshing the saved answer. Paste it into your existing agent session to execute it. With an API configured, **Model API** is the default; **Local source search** remains an explicit option and never calls a model, even when credentials are configured. Suggested questions follow the selected mode too.
 
+Prepared tasks and their completed status survive reloads within the same browser tab. A matching imported question/answer pair with the copied task ID marks the task complete; only its unchanged draft is cleared. Newer edits remain in the composer. Closing a task card keeps it dismissed. If tab storage is unavailable, the task stays usable in memory and a notice explains the reload limit. Older answer imports without a task ID remain readable but cannot mark a tracked task complete.
+
 Open this checkout in Codex or Claude Code, then give it a task such as:
 
 > Read skills/paper-workbench/SKILL.md. Use your current session to create a Chinese illustrated summary for the imported paper ID below, translate its original abstract into Chinese while keeping the English, and save both in Paper Workbench. Inspect the PDF before selecting figure crops. Do not call the workbench's model provider. Paper ID: paste the actual ID here.

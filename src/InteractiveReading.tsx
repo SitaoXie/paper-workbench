@@ -5,6 +5,7 @@ import { figureCaption, type FigureCaptionPresentation } from "./figure-captions
 import "./interactive-reading.css";
 import { displayCitationLabel } from "./citation-label";
 import {t} from './i18n';
+import RecoverableFeature from "./RecoverableFeature";
 
 const PdfFigure = lazy(() => import("./PdfFigure"));
 export type InteractiveReadingProps = FigureCaptionPresentation & {
@@ -42,7 +43,7 @@ export default function InteractiveReading({ interactive, figures = [], pdfUrl, 
       </section>;
       const figure = figures.find(item => item.id === block.figureId);
       return <section className="interactive-figure" key={block.id} id={`interactive-${block.id}`}>
-        {figure?.crop && pdfUrl ? <Suspense fallback={<p>{chinese ? "正在加载原图…" : "Loading source figure…"}</p>}><PdfFigure url={pdfUrl} page={figure.page} crop={figure.crop} {...figureCaption(figure, { figureCaptions, captionLanguage })} onOpenPage={onPage} /></Suspense> : <p className="interactive-source-missing">{chinese ? "此图表的已验证裁切暂不可用，请查看引用的原文页。" : "The verified crop is unavailable. Refer to the cited source page."}</p>}
+        {figure?.crop && pdfUrl ? <RecoverableFeature key={pdfUrl} feature="figure" onExit={onPage ? () => onPage(figure.page) : undefined}><Suspense fallback={<p>{chinese ? "正在加载原图…" : "Loading source figure…"}</p>}><PdfFigure url={pdfUrl} page={figure.page} crop={figure.crop} {...figureCaption(figure, { figureCaptions, captionLanguage })} onOpenPage={onPage} /></Suspense></RecoverableFeature> : <p className="interactive-source-missing">{chinese ? "此图表的已验证裁切暂不可用，请查看引用的原文页。" : "The verified crop is unavailable. Refer to the cited source page."}</p>}
         <p className="interactive-text">{block.explanation}</p><InteractiveCitations citations={block.citations} onPage={onPage} onSource={onSource} language={language} />
       </section>;
     })}

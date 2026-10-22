@@ -51,6 +51,7 @@ import {
 import Mark from "./Markdown";
 import MessageActions from "./MessageActions";
 import QuestionTaskBridge,{type PreparedQuestionTask} from './QuestionTaskBridge';
+import {completedQuestionTaskAnswer,loadQuestionTasks,saveQuestionTasks} from './question-task-store';
 import SelectionTools from "./SelectionTools";
 import ReadingOverview from "./ReadingOverview";
 import NotebookPanel from "./NotebookPanel";
@@ -62,6 +63,7 @@ import type { Activity, Conversation } from "./types";
 import { adoptChatDraft, chatDraftKey, clearChatDraft, readChatDraft, removePaperDrafts, writeChatDraft, type DraftPassage } from "./chat-drafts";
 import { useLocale, t, getLocale } from "./i18n";
 import { lazy, Suspense } from "react";
+import RecoverableFeature from "./RecoverableFeature";
 const PdfReader = lazy(() => import("./PdfReader"));
 import {
   api,
@@ -76,7 +78,6 @@ import { readCompanionMode, saveCompanionMode, type CompanionMode } from "./assi
 import { selectionErrorMessage } from "./selection-errors";
 import { pageLabel } from "./page-label";
 import ReadingTools, { ModelSelect } from "./ReadingTools";
-const PdfFigure = lazy(() => import("./PdfFigure"));
 const FigureManager = lazy(() => import("./FigureManager"));
 
 type View = "discover" | "library" | "saved" | "research" | "paper";
@@ -215,7 +216,13 @@ export default function App() {
   const [copyingAgent, setCopyingAgent] = useState(false);
   const preparingQuestion=useRef(false);
   const [questionModes,setQuestionModes]=useState<Record<string,'api'|'agent'|'extractive'>>({});
-  const [questionTasks,setQuestionTasks]=useState<Record<string,PreparedQuestionTask>>({});
+  const [questionTaskStore,setQuestionTaskStore]=useState(loadQuestionTasks);
+  const questionTasks=questionTaskStore.tasks;
+  const questionTasksRef=useRef(questionTasks);
+  function setQuestionTasks(update:(tasks:Record<string,PreparedQuestionTask>)=>Record<string,PreparedQuestionTask>){
+    const next=saveQuestionTasks(update(questionTasksRef.current));
+    questionTasksRef.current=next.tasks;setQuestionTaskStore(next);
+  }
   const [showCite, setShowCite] = useState(false);
   const [pdfPage, setPdfPage] = useState(1);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -792,6 +799,7 @@ export default function App() {
     try {
       await api(`/papers/${p.id}`, { method: "DELETE" });
       removePaperDrafts(p.id);
+      setQuestionTasks(tasks=>Object.fromEntries(Object.entries(tasks).filter(([,task])=>task.paperId!==p.id)));
       removePaperChatScroll(p.id);
       removeReadingPosition(p.id);
       await refresh();
@@ -822,8 +830,9 @@ export default function App() {
       ));
   const pdfSource = paper?.localPdfUrl || paper?.pdfUrl;
   const questionContext=view==='paper'&&paper?paper.id:'research';
-  const questionMode=questionModes[questionContext]||(modelReady?'api':view==='paper'&&paper?'agent':'extractive');
   const questionTask=questionTasks[chatDraftKey(view==='paper'?paper?.id:undefined,conversationId)];
+  const questionMode=questionModes[questionContext]||(questionTask?'agent':modelReady?'api':view==='paper'&&paper?'agent':'extractive');
+  useEffect(()=>{if(questionTask?.status==='pending')completeQuestionTask(questionTask,chat);},[questionTask,chat]);
   const translations = showOriginal
     ? undefined
     : paper?.translations?.[language];
@@ -841,15 +850,19 @@ export default function App() {
     const boundQuestion=currentDraft.passage&&!currentDraft.verbatim
       ? `${text.trim()||t('请解释这段原文')}\n\n${currentDraft.passage.sourceLabel||t('选中的原文','Selected passage')}${currentDraft.passage.page?` [${pageLabel(currentDraft.passage.page,currentDraft.passage.pages)}]`:''}:\n${currentDraft.passage.text}`
       :text;
+    const expectedQuestion=boundQuestion.trim()||t("这篇论文的核心贡献和证据边界是什么？", "What are the paper's main contributions and evidence limits?");
+    const existing=questionTasksRef.current[context.key];
+    if(existing&&existing.draftRevision===currentDraft.revision&&existing.boundQuestion===expectedQuestion&&existing.language===language)return existing;
+    const metadata=currentDraft.contextPolicy==='omit'?null:currentDraft.passage?passageMetadata(currentDraft.passage):undefined;
     const result = await prepareAgentQuestionTask({
       origin: location.origin, paperId: paper.id, conversationId: context.conversationId,
-      sessionKey: context, question: boundQuestion.trim() || t("这篇论文的核心贡献和证据边界是什么？", "What are the paper's main contributions and evidence limits?"),
+      sessionKey: context, question: expectedQuestion,
       language, locale, omitConversationSelection: currentDraft.contextPolicy === "omit",
       metadata: currentDraft.passage ? passageMetadata(currentDraft.passage) : undefined,
     }, body => api<{conversationId:string}>("/chats/new", {method:"POST",body:JSON.stringify(body)}));
     if (chatContext.current !== context) throw new Error(t("已切换会话，请在当前会话重新复制任务。", "The conversation changed. Copy a task from the current conversation."));
     if (!context.conversationId) activateChat(context.paperId, result.conversationId, true);
-    return result;
+    return {...result,boundQuestion:expectedQuestion,metadata,language,draftRevision:currentDraft.revision};
   }
   async function copyAgentQuestion(text=prompt) {
     if(preparingQuestion.current||conversationBusy||!paper)return;
@@ -859,7 +872,8 @@ export default function App() {
       const paperId=paper.id;
       const result = await prepareCurrentAgentQuestionTask(text);
       const key=chatDraftKey(paperId,result.conversationId);
-      const binding:PreparedQuestionTask={...result,paperId,question:text,copied:false};
+      const previous=questionTasksRef.current[key];
+      const binding:PreparedQuestionTask=previous?.agentTaskId===result.agentTaskId?previous:{...result,paperId,question:text,copied:false,status:'pending',createdAt:Date.now(),updatedAt:Date.now()};
       setQuestionTasks(tasks=>({...tasks,[key]:binding}));
       try{await navigator.clipboard.writeText(result.task);setQuestionTasks(tasks=>tasks[key]?.task===result.task?{...tasks,[key]:{...tasks[key],copied:true}}:tasks);}
       catch{setQuestionTasks(tasks=>tasks[key]?.task===result.task?{...tasks,[key]:{...tasks[key],clipboardError:true}}:tasks);}
@@ -873,14 +887,26 @@ export default function App() {
     if(questionMode==='agent'){void copyAgentQuestion(text);return;}
     void ask(text);
   }
+  function completeQuestionTask(binding:PreparedQuestionTask,messages:Message[]):boolean{
+    const key=chatDraftKey(binding.paperId,binding.conversationId),current=questionTasksRef.current[key];
+    if(current?.agentTaskId!==binding.agentTaskId)return false;
+    if(current.status==='completed')return true;
+    const answerId=completedQuestionTaskAnswer(current,messages);
+    if(!answerId)return false;
+    setQuestionTasks(tasks=>({...tasks,[key]:{...current,status:'completed',answerId,updatedAt:Date.now()}}));
+    if(clearChatDraft(key,current.draftRevision)&&chatContext.current.key===key)setDraft(readChatDraft(key));
+    return true;
+  }
   async function refreshQuestionTask(binding:PreparedQuestionTask){
     const context=chatContext.current;
     const result=await api<{messages:Message[];conversationId?:string}>(`/chats?paperId=${encodeURIComponent(binding.paperId)}&conversationId=${encodeURIComponent(binding.conversationId)}`);
-    if(chatContext.current!==context||context.paperId!==binding.paperId||context.conversationId!==binding.conversationId||pendingChats.current.has(context.key))return;
     if(result.conversationId!==binding.conversationId)throw new Error(t('返回的问答会话不匹配。','The returned conversation does not match this task.'));
+    const completed=completeQuestionTask(binding,result.messages);
+    if(chatContext.current!==context||context.paperId!==binding.paperId||context.conversationId!==binding.conversationId||pendingChats.current.has(context.key))return completed;
     // Keep replies already received after this refresh started. A stale GET
     // must not remove newer answers, optimistic messages or the current draft.
     setChat(old=>{const known=new Set(old.map(message=>message.id).filter(Boolean));const added=result.messages.filter(message=>message.id?!known.has(message.id):!old.some(item=>item.role===message.role&&item.content===message.content));return added.length?[...old,...added]:old;});
+    return completed;
   }
   const activeAbstractSource=abstractSource?.paperId===paper?.id?abstractSource:undefined;
   const abstractText =
@@ -1454,6 +1480,7 @@ export default function App() {
             </button>
           )}
           {questionTask&&questionMode==='agent'&&<QuestionTaskBridge key={questionTask.task} binding={questionTask} onClose={()=>setQuestionTasks(tasks=>{const next={...tasks};delete next[chatDraftKey(questionTask.paperId,questionTask.conversationId)];return next;})} onRefresh={()=>refreshQuestionTask(questionTask)}/>}
+          {questionTaskStore.storageFailed&&<p className="setup-hint" role="alert">{t('订阅任务未能保存到此标签页。刷新可能丢失当前任务或恢复较早状态，请先复制任务文本。','Subscription task changes could not be saved in this tab. Refresh may lose the current task or restore an older state. Copy the task text first.')}</p>}
           {selectedPassage && (
             <div className="selected-passage">
               <div>
@@ -1880,6 +1907,7 @@ export default function App() {
               <article className="paper-content reader-content" hidden={tab !== "paper"} key={`pdf-${paper.id}`}>
                 {pdfVisited && <>
                     {pdfSource ? (
+                      <RecoverableFeature key={pdfSource} feature="reader" onExit={() => changePaperTab("summary")} onBeforeReload={() => historyExit.current()}>
                       <Suspense
                         fallback={
                           <div className="loading-state">
@@ -1915,6 +1943,7 @@ export default function App() {
                           annotationFocus={annotationFocus}
                         />
                       </Suspense>
+                      </RecoverableFeature>
                     ) : (
                       <div className="text-reader">
                         {overviewReturn&&<button className="soft-button" onClick={()=>{changePaperTab('summary');setOverviewReturn(false);}}><ChevronLeft size={14}/>{t('返回阅读位置','Back to reading position')}</button>}
@@ -2481,7 +2510,7 @@ export default function App() {
           }}
         />
       )}
-      {figureReview && paper?.id === figureReview.paperId && <Suspense fallback={null}><FigureManager key={paper.id} paper={paper} initialPage={figureReview.page} onClose={() => setFigureReview(undefined)} onSaved={updateCurrentPaper}/></Suspense>}
+      {figureReview && paper?.id === figureReview.paperId && <RecoverableFeature key={paper.id} feature="figure-manager" onExit={() => setFigureReview(undefined)} onBeforeReload={() => historyExit.current()}><Suspense fallback={null}><FigureManager key={paper.id} paper={paper} initialPage={figureReview.page} onClose={() => setFigureReview(undefined)} onSaved={updateCurrentPaper}/></Suspense></RecoverableFeature>}
       {showCite && (
         <div
           className="modal-backdrop"

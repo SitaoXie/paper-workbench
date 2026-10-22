@@ -53,3 +53,10 @@ test('invalid destinations fail before creation and source-excerpt readings are 
   assert.match(r,/opening source excerpt, not an identified abstract/);
   assert.match(r,/complete paper.figures/);
 });
+test('subscription questions include a stable task UUID in the destination and answer instructions',async()=>{
+ const id='AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA';
+ const result=await prepare(input({conversationId:'conversation-a',agentTaskId:id}),async()=>assert.fail('existing conversation'));
+ assert.equal(result.agentTaskId,id.toLowerCase());assert.match(result.task,/"agentTaskId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"/);
+ assert.match(result.task,/MUST include the identical conversationId and agentTaskId/);
+ await assert.rejects(prepare(input({agentTaskId:'invalid'}),async()=>assert.fail('invalid task must not create a session')),/task UUID/);
+});

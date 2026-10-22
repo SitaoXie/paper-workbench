@@ -120,7 +120,113 @@ test('a late subscription refresh stays in its fixed session and never replaces 
   await page.locator('.history-entry').filter({hasText:'Bound question question-session-1'}).click();
   await expect(composer(page)).toHaveValue(question);await expect(bridge(page)).toBeVisible();
   await bridge(page).getByRole('button',{name:'Refresh answer',exact:true}).click();
-  await expect(bridge(page).getByRole('status')).toContainText('Checked this conversation.');
+  await expect(bridge(page).getByRole('status')).toContainText('Checked this conversation; no matching question and answer was found.');
+  await expect(bridge(page)).toContainText('Subscription task ready');
   await expect(page.locator('.messages')).toContainText(reply.content);await expect(composer(page)).toHaveValue(question);
   expect(modelWrites(f.writes)).toEqual([]);
+});
+
+function importedPair(task:string){
+  const binding=JSON.parse(task.match(/\{\n[\s\S]*?\n\}/)![0]);
+  const question=JSON.parse(task.split('\n').at(-1)!);
+  const common={paperId:binding.paperId,conversationId:binding.conversationId,agentTaskId:binding.agentTaskId};
+  return [{...common,id:'import-user-'+binding.agentTaskId,role:'user',content:question,...(binding.metadata?{metadata:binding.metadata}:{})},{...common,id:'import-answer-'+binding.agentTaskId,role:'assistant',content:'A verified imported answer for this exact task.',mode:'agent',source:{agent:'Codex'}}];
+}
+async function reopenAssistant(page:Page){
+  const open=page.getByRole('button',{name:'Open floating assistant',exact:true});await expect(open.or(composer(page))).toBeVisible();if(await open.isVisible())await open.click();
+  await expect(composer(page)).toBeEnabled();
+}
+
+test('a pending task survives reload without rebuilding or changing the configured subscription choice; dismissal persists',async({page})=>{
+  const f=await fixture(page,{configured:true});await mode(page).selectOption('agent');
+  await composer(page).fill('Resume this pending task after a browser refresh.');await composer(page).press('Enter');const task=await visibleTask(page);
+  await page.reload();await reopenAssistant(page);await expect(mode(page)).toHaveValue('agent');expect(await visibleTask(page)).toBe(task);
+  await expect(composer(page)).toHaveValue('Resume this pending task after a browser refresh.');
+  expect(f.writes.filter(call=>call.path==='/chats/new')).toHaveLength(1);expect(modelWrites(f.writes)).toEqual([]);
+  await bridge(page).getByRole('button',{name:'Close subscription question task',exact:true}).click();await expect(bridge(page)).toHaveCount(0);
+  await page.reload();await reopenAssistant(page);await expect(bridge(page)).toHaveCount(0);
+  await expect(composer(page)).toHaveValue('Resume this pending task after a browser refresh.');expect(modelWrites(f.writes)).toEqual([]);
+});
+
+for(const language of ['en','zh'])test(`a correctly bound imported pair completes the task and clears only its unchanged question in ${language}`,async({page})=>{
+  const f=await fixture(page);await composer(page).fill('Which result actually supports the empirical claim?');await composer(page).press('Enter');const task=await visibleTask(page),pair=importedPair(task);
+  f.sessions.set('question-session-1',pair);
+  if(language==='zh')await page.goto(`/zh/?paper=${f.paper.id}`);
+  const region=page.getByRole('region',{name:language==='zh'?'订阅问答任务':'Subscription question task',exact:true});
+  await expect(region).toBeVisible();await region.getByRole('button',{name:language==='zh'?'刷新回答':'Refresh answer',exact:true}).click();
+  await expect(region).toContainText(language==='zh'?'订阅回答已导入':'Subscription answer imported');
+  await expect(region).not.toContainText(language==='zh'?'应用尚未提交此问题':'The app has not submitted this question');
+  await expect(page.locator('.composer textarea')).toHaveValue('');await expect(page.locator('.messages')).toContainText(pair[1].content);
+  await page.reload();await expect(region).toContainText(language==='zh'?'订阅回答已导入':'Subscription answer imported');await expect(page.locator('.composer textarea')).toHaveValue('');
+  expect(f.writes.filter(call=>call.path==='/chats/new')).toHaveLength(1);expect(modelWrites(f.writes)).toEqual([]);
+});
+
+test('polling recognizes the fixed imported task while preserving a newer same-session draft',async({page})=>{
+  const f=await fixture(page);await composer(page).fill('The question handed to my agent.');await composer(page).press('Enter');const task=await visibleTask(page);
+  await composer(page).fill('A new question that has not been handed off.');f.sessions.set('question-session-1',importedPair(task));
+  await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+  await expect(bridge(page)).toContainText('Subscription answer imported');await expect(composer(page)).toHaveValue('A new question that has not been handed off.');
+  await page.reload();await reopenAssistant(page);await expect(bridge(page)).toContainText('Subscription answer imported');await expect(composer(page)).toHaveValue('A new question that has not been handed off.');
+  expect(modelWrites(f.writes)).toEqual([]);
+});
+
+test('a matching late refresh completes only the old session and preserves the new session draft',async({page})=>{
+  const f=await fixture(page);await composer(page).fill('First session question.');await composer(page).press('Enter');const task=await visibleTask(page),pair=importedPair(task);
+  let delayed:Route|undefined;await page.route('**/api/chats?**',async route=>{if(new URL(route.request().url()).searchParams.get('conversationId')==='question-session-1'&&!delayed){delayed=route;return;}await route.fallback();});
+  await bridge(page).getByRole('button',{name:'Refresh answer',exact:true}).click();await expect.poll(()=>!!delayed).toBe(true);
+  await page.getByRole('button',{name:'Close assistant',exact:true}).click();
+  const source=page.locator('.abstract-text p').first();await source.scrollIntoViewIfNeeded();const quote=await source.innerText();
+  await source.evaluate(el=>{const range=document.createRange();range.selectNodeContents(el);const selection=getSelection()!;selection.removeAllRanges();selection.addRange(range);document.dispatchEvent(new Event('selectionchange'));});
+  const selection=page.getByRole('dialog',{name:'Selection actions',exact:true});await expect(selection).toBeVisible();await selection.getByLabel('Question about the overview selection',{exact:true}).fill('Untouched draft in my second session.');
+  await selection.getByRole('button',{name:'Ask',exact:true}).click();await expect(composer(page)).toHaveValue('Untouched draft in my second session.');
+  await expect(page.locator('.selected-passage')).toContainText(quote);
+  f.sessions.set('question-session-1',pair);await delayed!.fulfill({json:{conversationId:'question-session-1',messages:pair}});
+  await expect(composer(page)).toHaveValue('Untouched draft in my second session.');await expect(page.locator('.selected-passage')).toContainText(quote);await expect(bridge(page)).toHaveCount(0);await expect(page.locator('.message.assistant').filter({hasText:pair[1].content})).toHaveCount(0);
+  await page.getByRole('button',{name:'Conversation history',exact:true}).click();await page.locator('.history-entry').filter({hasText:'Bound question question-session-1'}).click();
+  await expect(bridge(page)).toContainText('Subscription answer imported');await expect(composer(page)).toHaveValue('');await expect(page.locator('.messages')).toContainText(pair[1].content);expect(modelWrites(f.writes)).toEqual([]);
+});
+
+test('task restoration is isolated by paper and session after reload',async({page})=>{
+  const f=await fixture(page);await composer(page).fill('Task in the first session.');await composer(page).press('Enter');const first=await visibleTask(page);
+  await page.getByRole('button',{name:'New conversation',exact:true}).click();await composer(page).fill('Task in the second session.');await composer(page).press('Enter');const second=await visibleTask(page);expect(second).not.toBe(first);
+  await page.reload();await reopenAssistant(page);expect(await visibleTask(page)).toBe(second);
+  const other={...f.paper,id:'question-other',title:'A different paper'};
+  await page.route('**/api/papers/question-other',route=>route.fulfill({json:{paper:other}}));
+  await page.route('**/api/chats?**',async route=>{if(new URL(route.request().url()).searchParams.get('paperId')===other.id){await route.fulfill({json:{conversationId:'other-session',messages:[]}});return;}await route.fallback();});
+  await page.goto('/en/?paper=question-other');await reopenAssistant(page);await expect(bridge(page)).toHaveCount(0);await expect(composer(page)).toHaveValue('');
+  await page.goto(`/en/?paper=${f.paper.id}`);await reopenAssistant(page);expect(await visibleTask(page)).toBe(second);
+  await page.getByRole('button',{name:'Conversation history',exact:true}).click();await page.locator('.history-entry').filter({hasText:'Task in the first session.'}).click();await expect(composer(page)).toHaveValue('Task in the first session.');expect(await visibleTask(page)).toBe(first);
+  await expect(composer(page)).toHaveValue('Task in the first session.');expect(f.writes.filter(call=>call.path==='/chats/new')).toHaveLength(2);expect(modelWrites(f.writes)).toEqual([]);
+});
+
+test('a dismissed task is not restored by its late refresh or a browser reload',async({page})=>{
+  const f=await fixture(page);await composer(page).fill('Keep my draft when I dismiss the handoff.');await composer(page).press('Enter');const task=await visibleTask(page),pair=importedPair(task);
+  let delayed:Route|undefined;await page.route('**/api/chats?**',async route=>{if(new URL(route.request().url()).searchParams.get('conversationId')==='question-session-1'&&!delayed){delayed=route;return;}await route.fallback();});
+  await bridge(page).getByRole('button',{name:'Refresh answer',exact:true}).click();await expect.poll(()=>!!delayed).toBe(true);
+  await bridge(page).getByRole('button',{name:'Close subscription question task',exact:true}).click();
+  f.sessions.set('question-session-1',pair);await delayed!.fulfill({json:{conversationId:'question-session-1',messages:pair}});
+  await expect(page.locator('.messages')).toContainText(pair[1].content);await expect(bridge(page)).toHaveCount(0);await expect(composer(page)).toHaveValue('Keep my draft when I dismiss the handoff.');
+  await page.reload();await reopenAssistant(page);await expect(bridge(page)).toHaveCount(0);await expect(composer(page)).toHaveValue('Keep my draft when I dismiss the handoff.');expect(modelWrites(f.writes)).toEqual([]);
+});
+
+test('a blocked tab storage exposes an actionable warning without losing the visible task',async({page})=>{
+  await page.addInitScript(()=>{const set=Storage.prototype.setItem;Storage.prototype.setItem=function(key,value){if(key==='pw-question-tasks-v1')throw new DOMException('Quota exceeded','QuotaExceededError');return set.call(this,key,value);};});
+  const f=await fixture(page);await composer(page).fill('Allow manual copy even if storage is blocked.');await composer(page).press('Enter');const task=await visibleTask(page);expect(task).toContain('Allow manual copy');
+  await expect(page.getByRole('alert').filter({hasText:'Subscription task changes could not be saved in this tab.'})).toBeVisible();await expect(composer(page)).toHaveValue('Allow manual copy even if storage is blocked.');expect(modelWrites(f.writes)).toEqual([]);
+});
+
+test('a restored selected passage completes after the import API normalizes only its outer whitespace',async({page})=>{
+  const f=await fixture(page);await composer(page).fill('Establish this selected-source session.');await composer(page).press('Enter');await visibleTask(page);
+  f.paper.abstract=f.paper.text='    code = evidence\n';
+  await page.evaluate(()=>{
+    const drafts=JSON.parse(sessionStorage.getItem('pw-chat-drafts-v1')||'{}'),key=JSON.stringify(['question-mode','question-session-1']);
+    drafts[key]={text:'What does this selected code establish?',passage:{text:'    code = evidence\n',sourceScope:'abstract'},revision:Date.now()+1000,updatedAt:Date.now()};
+    sessionStorage.setItem('pw-chat-drafts-v1',JSON.stringify(drafts));
+  });
+  await page.reload();await reopenAssistant(page);await expect(page.locator('.selected-passage')).toContainText('code = evidence');
+  await composer(page).press('Enter');const task=await visibleTask(page),pair=importedPair(task);
+  expect(pair[0].metadata.quote).toBe('    code = evidence\n');pair[0].metadata.quote=pair[0].metadata.quote.trim();
+  f.sessions.set('question-session-1',pair);await bridge(page).getByRole('button',{name:'Refresh answer',exact:true}).click();
+  await expect(bridge(page)).toContainText('Subscription answer imported');await expect(composer(page)).toHaveValue('');await expect(page.locator('.selected-passage')).toHaveCount(0);
+  expect(f.writes.filter(call=>call.path==='/chats/new')).toHaveLength(1);expect(modelWrites(f.writes)).toEqual([]);
 });

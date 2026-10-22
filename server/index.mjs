@@ -978,6 +978,7 @@ export async function createApp({
     "/api/chats/import",
     wrap(async (request, response) => {
       const body = bodyOf(request);
+      const agentTaskId = body.agentTaskId === undefined ? undefined : validateAgentTaskId(body.agentTaskId);
       const paperId = validatePaperContext(body.paperId ?? null);
       const suppressBoundSelection = body.metadata === null;
       let metadata = questionMetadata(suppressBoundSelection ? { ...body, metadata: undefined } : body, paperId);
@@ -999,7 +1000,7 @@ export async function createApp({
         metadata = questionMetadata({ metadata: conversation.metadata }, paperId);
       conversation ||= createConversation(paperId, metadata);
       const createdAt = new Date().toISOString();
-      const common = { paperId, conversationId: conversation.id, createdAt };
+      const common = { paperId, conversationId: conversation.id, createdAt, ...(agentTaskId ? { agentTaskId } : {}) };
       const sources = paperId
         ? [
             {

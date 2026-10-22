@@ -1,0 +1,8 @@
+.feature-unavailable { margin: 18px 0; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); }
+.feature-unavailable h3 { margin: 0 0 10px; font-size: 16px; }
+.feature-unavailable p { margin: 0 0 16px; line-height: 1.6; }
+.feature-recovery-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.feature-recovery-actions button { min-height: 40px; white-space: normal; }
+.reader-content > .feature-unavailable { margin: 24px; }
+.feature-recovery-modal { width: min(520px, calc(100vw - 32px)); }
+.feature-recovery-modal .feature-unavailable { margin: 0; border: 0; }

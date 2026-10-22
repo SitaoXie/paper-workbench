@@ -2,6 +2,7 @@ export type AgentQuestionTaskInput = {
   origin: string;
   paperId: string;
   conversationId?: string;
+  agentTaskId?: string;
   /** Stable identity of the caller's current draft/session, not its text. */
   sessionKey: object;
   question: string;
@@ -25,6 +26,7 @@ function validId(id: string) {
 }
 function validate(input: Omit<AgentQuestionTaskInput, 'sessionKey'>) {
   const origin = originOf(input.origin), paperId = validId(input.paperId);
+  if (input.agentTaskId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.agentTaskId)) throw new Error('A valid task UUID is required.');
   if (!input.question.trim() || input.question.length > 12000) throw new Error('The question must contain 1–12,000 characters.');
   if (!/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8}){0,3}$/.test(input.language)) throw new Error('A valid output language is required.');
   return { origin, paperId };
@@ -33,14 +35,14 @@ export function buildAgentQuestionTask(input: BoundQuestion): string {
   const { origin, paperId } = validate(input), conversationId = validId(input.conversationId);
   const cli = `PAPER_WORKBENCH_URL=${shellQuote(origin)} node scripts/paper-workbench.mjs`;
   const metadata = input.omitConversationSelection ? null : input.metadata;
-  const binding = JSON.stringify({ paperId, conversationId, language: input.language, ...(metadata !== undefined ? { metadata } : {}) }, null, 2);
+  const binding = JSON.stringify({ paperId, conversationId, ...(input.agentTaskId ? {agentTaskId:input.agentTaskId} : {}), language: input.language, ...(metadata !== undefined ? { metadata } : {}) }, null, 2);
   const zh = (input.locale || input.language).startsWith('zh');
   const introduction = zh
     ? '在 Paper Workbench 项目中使用 skills/paper-workbench/SKILL.md。使用当前已登录的代理会话推理，不调用工作台 report、translate、ask 或模型生成接口，不需要新增 API Key。'
     : 'Use skills/paper-workbench/SKILL.md in the Paper Workbench checkout. Reason in your current signed-in agent session. Do not call report, translate, ask, or application model-generation endpoints; no additional API key is required.';
   const procedure = zh
-    ? `先读取下面固定会话的已有消息，再读取相关原文页。所有命令必须显式绑定这个工作台；不要改用默认端口或当前 active 会话。用 ${input.language} 回答，给出页码证据；有确切源句时可使用 skill 的语义定位引用。通过 answer 保存，JSON 必须包含上面完全相同的 conversationId、question、answer 和 source.agent；不要覆盖历史。保存后再次读取同一 conversation 验证。除非用户明确要求，不创建笔记。`
-    : `Read the messages of the fixed conversation below, then the relevant source pages. Explicitly bind every command to this workspace; do not substitute the default port or the currently active conversation. Answer in ${input.language} with page evidence and optional exact-passage links as described by the skill. Save with answer; its JSON MUST include the identical conversationId above plus question, answer and source.agent. Preserve history and reread this same conversation to verify the save. Do not create notes unless explicitly requested.`;
+    ? `先读取下面固定会话的已有消息，再读取相关原文页。所有命令必须显式绑定这个工作台；不要改用默认端口或当前 active 会话。用 ${input.language} 回答，给出页码证据；有确切源句时可使用 skill 的语义定位引用。通过 answer 保存，JSON 必须包含上面完全相同的 conversationId、agentTaskId（若提供）、question、answer 和 source.agent；不要覆盖历史。保存后再次读取同一 conversation 验证。除非用户明确要求，不创建笔记。`
+    : `Read the messages of the fixed conversation below, then the relevant source pages. Explicitly bind every command to this workspace; do not substitute the default port or the currently active conversation. Answer in ${input.language} with page evidence and optional exact-passage links as described by the skill. Save with answer; its JSON MUST include the identical conversationId and agentTaskId (when provided) above plus question, answer and source.agent. Preserve history and reread this same conversation to verify the save. Do not create notes unless explicitly requested.`;
   const selection = input.omitConversationSelection
     ? zh ? '本次问题已取消旧选文绑定。answer JSON 必须保留 metadata: null，阻止服务器恢复旧选文。仍可阅读会话历史，但不要把旧 metadata 当作本次选文。' : 'The old selection binding was cleared for this question. The answer JSON MUST retain metadata: null to prevent the server from restoring it. History remains context, but its old metadata is not the current selection.'
     : metadata !== undefined
@@ -67,7 +69,8 @@ export async function prepareAgentQuestionTask(input: AgentQuestionTaskInput, cr
     }
     conversationId = await pending;
   }
-  return { conversationId, task: buildAgentQuestionTask({ ...input, conversationId }) };
+  const agentTaskId=input.agentTaskId?.toLowerCase()||crypto.randomUUID();
+  return { conversationId, agentTaskId, task: buildAgentQuestionTask({ ...input, conversationId, agentTaskId }) };
 }
 export function buildAgentReadingTask({ origin, paperId, language, locale, abstractIsExcerpt }: { origin: string; paperId: string; language: string; locale?: string; abstractIsExcerpt?: boolean }) {
   const { origin: base } = validate({ origin, paperId, language, question: "reading" });

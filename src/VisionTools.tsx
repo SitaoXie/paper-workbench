@@ -13,6 +13,7 @@ import { cropPdfToPng } from "./pdf-crop";
 import { sourceFigureLabel } from "./reading-figures";
 import "./vision-tools.css";
 const PdfFigure = lazy(() => import("./PdfFigure"));
+import RecoverableFeature from "./RecoverableFeature";
 
 // Exact allowlist: external/model-authored limitations remain visibly in their original language.
 const systemLimitations = new Map([
@@ -246,6 +247,7 @@ export default function VisionTools({
             </select>
             {selected && expanded && (
               <div className="vision-crop-preview">
+                <RecoverableFeature key={source} feature="figure" onExit={onPage ? () => onPage(selected.page) : undefined}>
                 <Suspense fallback={<p>{t("正在加载原文图表…", "Loading source figure…")}</p>}>
                   <PdfFigure
                     url={source}
@@ -256,6 +258,7 @@ export default function VisionTools({
                     onOpenPage={onPage}
                   />
                 </Suspense>
+                </RecoverableFeature>
               </div>
             )}
             <label htmlFor={`vision-focus-${paper.id}`}>
@@ -376,9 +379,11 @@ export default function VisionTools({
                   {!historical && !item.stale && <button type="button" className="text-button" disabled={!!changingEvidence} onClick={()=>void toggleEvidence(item)}>{item.excluded ? t("纳入后续解读和问答", "Use in future readings") : t("不用于后续解读和问答", "Exclude from future readings")}</button>}
                   {!item.stale && source && openResults.has(item.id) && <details className="vision-source-comparison">
                     <summary>{t("对照原图与图注", "Compare source figure and caption")}</summary>
+                    <RecoverableFeature key={source} feature="figure" onExit={onPage ? () => onPage(item.page) : undefined}>
                     <Suspense fallback={<p>{t("正在加载原文图表…", "Loading source figure…")}</p>}>
                       <PdfFigure url={source} page={item.page} crop={item.crop} caption={item.caption || figures.find(figure => figure.id === item.figureId)?.caption} captionIsOriginal onOpenPage={onPage}/>
                     </Suspense>
+                    </RecoverableFeature>
                   </details>}
                   <details className="vision-limitations">
                     <summary>

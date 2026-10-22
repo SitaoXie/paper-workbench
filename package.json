@@ -1,6 +1,6 @@
 {
   "name": "paper-workbench",
-  "version": "0.3.0-dev.3",
+  "version": "0.3.0-dev.4",
   "private": true,
   "type": "module",
   "description": "A local, open-source research workspace for papers and evidence-grounded AI.",
