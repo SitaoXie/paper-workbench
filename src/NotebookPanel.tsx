@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   BookMarked,
   Check,
@@ -13,9 +13,10 @@ import {
   Undo2,
   X,
 } from "lucide-react";
-import type { Annotation, AnnotationDraft } from "./reader-annotations";
+import { annotationPageLabel, annotationSegments, type Annotation, type AnnotationDraft } from "./reader-annotations";
 import Mark from "./Markdown";
 import { t, getLocale } from "./i18n";
+import { readNotebookView, writeNotebookView, readNoteDrafts } from "./notebook-state";
 
 const labels: Record<string, () => string> = {
   highlight: () => t("高亮", "Highlights"),
@@ -29,6 +30,7 @@ export default function NotebookPanel({
   paperId,
   annotations,
   selectedId,
+  selectionNonce,
   page,
   loading,
   onClose,
@@ -41,10 +43,11 @@ export default function NotebookPanel({
   paperId: string;
   annotations: Annotation[];
   selectedId?: string;
+  selectionNonce?: number;
   page: number;
   loading?: boolean;
   onClose: () => void;
-  onSelect: (entry: Annotation, locate?: boolean) => void;
+  onSelect: (entry: Annotation, locate?: boolean, page?: number) => void;
   onCreate: (entry: AnnotationDraft) => Promise<Annotation | void>;
   onUpdate: (id: string, patch: Partial<Annotation>) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
@@ -52,19 +55,12 @@ export default function NotebookPanel({
 }) {
   const [filter, setFilter] = useState("all"),
     [query, setQuery] = useState("");
-  const [drafts, setDrafts] = useState<
-    Record<string, { body: string; tags: string }>
-  >(() => {
-    try {
-      return JSON.parse(
-        sessionStorage.getItem(`pw-note-drafts:${paperId}`) || "{}",
-      );
-    } catch {
-      return {};
-    }
-  });
-  const [preview, setPreview] = useState(false);
-  const [editing, setEditing] = useState(false),
+  const [drafts, setDrafts] = useState(() => readNoteDrafts(paperId));
+  const [savedView] = useState(() => readNotebookView(paperId));
+  const [pendingSelection, setPendingSelection] = useState(selectedId ? undefined : savedView?.selectedId);
+  const firstSelection = useRef(true), restoringSelection = useRef<string | undefined>(undefined);
+  const [preview, setPreview] = useState(savedView?.preview || false);
+  const [editing, setEditing] = useState(savedView?.editing || false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   const [deleted, setDeleted] = useState<string | undefined>(),
@@ -80,9 +76,29 @@ export default function NotebookPanel({
     }
   }, [drafts, paperId]);
   useEffect(() => {
-    if (selectedId) setEditing(true);
-  }, [selectedId]);
+    if (firstSelection.current) {
+      firstSelection.current = false;
+      if (selectedId && (selectedId !== savedView?.selectedId || selectionNonce)) setEditing(true);
+      return;
+    }
+    if (selectedId && restoringSelection.current !== selectedId) setEditing(true);
+    restoringSelection.current = undefined;
+  }, [selectedId, selectionNonce]);
+  useEffect(() => {
+    if (!pendingSelection || loading) return;
+    if (selectedId) { setPendingSelection(undefined); return; }
+    const entry = annotations.find(item=>item.id===pendingSelection);
+    if (entry) {
+      restoringSelection.current = entry.id;
+      onSelect(entry, false);
+      setPendingSelection(undefined);
+    }
+  }, [pendingSelection, selectedId, annotations, loading, onSelect]);
+  useEffect(() => {
+    if (!pendingSelection) writeNotebookView(paperId, {selectedId, editing, preview});
+  }, [paperId, selectedId, editing, preview, pendingSelection]);
   const selected = annotations.find((a) => a.id === selectedId);
+  const selectedSegments = selected ? annotationSegments(selected) : [];
   const draftKey = selected?.id || "new";
   const draft = drafts[draftKey] || {
     body: selected?.body || "",
@@ -96,7 +112,7 @@ export default function NotebookPanel({
           (filter === "highlight" && a.kind === "underline") ||
           a.kind === filter) &&
         (!query ||
-          `${a.quote || ""} ${a.body || ""} ${a.tags?.join(" ") || ""}`
+          `${annotationSegments(a).map(segment => segment.quote || "").join(" ")} ${a.body || ""} ${a.tags?.join(" ") || ""}`
             .toLowerCase()
             .includes(query.toLowerCase())),
     )
@@ -166,6 +182,7 @@ export default function NotebookPanel({
         <button
           className="soft-button"
           onClick={() => {
+            setPendingSelection(undefined);
             setEditing(true);
             if (selected) onSelect({ ...selected, id: "" });
           }}
@@ -253,12 +270,16 @@ export default function NotebookPanel({
               {t("正在加载…", "Loading…")}
             </p>
           ) : items.length ? (
-            items.map((item) => (
+            items.map((item) => {
+              const segments = annotationSegments(item);
+              const quote = segments.map(segment => segment.quote || "").filter(Boolean).join("\n");
+              return (
               <button
                 key={item.id}
                 className={`notebook-card ${item.id === selectedId ? "selected" : ""}`}
                 data-color={item.color || "yellow"}
                 onClick={() => {
+                  setPendingSelection(undefined);
                   onSelect(item);
                   setEditing(true);
                   setSaved(false);
@@ -275,9 +296,12 @@ export default function NotebookPanel({
                     )}{" "}
                     {labels[item.kind]?.() || item.kind}
                   </span>
-                  <span>p.{item.page}</span>
+                  <span className="notebook-page-label">
+                    {annotationPageLabel(item)}
+                    {segments.length > 1 && <span>{t(`${segments.length} 页`, `${segments.length} pages`)}</span>}
+                  </span>
                 </span>
-                {item.quote && <blockquote>{item.quote}</blockquote>}
+                {quote && <blockquote>{quote}</blockquote>}
                 <p>
                   {item.body ||
                     (item.kind === "ink"
@@ -288,7 +312,8 @@ export default function NotebookPanel({
                   <small>{item.tags.map((tag) => `#${tag}`).join(" ")}</small>
                 )}
               </button>
-            ))
+              );
+            })
           ) : (
             <div className="notebook-empty">
               <BookMarked size={30} />
@@ -306,7 +331,7 @@ export default function NotebookPanel({
             </div>
           )}
         </div>
-        {editing && (
+        {editing && !pendingSelection && (
           <div className="notebook-editor">
             <div className="notebook-editor-title">
               <strong>
@@ -327,22 +352,28 @@ export default function NotebookPanel({
                   if (selected) onSelect(selected);
                 }}
               >
-                p.{selected?.page || page}
+                {selected ? annotationPageLabel(selected) : `p.${page}`}
               </button>
+              {selectedSegments.length > 1 && <span>{t(`${selectedSegments.length} 页 · 共用一条笔记`, `${selectedSegments.length} pages · one shared note`)}</span>}
               {selected && (
                 <span>{new Date(selected.createdAt).toLocaleDateString(getLocale() === "zh" ? "zh-CN" : "en")}</span>
               )}
             </div>
-            {selected?.quote && (
-              <blockquote className="notebook-quote">
-                {selected.quote}
-              </blockquote>
-            )}
+            {selected && selectedSegments.map(segment => (
+              <section className="notebook-source-segment" key={segment.page} aria-label={t(`第 ${segment.page} 页摘录`, `Excerpt from page ${segment.page}`)}>
+                {selectedSegments.length > 1 && <button
+                  className="citation-link"
+                  onClick={() => onSelect(selected, true, segment.page)}
+                  aria-label={t(`定位第 ${segment.page} 页摘录`, `Locate excerpt on page ${segment.page}`)}
+                >p.{segment.page}</button>}
+                {segment.quote ? <blockquote className="notebook-quote">{segment.quote}</blockquote> : selectedSegments.length > 1 && <p className="notebook-region-label">{t("已标注的页面区域", "Marked page region")}</p>}
+              </section>
+            ))}
             <div className="note-preview-toggle" role="group" aria-label={t("笔记显示方式", "Note display")}>
               <button aria-pressed={!preview} onClick={()=>setPreview(false)}>{t("编辑", "Edit")}</button>
               <button aria-pressed={preview} onClick={()=>setPreview(true)}>{t("预览", "Preview")}</button>
             </div>
-            {preview ? <div className="prose notebook-preview"><Mark onPage={(number)=>selected && onSelect({...selected,page:number})}>{draft.body || t("还没有笔记内容。", "No note content yet.")}</Mark></div> : <label>
+            {preview ? <div className="prose notebook-preview"><Mark onPage={(number)=>selected && onSelect(selected, true, number)}>{draft.body || t("还没有笔记内容。", "No note content yet.")}</Mark></div> : <label>
               {t("你的笔记", "Your note")}
               <textarea
                 aria-label={t("笔记内容", "Note content")}

@@ -1,3 +1,4 @@
+import { ApiRequestError } from "./selection-errors";
 export type Report = {
   requestedFormat?: ReadingFormat;
   interactiveGenerationError?: string;
@@ -15,6 +16,8 @@ export type Report = {
 export type Insight = {
   interactive?: InteractiveData;
   interactiveTranslationError?: string;
+  figureCaptions?: Record<string, string>;
+  captionTranslationError?: string;
   markdown: string;
   language: string;
   createdAt?: string;
@@ -70,6 +73,8 @@ export type ReadingVersion = Report & {
 };
 export type Activity = {
   id: string;
+  paperId?: string;
+  agentTaskId?: string;
   sourceScope?: "pdf" | "source-text" | "reading" | "abstract";
   readingId?: string;
   kind: "translation" | "explanation";
@@ -77,16 +82,20 @@ export type Activity = {
   quote?: string;
   result?: { text: string; source?: Record<string, string> };
   page?: number;
+  pages?: number[];
   language?: string;
   createdAt: string;
   source?: Record<string, string>;
 };
 export type Conversation = {
+  /** Client-only marker for an unsent tab-local draft. */
+  draft?: boolean;
   id: string;
   title: string;
   messageCount: number;
   kind?: string;
   createdAt?: string;
+  source?: {kind?:string;conversationId?:string;messageId?:string;action?:string};
 };
 export type Paper = {
   id: string;
@@ -99,6 +108,7 @@ export type Paper = {
   localPdfUrl?: string;
   hasPdf?: boolean;
   metadataOnly?: boolean;
+  abstractIsExcerpt?: boolean;
   ingestionWarnings?: string[];
   source: string;
   createdAt: string;
@@ -142,7 +152,9 @@ export type ModelProfile = Omit<
   name: string;
   models: string[];
 };
-export type Message = { role: "user" | "assistant"; content: string };
+export type SourceScope = 'pdf' | 'source-text' | 'reading' | 'abstract';
+export type QuestionMetadata = {page?:number;pages?:number[];quote?:string;sourceScope?:SourceScope;readingId?:string};
+export type Message = { id?: string; role: "user" | "assistant"; content: string; questionText?: string; metadata?: QuestionMetadata };
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`/api${path}`, {
     ...init,
@@ -157,7 +169,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   } catch {
     throw new Error("服务暂时不可用，请确认本地服务已启动。");
   }
-  if (!r.ok) throw new Error(data.error || `请求失败 (${r.status})`);
+  if (!r.ok) throw new ApiRequestError(typeof data.error === "string" ? data.error : `请求失败 (${r.status})`, r.status, data.code);
   return data;
 }
 

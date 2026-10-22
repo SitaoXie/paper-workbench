@@ -57,3 +57,13 @@
   white-space: normal;
   text-align: center;
 }
+
+.history-invalid-result { color:var(--secondary);font-size:12px;line-height:1.65;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--panel); }
+.history-invalid-result p { margin:0 0 8px; }.history-invalid-result pre { white-space:pre-wrap;overflow-wrap:anywhere; }.history-invalid-result summary { cursor:pointer; }
+
+.model-select-wrap:has(.model-switch-status) { position:relative; }
+.model-switch-status { position:absolute; inset:1px 1px 1px 1px; display:flex; align-items:center; justify-content:center; gap:5px; border-radius:6px; background:var(--panel); color:var(--muted); pointer-events:none; font-size:11px; }
+
+.model-switch-status { padding-inline:5px; overflow:hidden; }
+.model-switch-status > svg { flex-shrink:0; }
+.model-switch-status > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

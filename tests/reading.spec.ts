@@ -63,7 +63,7 @@ test("subscription-only reading: JSON import, translation, original and inline f
     .click();
   const prompt = await page.getByLabel("代理任务").inputValue();
   expect(prompt).toContain(paper.id);
-  expect(prompt).toContain("不调用工作台 /report、/chat 或 /translate");
+  expect(prompt).toContain("不调用工作台模型生成接口");
   const download = page.waitForEvent("download");
   await page.getByRole("link", { name: "下载通用 Skill" }).click();
   const skill = await download;
@@ -130,7 +130,7 @@ test("subscription-only reading: JSON import, translation, original and inline f
   await expect(figure.locator('canvas[data-rendered="true"]')).toBeVisible();
   const order = await figure.evaluate((el) => {
     const following = [...document.querySelectorAll("h2")].find(
-      (h) => h.textContent === "解读之后",
+      (h) => h.getAttribute('aria-label') === "解读之后",
     );
     return (
       !!following &&
@@ -158,6 +158,20 @@ test("subscription-only reading: JSON import, translation, original and inline f
   await preview.getByRole("button", { name: "放大图表", exact: true }).click();
   await expect(preview.getByRole("button", { name: "图表适应窗口" })).toHaveText("125%");
   await expect.poll(() => enlargedCanvas.evaluate(el => el.getBoundingClientRect().width)).toBeGreaterThan(initialWidth * 1.2);
+  await expect(enlargedCanvas).toBeVisible();
+  const panArea = preview.locator('.pdf-figure-lightbox-scroll');
+  const panBounds = (await panArea.boundingBox())!;
+  const originalLeft = await panArea.evaluate(el => el.scrollLeft);
+  await page.mouse.move(panBounds.x + panBounds.width * .65, panBounds.y + Math.min(120, panBounds.height / 2));
+  await page.mouse.down();
+  await page.mouse.move(panBounds.x + panBounds.width * .45, panBounds.y + Math.min(120, panBounds.height / 2), {steps: 12});
+  await page.mouse.up();
+  await expect.poll(() => panArea.evaluate(el => el.scrollLeft)).toBeGreaterThan(originalLeft + 5);
+  const cropDownload = page.waitForEvent('download');
+  await preview.getByRole('button', {name:'下载原图裁切', exact:true}).click();
+  const png = await readFile((await (await cropDownload).path())!);
+  expect(png.subarray(1, 4).toString()).toBe('PNG');
+  expect(png.readUInt32BE(16) / png.readUInt32BE(20)).toBeGreaterThan(1.5);
   const cropRatio = await enlargedCanvas.evaluate((el: HTMLCanvasElement) => el.width / el.height);
   expect(cropRatio).toBeGreaterThan(1.5);
   const dialogBox = await preview.boundingBox();
@@ -167,6 +181,14 @@ test("subscription-only reading: JSON import, translation, original and inline f
   await page.keyboard.press("Escape");
   await expect(preview).toHaveCount(0);
   await expect(enlarge).toBeFocused();
+  const figureTop = await figure.evaluate(el => el.getBoundingClientRect().top);
+  await enlarge.click();
+  await preview.getByRole('button', {name:'图表来自 p.2', exact:true}).click();
+  await expect(preview).toHaveCount(0);
+  await expect(page.getByLabel('PDF 页码', {exact:true})).toHaveValue('2');
+  await page.getByRole('button', {name:'返回摘要阅读位置',exact:true}).click();
+  await expect.poll(() => figure.evaluate(el => el.getBoundingClientRect().top)).toBeCloseTo(figureTop, 0);
+
   const after = await (await request.get(`/api/papers/${paper.id}`)).json();
   expect(after.paper.abstract).toBe(paper.abstract);
   expect(after.paper.summary.source.kind).toBe("agent");

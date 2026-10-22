@@ -16,3 +16,5 @@
 .overview-selection-options label { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .overview-selection-options select { width: auto; min-height: 36px; padding: 4px 6px; margin: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); }
 .overview-selection-options > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.overview-selection-question{display:block;width:100%;min-height:40px;margin:0 0 9px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);font:inherit;box-sizing:border-box}
+@media(pointer:coarse){.overview-selection-question{font-size:16px;min-height:44px}}

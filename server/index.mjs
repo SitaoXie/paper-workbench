@@ -23,12 +23,17 @@ import {
   validateLanguage,
   translateContent,
   assistPassage,
+  validateAssistResult,
   analyzeFigure,
 } from "./models.mjs";
 import { visionModel, prepareVisionInput, visualEvidenceRecord } from "./vision.mjs";
 import { readingPreferences, readingFormat, readingState, materializeReadingVersions, appendReadingVersion, syncReadingTranslations } from "./reading.mjs";
 import { generateInteractiveReading, translateInteractiveReading, usableInteractiveTranslation, interactiveTranslationFailure } from "./interactive.mjs";
 import { validateAnnotation, validatePage, annotationMarkdown } from "./annotations.mjs";
+import { figureCaptionsSourceHash, usableFigureCaptions, translateFigureCaptions, captionTranslationFailure } from "./captions.mjs";
+import { selectionPageBinding } from "./source-selection.mjs";
+import { existingTaskActivity, validateAgentTaskId } from "./activity-task.mjs";
+import { assertUniqueJsonKeys } from "./json.mjs";
 
 import {
   prepareInsights,
@@ -115,6 +120,7 @@ export async function createApp({
   });
   // Only this local source-bound image route accepts a larger JSON payload.
   app.use("/api/papers/:id/figures/:figureId/analyze", express.json({ limit: "6mb" }));
+  app.use("/api/papers/:id/insights", express.json({ limit: "256kb", verify: (_request, _response, buffer) => assertUniqueJsonKeys(buffer.toString("utf8")) }));
   app.use(express.json({ limit: "256kb" }));
   const paperById = (id) => {
     const paper = store.paper(id);
@@ -172,11 +178,33 @@ export async function createApp({
     if (body.metadata === undefined) return undefined;
     if (!paperId || !body.metadata || typeof body.metadata !== "object" || Array.isArray(body.metadata))
       throw new ApiError("Question metadata requires a paper context.");
-    const { quote, page } = body.metadata;
+    const { quote, sourceScope, readingId } = body.metadata;
+    const paper = paperById(paperId);
     const result = {};
     if (quote !== undefined) result.quote = validateMarkdown(quote, "quote", 12000);
-    if (page !== undefined) result.page = validatePage(page, paperById(paperId));
-    if (!Object.keys(result).length) throw new ApiError("Question metadata needs quote or page.");
+    if (sourceScope !== undefined) {
+      if (!["pdf", "source-text", "reading", "abstract"].includes(sourceScope))
+        throw new ApiError("Question sourceScope must be pdf, source-text, reading, or abstract.");
+      if (sourceScope !== "pdf" && (body.metadata.page !== undefined || body.metadata.pages !== undefined))
+        throw new ApiError("Non-PDF question selections must not claim page or pages.");
+      if (sourceScope === "pdf" && !paper.filePath)
+        throw new ApiError("A PDF selection requires a locally imported PDF.");
+      if (sourceScope === "source-text" && paper.filePath)
+        throw new ApiError("Select PDF passages using the pdf source scope.");
+      if (sourceScope === "abstract" && !paper.abstract)
+        throw new ApiError("No abstract exists for this paper.");
+      if (sourceScope === "reading") {
+        if (typeof readingId !== "string" || !readingState(paper).readingVersions.some(version => version.id === readingId))
+          throw new ApiError("Reading version not found in this paper.", 404);
+        result.readingId = readingId;
+      }
+      result.sourceScope = sourceScope;
+    }
+    if (readingId !== undefined && sourceScope !== "reading")
+      throw new ApiError("readingId is only valid for a reading selection.");
+    Object.assign(result, selectionPageBinding(body.metadata, paper));
+    if (result.quote === undefined && result.page === undefined)
+      throw new ApiError("Question metadata needs quote, page or pages.");
     return result;
   };
 
@@ -518,11 +546,15 @@ export async function createApp({
       text: validateMarkdown(body.text ?? body.quote, "Selected text", 12000),
       language: validateLanguage(body.language),
     };
+    if (body.text !== undefined && body.quote !== undefined && validateMarkdown(body.quote, "quote", 12000) !== common.text)
+      throw new ApiError("text and quote must describe the same selected passage.");
     const sourceScope = body.sourceScope ?? (paper.filePath ? "pdf" : "source-text");
     if (!["pdf", "source-text", "reading", "abstract"].includes(sourceScope))
       throw new ApiError("sourceScope must be pdf, source-text, reading, or abstract.");
+    if (body.readingId !== undefined && sourceScope !== "reading")
+      throw new ApiError("readingId is only valid for a reading selection.");
     if (sourceScope === "reading" || sourceScope === "abstract") {
-      if (body.page !== undefined) throw new ApiError("Overview and abstract selections must not claim a PDF page anchor.");
+      if (body.page !== undefined || body.pages !== undefined) throw new ApiError("Overview and abstract selections must not claim a PDF page anchor.");
       if (sourceScope === "reading") {
         if (typeof body.readingId !== "string" || !readingState(paper).readingVersions.some(version => version.id === body.readingId))
           throw new ApiError("Reading version not found in this paper.", 404);
@@ -533,24 +565,36 @@ export async function createApp({
     }
     if (sourceScope === "pdf" && !paper.filePath) throw new ApiError("A PDF selection requires a locally imported PDF.");
     if (sourceScope === "source-text" && paper.filePath) throw new ApiError("Select PDF passages using the pdf source scope and their actual page.");
-    return { ...common, sourceScope, page: validatePage(body.page ?? 1, paper) };
+    if (sourceScope === "source-text" && body.pages !== undefined) throw new ApiError("Source-text selections must not claim PDF pages.");
+    return { ...common, sourceScope, ...selectionPageBinding(body, paper, { defaultPage: 1 }) };
   };
   app.get("/api/papers/:id/activities", wrap(async (request, response) => {
     const paper = paperById(request.params.id);
     const kind = request.query.kind;
     if (kind && !["translation", "explanation"].includes(kind)) throw new ApiError("Activity kind must be translation or explanation.");
-    response.json({ activities: store.data.activities.filter((item) => item.paperId === paper.id && (!kind || item.kind === kind)).toReversed() });
+    const agentTaskId = request.query.agentTaskId === undefined ? undefined : validateAgentTaskId(request.query.agentTaskId);
+    response.json({ activities: store.data.activities.filter((item) => item.paperId === paper.id && (!kind || item.kind === kind) && (!agentTaskId || item.agentTaskId === agentTaskId)).toReversed() });
   }));
   app.post("/api/papers/:id/activities", wrap(async (request, response) => {
     const paper = paperById(request.params.id);
     const body = bodyOf(request);
+    if (body.paperId !== undefined && body.paperId !== paper.id)
+      throw new ApiError("Activity paperId must match the requested paper.");
     const passage = passageRequest(body, paper);
+    const agentTaskId = body.agentTaskId === undefined ? undefined : validateAgentTaskId(body.agentTaskId);
     const source = body.source ? validateAgentSource(body.source) : { kind: "local" };
     const result = {
-      text: validateMarkdown(typeof body.result === "string" ? body.result : body.result?.text, "result", 50000),
+      text: validateMarkdown(validateAssistResult(typeof body.result === "string" ? body.result : body.result?.text, 400), "result", 50000),
       kind: passage.kind, language: passage.language, source, createdAt: new Date().toISOString(),
     };
-    const activity = { id: randomUUID(), paperId: paper.id, ...passage, quote: passage.text, result, source, createdAt: result.createdAt };
+    const activity = { id: randomUUID(), paperId: paper.id, ...passage, ...(agentTaskId ? { agentTaskId } : {}), quote: passage.text, result, source, createdAt: result.createdAt };
+    const existing = existingTaskActivity(store.data.activities, activity);
+    if (existing) {
+      // Also ensure durability if an earlier import's response/save was lost.
+      await store.save();
+      response.json({ activity: existing, reused: true });
+      return;
+    }
     store.data.activities.push(activity);
     await store.save();
     response.status(201).json({ activity });
@@ -664,16 +708,27 @@ export async function createApp({
         const sourceHash = contentHash(version.markdown);
         const cached = version.translations?.[language];
         const translationOptions = { language, pageCount: paper.pages?.length, figures: version.figures || paper.figures };
-        const reusableArticle = reusableTranslation(cached, sourceHash, version.createdAt);
-        const completeInteractive = !version.interactive || usableInteractiveTranslation(cached?.interactive, version.interactive, translationOptions);
-        if (reusableArticle && completeInteractive)
-          return response.json({ translation: publicReadingTranslation(cached, version, translationOptions), paper: publicPaper(paper) });
-        const key = JSON.stringify([paper.id, "reading", version.id, language, sourceHash]);
+        const captionsHash = figureCaptionsSourceHash(translationOptions.figures);
+        const sameLanguage = validateLanguage(version.language || "en") === language;
+        const article = reusableTranslation(cached, sourceHash, version.createdAt) ? cached : sameLanguage ? {
+          markdown: version.markdown, language, createdAt: version.createdAt,
+          sourceHash, sourceUpdatedAt: version.createdAt,
+          ...(version.mode ? { mode: version.mode } : {}), ...(version.source ? { source: version.source } : {}),
+          ...(version.interactive ? { interactive: version.interactive } : {}),
+        } : undefined;
+        const completeInteractive = !version.interactive || usableInteractiveTranslation(article?.interactive, version.interactive, translationOptions);
+        const completeCaptions = usableFigureCaptions(article, translationOptions.figures, { language });
+        if (article && completeInteractive && completeCaptions)
+          return response.json({ translation: publicReadingTranslation(article, version, translationOptions), paper: publicPaper(paper) });
+        const key = JSON.stringify([paper.id, "reading", version.id, language, sourceHash, captionsHash]);
         const translation = await coalesceTranslation(key, async () => {
           const settings = { ...store.data.settings };
           const cachedFingerprint = contentHash(JSON.stringify(cached || null));
-          const translated = reusableArticle ? { ...cached } : await translateContent(version.markdown, language, settings, { fetchImpl });
-          if (version.interactive) {
+          const translated = article ? { ...article } : await translateContent(version.markdown, language, settings, { fetchImpl });
+          if (version.interactive && !completeInteractive && sameLanguage) {
+            translated.interactive = version.interactive;
+            delete translated.interactiveTranslationError;
+          } else if (version.interactive && !completeInteractive) {
             try {
               translated.interactive = await translateInteractiveReading({
                 interactive: version.interactive, ...translationOptions,
@@ -688,9 +743,22 @@ export async function createApp({
               translated.interactiveTranslationError = interactiveTranslationFailure(error);
             }
           }
+          if (!completeCaptions) {
+            try {
+              translated.figureCaptions = await translateFigureCaptions({ ...translationOptions,
+                callModel: prompt => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens || 4096 }),
+              });
+              translated.figureCaptionsSourceHash = captionsHash;
+              delete translated.captionTranslationError;
+            } catch (error) {
+              if (!(error instanceof ApiError)) throw error;
+              translated.captionTranslationError = captionTranslationFailure(error);
+            }
+          }
           if (!store.paper(paper.id)) throw new ApiError("The paper was deleted while translating.", 409);
           const saved = materializeReadingVersions(paper).find((item) => item.id === version.id);
-          if (!saved || contentHash(saved.markdown) !== sourceHash) throw new ApiError("Reading version changed while translating.", 409);
+          if (!saved || contentHash(saved.markdown) !== sourceHash || figureCaptionsSourceHash(saved.figures || paper.figures) !== captionsHash)
+            throw new ApiError("Reading version or source captions changed while translating.", 409);
           // An external agent may have published a translation while the model
           // was running. Preserve that valid result instead of overwriting it.
           const current = saved.translations?.[language];
@@ -766,7 +834,8 @@ export async function createApp({
     wrap(async (request, response) => {
       const body = bodyOf(request);
       const paperId = validatePaperContext(body.paperId ?? null);
-      const metadata = questionMetadata(body, paperId);
+      const suppressBoundSelection = body.metadata === null;
+      let metadata = questionMetadata(suppressBoundSelection ? { ...body, metadata: undefined } : body, paperId);
       const source = validateAgentSource(body.source);
       const question = validateMarkdown(body.question, "question", 12000);
       const answer = validateMarkdown(body.answer, "answer", 200000);
@@ -781,6 +850,8 @@ export async function createApp({
           "Conversation not found in this paper context.",
           404,
         );
+      if (!suppressBoundSelection && metadata === undefined && paperId && conversation?.metadata)
+        metadata = questionMetadata({ metadata: conversation.metadata }, paperId);
       conversation ||= createConversation(paperId, metadata);
       const createdAt = new Date().toISOString();
       const common = { paperId, conversationId: conversation.id, createdAt };
@@ -830,6 +901,7 @@ export async function createApp({
     if (requestedId && !conversation)
       throw new ApiError("Conversation not found in this paper context.", 404);
     response.json({
+      conversation: conversation || null,
       messages: conversation ? conversationMessages(conversation.id) : [],
       conversationId: conversation?.id || null,
     });
@@ -847,6 +919,46 @@ export async function createApp({
         .json({ conversation, conversationId: conversation.id, messages: [] });
     }),
   );
+  app.post("/api/conversations/:conversationId/branch", wrap(async (request, response) => {
+    const body = bodyOf(request);
+    if (Object.keys(body).some(key => !["paperId", "messageId", "action"].includes(key)))
+      throw new ApiError("A branch accepts only paperId, messageId and action.");
+    if (!Object.hasOwn(body, "paperId") || (body.paperId !== null && (typeof body.paperId !== "string" || !body.paperId.trim())))
+      throw new ApiError("A branch requires paperId, or explicit null for a general research conversation.");
+    const paperId = validatePaperContext(body.paperId);
+    if (typeof body.messageId !== "string" || !body.messageId.trim() || body.messageId.length > 128)
+      throw new ApiError("messageId must identify a saved user message.");
+    const action = body.action ?? "edit";
+    if (!["edit", "retry"].includes(action)) throw new ApiError("Branch action must be edit or retry.");
+    const parent = store.data.conversations.find(item => item.id === request.params.conversationId && item.paperId === paperId);
+    if (!parent) throw new ApiError("Conversation not found in this paper context.", 404);
+    // Do not use the last-100 display window: the branch's history is the full
+    // immutable prefix before the target question, never its answer or future.
+    const original = store.data.chats.filter(message => message.conversationId === parent.id);
+    const targetIndex = original.findIndex(message => message.id === body.messageId && (message.paperId ?? null) === paperId);
+    if (targetIndex < 0) throw new ApiError("Message not found in this conversation and paper context.", 404);
+    const target = original[targetIndex];
+    if (target.role !== "user") throw new ApiError("Choose a saved user question to edit or retry.");
+    const prefix = original.slice(0, targetIndex);
+    if (prefix.some(message => (message.paperId ?? null) !== paperId || !["user", "assistant"].includes(message.role) || typeof message.content !== "string"))
+      throw new ApiError("This conversation contains inconsistent historical records and cannot be branched safely.", 409);
+    const metadata = target.metadata == null ? undefined : questionMetadata({ metadata: target.metadata }, paperId);
+    const now = new Date().toISOString();
+    const copies = prefix.map((message, index) => ({
+      ...structuredClone(message), id: randomUUID(), paperId,
+      branchSource: { conversationId: parent.id, ...(typeof message.id === "string" ? { messageId: message.id } : {}), messageIndex: index, copiedAt: now },
+    }));
+    const conversation = createConversation(paperId, metadata);
+    conversation.source = { kind: "branch", conversationId: parent.id, messageId: target.id, action, createdAt: now };
+    for (const message of copies) message.conversationId = conversation.id;
+    store.data.chats.push(...copies);
+    await store.save();
+    const hasQuestionText = typeof target.questionText === "string" && target.questionText.trim() && target.questionText.length <= 12000;
+    response.status(201).json({
+      conversation, conversationId: conversation.id, messages: copies,
+      draft: { message: hasQuestionText ? target.questionText : target.content, metadata: metadata || null, verbatim: !hasQuestionText },
+    });
+  }));
   app.get("/api/conversations", (request, response) => {
     const paperId =
       typeof request.query.paperId === "string" && request.query.paperId
@@ -894,13 +1006,17 @@ export async function createApp({
     wrap(async (request, response) => {
       const { message, history } = bodyOf(request);
       const paperId = validatePaperContext(request.body.paperId ?? null);
-      const metadata = questionMetadata(request.body, paperId);
+      const suppressBoundSelection = request.body.metadata === null;
+      let metadata = questionMetadata(suppressBoundSelection ? { ...request.body, metadata: undefined } : request.body, paperId);
       if (
         typeof message !== "string" ||
         !message.trim() ||
         message.length > 12000
       )
         throw new ApiError("Enter a question of up to 12,000 characters.");
+      const questionText = request.body.questionText;
+      if (questionText !== undefined && (typeof questionText !== "string" || !questionText.trim() || questionText.length > 12000))
+        throw new ApiError("questionText must contain the original question text, up to 12,000 characters.");
       if (
         history !== undefined &&
         (!Array.isArray(history) ||
@@ -922,6 +1038,11 @@ export async function createApp({
         ? store.data.conversations.find((item) => item.id === request.body.conversationId && item.paperId === paperId)
         : activeConversation(paperId);
       if (request.body.conversationId && !conversation) throw new ApiError("Conversation not found in this paper context.", 404);
+      // A passage-bound session keeps its explicitly saved source context on
+      // follow-ups. Never infer a page from prose or borrow another session's
+      // selection. Explicit request metadata always takes precedence.
+      if (!suppressBoundSelection && metadata === undefined && paperId && conversation?.metadata)
+        metadata = questionMetadata({ metadata: conversation.metadata }, paperId);
       if (!conversation) {
         conversation = createConversation(paperId, metadata);
         await store.save();
@@ -929,14 +1050,18 @@ export async function createApp({
       // Capture the active conversation before calling the provider. A concurrent
       // new-chat action must never attach this answer to the new empty conversation.
       const conversationId = conversation.id;
-      const previous =
-        history || conversationMessages(conversationId).slice(-12);
+      // Caller-supplied history is untrusted text, never an authority for stored
+      // vision provenance or source verification. Only saved records may carry
+      // the server's source metadata into history preparation.
+      const previous = history
+        ? history.map(({ role, content }) => ({ role, content }))
+        : conversationMessages(conversationId);
       const answer = await answerQuestion(
         papers,
-        metadata ? `${message.trim()}\n\nSelected passage context (untrusted quoted source):\n${JSON.stringify(metadata)}` : message.trim(),
+        message.trim(),
         previous,
         { ...store.data.settings },
-        { fetchImpl },
+        { fetchImpl, metadata },
       );
       if (paperId && !store.paper(paperId))
         throw new ApiError(
@@ -951,6 +1076,7 @@ export async function createApp({
         conversationId,
         createdAt: new Date().toISOString(),
         ...(metadata ? { metadata } : {}),
+        ...(questionText === undefined ? {} : { questionText }),
       };
       const assistantMessage = {
         id: randomUUID(),
@@ -969,6 +1095,7 @@ export async function createApp({
       conversation.updatedAt = assistantMessage.createdAt;
       await store.save();
       response.json({
+        userMessage,
         message: assistantMessage,
         sources: answer.sources,
         mode: answer.mode,
@@ -1011,6 +1138,7 @@ export async function createApp({
     if (error.type === "entity.too.large")
       return response.status(413).json({ error: "Request body is too large." });
     response.status(error.status || 500).json({
+      ...(error instanceof ApiError && ["selection_no_translatable_text", "selection_model_unconfigured"].includes(error.code) ? { code: error.code } : {}),
       error:
         error instanceof ApiError
           ? error.message

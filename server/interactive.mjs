@@ -1,4 +1,5 @@
 import { ApiError } from "./network.mjs";
+import { substantialLanguageMismatch } from "./translation-language.mjs";
 
 const TYPES = new Set(["concept", "figure", "question"]);
 const MAX_BLOCKS = 24;
@@ -195,32 +196,16 @@ const DISPLAY_FIELDS = ["title", "text", "explanation", "question", "answer"];
 function displayText(block) {
   return DISPLAY_FIELDS.map(field => block[field] || "").join("\n");
 }
-function scriptCounts(value) {
-  // A basic en/zh mismatch check, not general language identification. Math,
-  // code, names and short quotes can remain unchanged in a valid translation.
-  const prose = value.replace(/\$\$[\s\S]*?\$\$|\$[^$\n]*\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|`[^`]*`/g, " ");
-  return {
-    han: (prose.match(/\p{Script=Han}/gu) || []).length,
-    latin: (prose.match(/[A-Za-z]/g) || []).length,
-    words: (prose.match(/[A-Za-z]{2,}(?:[-'][A-Za-z]+)*/g) || []).length,
-  };
-}
-function oppositeLanguage(value, language, unchanged = false) {
-  const { han, latin, words } = scriptCounts(value);
-  if (language === "en") return han >= (unchanged ? 8 : 20) && han > latin * .5;
-  if (language === "zh") return words >= (unchanged ? 10 : 25) && han < words * .4;
-  return false;
-}
 function validateDisplayLanguage(translated, original, language) {
   const target = String(language || "").toLowerCase().split("-")[0];
   if (!["en", "zh"].includes(target)) return;
   const all = translated.blocks.map(displayText).join("\n");
   const before = original.blocks.map(displayText).join("\n");
-  if (oppositeLanguage(all, target, all === before))
+  if (substantialLanguageMismatch(all, target, before))
     throw new ApiError(`Interactive display text does not appear to be translated into ${language}. Translate all display fields; preserve only the specified structure and source bindings.`);
   for (let i = 0; i < translated.blocks.length; i++) {
     const block = displayText(translated.blocks[i]);
-    if (oppositeLanguage(block, target, block === displayText(original.blocks[i])))
+    if (substantialLanguageMismatch(block, target, displayText(original.blocks[i])))
       throw new ApiError(`Interactive block ${translated.blocks[i].id} still contains substantial untranslated display text for ${language}. Translate its display fields without changing source bindings.`);
   }
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   ChevronDown,
@@ -6,6 +6,7 @@ import {
   Copy,
   Download,
   Globe2,
+  Info,
   FileText,
   Loader2,
   Settings2,
@@ -14,6 +15,8 @@ import {
   X,
 } from "lucide-react";
 import Mark from "./Markdown";
+import ReadingSections from "./ReadingSections";
+import { parseReadingSectionLocation, readingSections, readingSectionUrl, type ReadingSectionLocation } from "./reading-sections";
 import SelectionTools from "./SelectionTools";
 import VisionTools from "./VisionTools";
 import InteractiveReading from "./InteractiveReading";
@@ -27,6 +30,9 @@ import {
 } from "./types";
 import { t } from "./i18n";
 import { markReadingTranslationApplied, startReadingTranslation, translationSource, useReadingTranslationJob } from "./reading-translation-jobs";
+import { figureCaption, missingFigureCaptions } from "./figure-captions";
+import { portableReadingMarkdown } from "./portable-answer";
+import { positionHash, type OverviewReadingContext } from "./reading-position";
 
 export function readingVersions(paper: Paper): ReadingVersion[] {
   if (paper.readingVersions?.length) return [...paper.readingVersions].sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
@@ -77,6 +83,7 @@ function saveFile(text: string, name: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 export default function ReadingOverview({
+  active = true,
   paper,
   language,
   original,
@@ -88,7 +95,16 @@ export default function ReadingOverview({
   onError,
   onBusy,
   onAskSelection,
+  initialPresentation,
+  positionContext,
+  onReadingContextChange,
+  onManageFigures,
 }: {
+  active?: boolean;
+  initialPresentation?: "article" | "interactive";
+  positionContext?: string;
+  onReadingContextChange?: (context: OverviewReadingContext) => void;
+  onManageFigures?: () => void;
   paper: Paper;
   language: string;
   original: boolean;
@@ -96,21 +112,62 @@ export default function ReadingOverview({
   onSettings: (value: Settings) => void;
   onConfigure: () => void;
   onUpdated: (paper: Paper) => void;
-  onPage: (page: number) => void;
+  onPage: (page: number, quote?: string) => void;
   onError: (message: string) => void;
   onBusy?: (value: boolean) => void;
-  onAskSelection: (text: string, label: string) => void;
+  onAskSelection: (text: string, label: string, question?: string, source?: {sourceScope:'reading'|'abstract';readingId?:string}) => Promise<boolean>;
 }) {
   const versions = readingVersions(paper);
+  const proseRef = useRef<HTMLDivElement>(null);
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return;
+    const position = () => {
+      const bounds = toolbar.getBoundingClientRect(), viewport = window.visualViewport?.height || innerHeight;
+      toolbar.querySelectorAll<HTMLDetailsElement>(":scope > details[open]").forEach(details => {
+        const body = details.querySelector<HTMLElement>(":scope > .reading-version-detail-body, :scope > .vision-tools-body");
+        if (!body) return;
+        const below = viewport - bounds.bottom - 14, above = bounds.top - 14;
+        const useAbove = below < 230 && above > below;
+        body.dataset.side = useAbove ? "above" : "below";
+        body.style.setProperty("--reading-popover-height", `${Math.max(120, Math.min(640, useAbove ? above : below))}px`);
+      });
+    };
+    const toggle = (event: Event) => {
+      const opened = event.target;
+      if (!(opened instanceof HTMLDetailsElement) || opened.parentElement !== toolbar || !opened.open) return;
+      toolbar.querySelectorAll<HTMLDetailsElement>(":scope > details[open]").forEach(item => { if (item !== opened) item.open = false; });
+      position();
+    };
+    toolbar.addEventListener("toggle", toggle, true);
+    window.addEventListener("resize", position); window.addEventListener("scroll", position, true);
+    return () => { toolbar.removeEventListener("toggle", toggle, true); window.removeEventListener("resize", position); window.removeEventListener("scroll", position, true); };
+  }, []);
+  useEffect(() => {
+    const outside = (event: PointerEvent) => { if (detailsRef.current?.open && !detailsRef.current.contains(event.target as Node)) detailsRef.current.open = false; };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, []);
+  useEffect(() => { if (detailsRef.current) detailsRef.current.open = false; }, [paper.id, active]);
+  const [sectionIntent, setSectionIntent] = useState<(ReadingSectionLocation & { revision: number }) | undefined>(() => {
+    const anchor = parseReadingSectionLocation(location.href, paper.id);
+    return anchor ? { ...anchor, revision: 1 } : undefined;
+  });
+  const [sectionNoticeDismissed, setSectionNoticeDismissed] = useState(false);
   const [selected, setSelected] = useState(
-    paper.activeReadingId || versions[0]?.id || "",
+    sectionIntent?.readingId || paper.activeReadingId || versions[0]?.id || "",
   );
   const [generating, setGenerating] = useState(false);
   const [choosing, setChoosing] = useState(false);
   const selectedRef = useRef(selected);
+  // A late failed write must not roll back a newer read-only source navigation.
+  const selectionIntent = useRef(0);
   const [configure, setConfigure] = useState(!versions.length);
   const [format, setFormat] = useState<"article"|"interactive">("article");
-  const [presentation, setPresentation] = useState<"article"|"interactive">("article");
+  const [presentation, setPresentation] = useState<"article"|"interactive">(initialPresentation || (versions.find(v=>v.id===(paper.activeReadingId || versions[0]?.id))?.format === "interactive" ? "interactive" : "article"));
+  const presentationVersion = useRef(paper.activeReadingId || versions[0]?.id);
   const [exporting, setExporting] = useState(false);
   const [style, setStyle] = useState<ReadingStyle>("quick");
   const [focus, setFocus] = useState("");
@@ -127,9 +184,10 @@ export default function ReadingOverview({
     };
   }, []);
   useEffect(() => {
-    if (paper.activeReadingId) { setSelected(paper.activeReadingId); selectedRef.current = paper.activeReadingId; }
+    if (paper.activeReadingId && !sectionIntent) { setSelected(paper.activeReadingId); selectedRef.current = paper.activeReadingId; }
   }, [paper.activeReadingId]);
   const version = versions.find((v) => v.id === selected) || versions[0];
+  const sourceFigures = version?.figures || paper.figures || [];
   const sourceIdentity = version ? translationSource({ ...version, figures: version.figures || paper.figures }) : "";
   const storedJob = useReadingTranslationJob(paper.id, version?.id || "", language);
   const translationJob = storedJob?.source === sourceIdentity ? storedJob : undefined;
@@ -137,13 +195,51 @@ export default function ReadingOverview({
   const translation = original ? undefined : version?.translations?.[language];
   const cachedTranslation = translation && !translation.stale ? translation : undefined;
   const completedTranslation = !original && translationJob?.status === "success" ? translationJob.result : undefined;
-  const canCompleteInteractiveTranslation = translationJob?.status === "success" && !translationJob.applied && !!version?.interactive && !!cachedTranslation && (!cachedTranslation.interactive || !!cachedTranslation.interactiveTranslationError) && completedTranslation?.markdown === cachedTranslation.markdown;
-  const translated = !cachedTranslation || canCompleteInteractiveTranslation ? completedTranslation || cachedTranslation : cachedTranslation;
+  const cachedNeedsSupplement = !!cachedTranslation && ((!!version?.interactive && (!cachedTranslation.interactive || !!cachedTranslation.interactiveTranslationError)) || !!cachedTranslation.captionTranslationError || missingFigureCaptions(sourceFigures, cachedTranslation.figureCaptions).length > 0);
+  const canCompleteTranslation = translationJob?.status === "success" && !translationJob.applied && cachedNeedsSupplement && completedTranslation?.markdown === cachedTranslation?.markdown;
+  const translated = !cachedTranslation || canCompleteTranslation ? completedTranslation || cachedTranslation : cachedTranslation;
   const markdown = translated?.markdown || version?.markdown || "";
   const interactive = translated ? translated.interactiveTranslationError ? undefined : translated.interactive : version?.interactive;
   const needsInteractiveTranslation = !!translated && !!version?.interactive && !interactive;
+  const needsCaptionTranslation = !original && missingFigureCaptions(sourceFigures, translated?.figureCaptions).length > 0;
+  const captionPresentation = { figureCaptions: original ? undefined : translated?.figureCaptions, captionLanguage: original ? undefined : language };
   const visiblePresentation = interactive ? presentation : "article";
-  useEffect(() => { setPresentation(version?.format === "interactive" ? "interactive" : "article"); }, [version?.id]);
+  useEffect(() => {
+    if (presentationVersion.current !== version?.id) {
+      presentationVersion.current = version?.id;
+      setPresentation(version?.format === "interactive" ? "interactive" : "article");
+    }
+  }, [version?.id]);
+  const readingContextKey = positionHash(JSON.stringify([positionContext, version?.id, language, original, visiblePresentation, markdown, visiblePresentation === "interactive" ? interactive : null, sourceFigures, translated?.figureCaptions]));
+  const contextCallback = useRef(onReadingContextChange);
+  contextCallback.current = onReadingContextChange;
+  useLayoutEffect(() => {
+    contextCallback.current?.({ key: readingContextKey, versionId: version?.id, language, presentation: visiblePresentation });
+  }, [readingContextKey]);
+  const sections = useMemo(() => readingSections(markdown), [markdown]);
+  const sectionVersionAvailable = !sectionIntent || versions.some(item => item.id === sectionIntent.readingId);
+  const sectionExists = !sectionIntent || sectionIntent.section === 0 || sections.some(item => item.index === sectionIntent.section);
+  useEffect(() => {
+    const changed = () => {
+      selectionIntent.current += 1;
+      const anchor = parseReadingSectionLocation(location.href, paper.id);
+      setSectionNoticeDismissed(false);
+      setSectionIntent(anchor ? { ...anchor, revision: Date.now() } : undefined);
+      if (anchor) { setSelected(anchor.readingId); selectedRef.current = anchor.readingId; setPresentation("article"); }
+    };
+    window.addEventListener("hashchange", changed);
+    return () => window.removeEventListener("hashchange", changed);
+  }, [paper.id]);
+  useEffect(() => { if (sectionIntent && sectionVersionAvailable) setPresentation("article"); }, [sectionIntent, sectionVersionAvailable]);
+  const navigateSection = useCallback((index: number) => {
+    if (!version) return;
+    selectionIntent.current += 1;
+    const destination = readingSectionUrl(location.href, paper.id, version.id, index);
+    if (destination !== location.href) history.pushState({}, "", destination);
+    setSectionNoticeDismissed(false);
+    setSectionIntent(previous => ({ readingId: version.id, section: index, revision: (previous?.revision || 0) + 1 }));
+  }, [version?.id, paper.id]);
+  const sectionNavigation = useMemo(() => version ? { readingId: version.id, sections, href: (index: number) => readingSectionUrl(location.href, paper.id, version.id, index), onNavigate: navigateSection } : undefined, [version?.id, sections, paper.id, navigateSection]);
   const sourceLanguage = version?.language || "en";
   const needsTranslation =
     !!version &&
@@ -157,7 +253,7 @@ export default function ReadingOverview({
     if (!version || translationJob?.status !== "success") return;
     const result = translationJob.result;
     const cached = version.translations?.[language];
-    if (cached === result || (cached && !cached.stale && !canCompleteInteractiveTranslation)) return;
+    if (cached === result || (cached && !cached.stale && !canCompleteTranslation)) return;
     // Merge just this source-bound translation into the latest displayed paper.
     // A completed request must not restore an older active version or snapshot.
     if (["legacy-summary", "legacy-report"].includes(version.id)) {
@@ -169,12 +265,13 @@ export default function ReadingOverview({
     // A later public-paper validation may remove rejected cards. Do not revive
     // them from a previously applied in-memory result on another navigation.
     markReadingTranslationApplied(paper.id, version.id, language, translationJob);
-  }, [paper, version?.id, language, translationJob, canCompleteInteractiveTranslation, onUpdated]);
+  }, [paper, version?.id, language, translationJob, canCompleteTranslation, onUpdated]);
   useEffect(() => {
     if (previousLanguage.current !== language) {
       previousLanguage.current = language;
       autoTranslation.current = version ? {id:version.id,language} : undefined;
     }
+    if (!active) return;
     const requested = autoTranslation.current;
     if (!requested || requested.id !== version?.id || requested.language !== language || original) return;
     if (!needsTranslation) { autoTranslation.current = undefined; return; }
@@ -182,7 +279,7 @@ export default function ReadingOverview({
     if (!modelReady || translating || generating) return;
     autoTranslation.current = undefined;
     void translate();
-  }, [language, version?.id, original, needsTranslation, modelReady, translating, generating, translationJob]);
+  }, [active, language, version?.id, original, needsTranslation, modelReady, translating, generating, translationJob]);
   const source =
     version?.source?.agent ||
     version?.source?.model ||
@@ -194,7 +291,12 @@ export default function ReadingOverview({
   };
   async function choose(id: string) {
     if (choosing) return;
+    const intent = ++selectionIntent.current;
     const previous = selected;
+    setSectionIntent(undefined);
+    if (parseReadingSectionLocation(location.href, paper.id)) {
+      const url = new URL(location.href); url.hash = ""; history.replaceState({}, "", url.href);
+    }
     selectedRef.current = id;
     setSelected(id);
     setError("");
@@ -210,8 +312,11 @@ export default function ReadingOverview({
         ).paper,
       );
     } catch (e) {
-      selectedRef.current = previous;
-      if (mounted.current) { setSelected(previous); setError((e as Error).message); }
+      if (mounted.current && selectionIntent.current === intent && selectedRef.current === id) {
+        selectedRef.current = previous;
+        setSelected(previous);
+        setError((e as Error).message);
+      }
     } finally { if (mounted.current) setChoosing(false); }
   }
   async function generate() {
@@ -305,12 +410,17 @@ export default function ReadingOverview({
       );
     }
   }
+  function portableMarkdown() {
+    return portableReadingMarkdown(markdown, paper, translated ? language : sourceLanguage,
+      sourceFigures.map(figure=>({...figure,...figureCaption(figure,captionPresentation)})));
+  }
   async function exportWebsite() {
-    if (!version || !interactive || exporting) return;
+    if (!version || exporting) return;
     setExporting(true); setError("");
     try {
-      const {exportInteractiveHtml} = await import("./interactive-export");
-      const result = await exportInteractiveHtml({paper,version:{...version,markdown},language:translated ? language : sourceLanguage,interactive});
+      const {exportArticleHtml,exportInteractiveHtml} = await import("./interactive-export");
+      const exportReading = visiblePresentation === "interactive" && interactive ? exportInteractiveHtml : exportArticleHtml;
+      const result = await exportReading({paper,version:{...version,markdown},language:translated ? language : sourceLanguage,interactive,...captionPresentation});
       const link=document.createElement("a");
       const url=URL.createObjectURL(new Blob([result.html],{type:"text/html;charset=utf-8"}));
       link.href=url;link.download=result.filename;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
@@ -328,63 +438,23 @@ export default function ReadingOverview({
       aria-label={t("阅读解读", "Reading overview")}
     >
       <div className="reading-overview-heading">
-        <div>
-          <span className="eyebrow">PAPER WORKBENCH</span>
-          <h2>
-            <Sparkles size={20} />
-            {t("阅读解读", "Reading overview")}
-          </h2>
+        <h2><Sparkles size={18} />{t("阅读解读", "Reading overview")}</h2>
+        {version && <label className="reading-version-compact" title={`${t("解读版本", "Reading version")} · ${source}`}>
+          <span aria-hidden="true">v{versions.length - versions.findIndex(item => item.id === version.id)} <ChevronDown size={12}/></span>
+          <select aria-label={t("解读版本", "Reading version")} value={version.id} onChange={event => void choose(event.target.value)} disabled={generating || choosing}>
+            {versions.map((item, i) => <option key={item.id} value={item.id}>{`v${versions.length - i} · ${["Summary", "Reading report", "Quick overview", "Deep reading", "Critical review"].includes(item.title || "") ? styleLabel(item.style) : item.title || styleLabel(item.style)} · ${item.language || "en"} · ${new Date(item.createdAt).toLocaleDateString(language)} · ${item.source?.agent || item.source?.model || t("模型", "Model")}`}</option>)}
+          </select>
+        </label>}
+        <div className="reading-primary-actions">
+          <button className="soft-button reading-configure-toggle" onClick={() => setConfigure(!configure)} aria-expanded={configure} aria-label={versions.length ? t("生成新版本", "New version") : t("阅读偏好", "Reading preferences")} title={versions.length ? t("生成新版本", "New version") : t("阅读偏好", "Reading preferences")}>
+            <Settings2 size={15}/><span>{versions.length ? t("生成新版本", "New version") : t("阅读偏好", "Reading preferences")}</span>
+          </button>
+          {version && <>
+            <button className="icon-button" aria-label={t("复制解读", "Copy overview")} title={t("复制解读", "Copy overview")} onClick={() => void copy(portableMarkdown())}>{copied ? <Check size={16}/> : <Copy size={16}/>}</button>
+            <button className="icon-button" aria-label={t("下载解读", "Download overview")} title={t("下载解读", "Download overview")} onClick={() => saveFile(portableMarkdown(), `${paper.title.slice(0, 70)}-${version.style}.md`)}><Download size={16}/></button>
+          </>}
         </div>
-        <button
-          className="soft-button"
-          onClick={() => setConfigure(!configure)}
-          aria-expanded={configure}
-        >
-          <Settings2 size={14} />
-          {versions.length
-            ? t("生成新版本", "New version")
-            : t("阅读偏好", "Reading preferences")}
-        </button>
       </div>
-      {versions.length > 0 && (
-        <div className="reading-version-row">
-          <label>
-            <span>{t("版本", "Version")}</span>
-            <select
-              aria-label={t("解读版本", "Reading version")}
-              value={version?.id}
-              onChange={(e) => void choose(e.target.value)}
-              disabled={generating || choosing}
-            >
-              {versions.map((item, i) => (
-                <option
-                  key={item.id}
-                  value={item.id}
-                >{`v${versions.length - i} · ${["Summary", "Reading report", "Quick overview", "Deep reading", "Critical review"].includes(item.title || "") ? styleLabel(item.style) : item.title || styleLabel(item.style)} · ${item.language || "en"} · ${new Date(item.createdAt).toLocaleDateString(language)} · ${item.source?.agent || item.source?.model || t("模型", "Model")}`}</option>
-              ))}
-            </select>
-          </label>
-          <button
-            className="icon-button"
-            aria-label={t("复制解读", "Copy overview")}
-            onClick={() => void copy(markdown)}
-          >
-            {copied ? <Check size={16} /> : <Copy size={16} />}
-          </button>
-          <button
-            className="icon-button"
-            aria-label={t("下载解读", "Download overview")}
-            onClick={() =>
-              saveFile(
-                markdown,
-                `${paper.title.slice(0, 70)}-${version?.style}.md`,
-              )
-            }
-          >
-            <Download size={16} />
-          </button>
-        </div>
-      )}
       {configure && (
         <div className="reading-preferences">
           <div
@@ -515,7 +585,31 @@ export default function ReadingOverview({
           )}
         </div>
       )}
-      <VisionTools paper={paper} settings={settings} language={language} onConfigure={onConfigure} onPage={onPage} onUpdated={value=>publish({...value,activeReadingId:selectedRef.current})}/>
+      <div className="reading-secondary-toolbar" ref={toolbarRef}>
+        {version && <>
+          {version.interactive && <div className="reading-view-toggle" role="group" aria-label={t("查看方式", "View format")}>
+            <button aria-pressed={visiblePresentation === "article"} onClick={()=>setPresentation("article")}>{t("文章", "Article")}</button>
+            <button aria-pressed={visiblePresentation === "interactive"} onClick={()=>setPresentation("interactive")} disabled={!interactive}>{t("交互阅读", "Interactive")}</button>
+          </div>}
+          {!version.interactive && version.mode !== "extractive" && <button className="reading-tool-button reading-interactive-convert" disabled={generating || translating} onClick={()=>void makeInteractive()} aria-label={t("将此版本转为互动导读", "Create an interactive version from this reading")} title={t("将此版本转为互动导读", "Create an interactive version from this reading")}>
+            {generating ? <Loader2 size={15} className="spin"/> : <Sparkles size={15}/>}<span>{t("互动导读", "Interactive")}</span>
+          </button>}
+          <button className="reading-tool-button reading-offline-export" disabled={exporting} aria-label={t("下载离线网页", "Download offline website")} title={t("下载离线网页", "Download offline website")} onClick={()=>void exportWebsite()}>{exporting ? <Loader2 size={15} className="spin"/> : <Globe2 size={15}/>}<span>{t("离线网页", "Offline website")}</span></button>
+          <details className="reading-version-details" ref={detailsRef} onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus({preventScroll:true}); } }}>
+            <summary aria-label={t("版本详情", "Version details")} title={t("版本详情", "Version details")}><Info size={15}/><span>{t("版本详情", "Version details")}</span></summary>
+            <div className="reading-version-detail-body">
+              <dl><div><dt>{t("阅读方式", "Reading style")}</dt><dd>{styleLabel(version.style)}</dd></div><div><dt>{t("生成来源", "Created with")}</dt><dd>{source}</dd></div><div><dt>{t("生成时间", "Created")}</dt><dd>{new Date(version.createdAt).toLocaleString(language)}</dd></div><div><dt>{t("原始语言", "Original language")}</dt><dd>{sourceLanguage}</dd></div></dl>
+              {version.mode === "extractive" && <p>{t("原文摘录 · 未调用模型，不是独立分析。", "Source excerpts · No model used; this is not an independent analysis.")}</p>}
+              {version.focus && <div className="reading-focus-record"><strong>{t("本版关注点", "Focus for this version")}</strong><p>{version.focus}</p></div>}
+            </div>
+          </details>
+        </>}
+        <VisionTools compact paper={paper} settings={settings} language={language} onConfigure={onConfigure} onPage={onPage} onManageFigures={onManageFigures} onUpdated={value=>publish({...value,activeReadingId:selectedRef.current})}/>
+        {version && <div className="reading-provenance" aria-label={t("当前阅读来源与语言", "Current reading source and language")}>
+          <span className="reading-boundary">{version.mode === "extractive" ? t("原文摘录", "Source excerpts") : t("AI 解读", "AI-generated")}</span>
+          <span>{(translated ? language : sourceLanguage).startsWith("zh") ? "中文" : (translated ? language : sourceLanguage).startsWith("en") ? "English" : translated ? language : sourceLanguage}{translated && sourceLanguage.toLowerCase() !== language.toLowerCase() ? ` · ${t("译文", "translation")}` : ""}</span>
+        </div>}
+      </div>
       {error && (
         <div className="reading-inline-error" role="alert">
           <span>{error}</span>
@@ -530,29 +624,7 @@ export default function ReadingOverview({
       )}
       {version ? (
         <>
-          <div className="reading-provenance">
-            <span>{styleLabel(version.style)}</span>
-            <span>
-              {translated
-                ? `${language} · ${t("译文", "translation")}`
-                : sourceLanguage}
-            </span>
-            <span>{source}</span>
-            {version.mode === "extractive" && (
-              <span>{t("未调用模型", "No model used")}</span>
-            )}
-          </div>
-          {version.focus && (
-            <details className="reading-focus-record">
-              <summary>
-                {t("本版关注点", "Focus for this version")}
-                <ChevronDown size={12} />
-              </summary>
-              <p>{version.focus}</p>
-            </details>
-          )}
           {version.interactiveGenerationError && <div className="reading-inline-error" role="status"><span>{t("文章已保存，互动版暂未完成。可以只重试互动转换，无需重新研读。", "The article was saved, but the interactive version did not finish. Retry just the conversion without regenerating the reading.")}</span></div>}
-          {!version.interactive && version.mode !== "extractive" && <button className="text-button" disabled={generating || translating} onClick={()=>void makeInteractive()}>{generating?<Loader2 size={14} className="spin"/>:<Sparkles size={14}/>} {t("将此版本转为互动导读", "Create an interactive version from this reading")}</button>}
           {needsTranslation && (
             <div className="translation-missing">
               <span>
@@ -579,18 +651,14 @@ export default function ReadingOverview({
             </div>
           )}
           {needsInteractiveTranslation && <div className="translation-missing" role="status"><span>{t("文章译文已保存，互动卡片尚未完成翻译；当前显示文章译文。", "The article translation is saved. Interactive cards are not yet translated; showing the article.")}</span><button className="text-button" disabled={translating} onClick={() => translate(true)}>{translating ? t("正在翻译互动卡片…", "Translating interactive cards…") : t("仅重试互动翻译", "Retry interactive translation")}</button></div>}
-          {(needsTranslation || needsInteractiveTranslation) && translationJob?.status === "error" && <div className="reading-inline-error" role="alert"><span>{needsInteractiveTranslation ? t("互动翻译失败：", "Interactive translation failed: ") : t("当前版本翻译失败：", "Translation failed for this version: ")}{translationJob.error}</span></div>}
+          {needsCaptionTranslation && !needsTranslation && !needsInteractiveTranslation && <div className="reading-presentation-actions">{translated?.captionTranslationError && !translating && <span className="muted-label" role="status">{t("图注翻译未完成。", "Caption translation is unfinished.")}</span>}<button className="text-button" disabled={translating} onClick={() => translate()} title={translated?.captionTranslationError || t("复用当前解读，只补译图注；图内文字保留原样。", "Reuse this reading and translate missing captions; text inside figures stays unchanged.")}>{translating ? t("正在翻译图注…", "Translating figure captions…") : translated?.captionTranslationError || translationJob?.status === "error" ? t("重试图注翻译", "Retry caption translation") : t("补译图注", "Translate figure captions")}</button></div>}
+          {(needsTranslation || needsInteractiveTranslation || needsCaptionTranslation) && translationJob?.status === "error" && <div className="reading-inline-error" role="alert"><span>{needsInteractiveTranslation ? t("互动翻译失败：", "Interactive translation failed: ") : needsCaptionTranslation && !needsTranslation ? t("图注翻译失败：", "Caption translation failed: ") : t("当前版本翻译失败：", "Translation failed for this version: ")}{translationJob.error}</span></div>}
           {needsInteractiveTranslation && translated?.interactiveTranslationError && translationJob?.status !== "error" && !translating && <p className="muted-label">{translated.interactiveTranslationError}</p>}
-          {version.interactive && <div className="reading-presentation-actions">
-            <div role="group" aria-label={t("查看方式", "View format")}>
-              <button aria-pressed={visiblePresentation === "article"} onClick={()=>setPresentation("article")}>{t("文章", "Article")}</button>
-              <button aria-pressed={visiblePresentation === "interactive"} onClick={()=>setPresentation("interactive")} disabled={!interactive}>{t("交互阅读", "Interactive")}</button>
-            </div>
-            <button className="soft-button" disabled={!interactive || exporting} onClick={()=>void exportWebsite()}>{exporting?<Loader2 size={14} className="spin"/>:<Download size={14}/>} {t("下载离线网页", "Download offline website")}</button>
-          </div>}
-          <div className={`reading-prose ${visiblePresentation === "interactive" ? "" : "prose"}`} data-reading-id={version.id}>
-            <SelectionTools paperId={paper.id} readingId={version.id} scope="reading" language={language} model={settings.model} onAsk={onAskSelection}>
-              {visiblePresentation === "interactive" && interactive ? <InteractiveReading interactive={interactive} figures={version.figures || paper.figures} pdfUrl={paper.localPdfUrl || paper.pdfUrl} onPage={onPage} language={translated ? language : sourceLanguage}/> : <Mark onPage={onPage} figures={version.figures || paper.figures} pdfUrl={paper.localPdfUrl || paper.pdfUrl}>{markdown}</Mark>}
+          {sectionIntent && (!sectionVersionAvailable || !sectionExists) && !sectionNoticeDismissed && <div className="reading-section-notice" role="status"><span>{!sectionVersionAvailable ? t("链接指向的解读版本不存在，当前显示已有版本。", "The linked reading version is unavailable; showing an existing version.") : t("链接指向的章节不存在，请从目录选择。", "The linked section is unavailable. Choose one from the contents.")}</span><button className="icon-button" aria-label={t("关闭章节提示", "Dismiss section notice")} onClick={() => setSectionNoticeDismissed(true)}><X size={13}/></button></div>}
+          {visiblePresentation === "article" && <ReadingSections active={active} paperId={paper.id} readingId={version.id} contextKey={readingContextKey} sections={sections} contentRef={proseRef} intent={sectionVersionAvailable && sectionExists ? sectionIntent : undefined} onNavigate={navigateSection} onError={onError}/>}
+          <div ref={proseRef} className={`reading-prose ${visiblePresentation === "interactive" ? "" : "prose"}`} data-reading-id={version.id}>
+            <SelectionTools active={active} paperId={paper.id} readingId={version.id} scope="reading" language={language} model={settings.model} modelReady={!!modelReady} onAsk={onAskSelection}>
+              {visiblePresentation === "interactive" && interactive ? <InteractiveReading interactive={interactive} figures={sourceFigures} pdfUrl={paper.localPdfUrl || paper.pdfUrl} onPage={onPage} language={translated ? language : sourceLanguage} {...captionPresentation}/> : <Mark sectionNavigation={sectionNavigation} onPage={onPage} figures={sourceFigures} pdfUrl={paper.localPdfUrl || paper.pdfUrl} {...captionPresentation}>{markdown}</Mark>}
             </SelectionTools>
           </div>
           {version.stages && version.stages.length > 1 && (

@@ -23,10 +23,12 @@ async function openReader(page: Page, id: string, pageNumber = 1) {
   await closePanels(page);
   await page.getByRole("tab", { name: "论文", exact: true }).click();
   await page.getByLabel("PDF 页码", { exact: true }).fill(String(pageNumber));
+  await page.getByLabel("PDF 页码", { exact: true }).press("Enter");
   await expect(page.locator(`[data-pdf-page="${pageNumber}"] canvas[data-rendered="true"]`)).toBeVisible();
 }
 async function selectPassage(page: Page, pageNumber: number, prefix: string) {
   await page.getByLabel("PDF 页码", { exact: true }).fill(String(pageNumber));
+  await page.getByLabel("PDF 页码", { exact: true }).press("Enter");
   const span = page.locator(`[data-pdf-page="${pageNumber}"] .pdf-text-layer span`).filter({ hasText: prefix }).first();
   await expect(span).toBeVisible();
   const menu = page.getByRole("dialog", { name: "选中文字操作", exact: true });
@@ -91,7 +93,8 @@ test("highlights and notes survive reload and zoom, export exact content, and un
   await page.reload();
   await closePanels(page);
   panel = await openNotebook(page);
-  await panel.locator(".notebook-card").filter({ hasText: quote }).click();
+  if (!(await panel.getByLabel("笔记内容", {exact:true}).isVisible()))
+    await panel.locator(".notebook-card").filter({ hasText: quote }).click();
   await expect(page.getByLabel("PDF 页码", { exact: true })).toHaveValue("2");
   await expect(panel.getByLabel("笔记内容", { exact: true })).toHaveValue("Compare this baseline with the held-out validation set.");
   await panel.getByRole("button", { name: "关闭笔记", exact: true }).click();
@@ -125,6 +128,7 @@ test("inline translation and explanation stay near the passage and have separate
   page.on("request", req => { if (req.method() === "POST" && /\/api\/(?:chat|chats\/new)$/.test(new URL(req.url()).pathname)) chatWrites.push(req.url()); });
   // Simulate only the provider boundary. Persist the activity through the real
   // isolated backend so history/reload and Save to notes remain integration tests.
+  await page.route('**/api/settings',route=>route.fulfill({json:{provider:'openai',baseUrl:'https://example.org/v1',model:'fixture-model',modelConfigured:true,apiKeyConfigured:false}}));
   await page.route(`**/api/papers/${paper.id}/assist`, async route => {
     const body = route.request().postDataJSON(); calls.push(body);
     const resultText = body.kind === "translation" ? "检索将证据与可靠归因联系起来。" : "这段说明了证据归因的作用，尚不能证明普遍有效。 [p.1]";
@@ -230,12 +234,14 @@ test("one overview preserves versions, focus, reading style and Chinese-English 
   await page.goto(`/zh/?paper=${paper.id}`); await closePanels(page);
   await expect(page.locator(".reading-prose")).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "第二版深入研读", exact: true })).toBeVisible();
-  await expect(page.locator(".reading-provenance")).toContainText("深入研读");
-  await page.locator(".reading-focus-record summary").click();
+  await page.locator(".reading-version-details > summary").click();
+  await expect(page.locator(".reading-version-detail-body")).toContainText("深入研读");
   await expect(page.locator(".reading-focus-record")).toContainText("训练设置与关键对照");
+  await page.locator(".reading-version-details > summary").click();
   await page.getByLabel("解读版本", { exact: true }).selectOption(firstId);
   await expect(page.getByRole("heading", { name: "第一版快速解读", exact: true })).toBeVisible();
-  await expect(page.locator(".reading-provenance")).toContainText("快速了解");
+  await page.locator(".reading-version-details > summary").click();
+  await expect(page.locator(".reading-version-detail-body")).toContainText("快速了解");
   await expect(page.locator(".reading-focus-record")).toContainText("Only the central claim");
   await page.reload(); await closePanels(page);
   await expect(page.getByLabel("解读版本", { exact: true })).toHaveValue(firstId);
@@ -251,7 +257,9 @@ test("one overview preserves versions, focus, reading style and Chinese-English 
   await page.getByRole("button", { name: "Create source excerpts", exact: true }).click();
   await expect.poll(async () => (await (await request.get(`/api/papers/${paper.id}`)).json()).paper.readingVersions.length).toBe(3);
   await expect(page.locator(".reading-prose")).toHaveCount(1);
-  await expect(page.locator(".reading-provenance")).toContainText("Critical read");
+  await page.locator(".reading-version-details > summary").click();
+  await expect(page.locator(".reading-version-detail-body")).toContainText("Critical read");
+  await page.locator(".reading-version-details > summary").click();
   const saved = (await (await request.get(`/api/papers/${paper.id}`)).json()).paper;
   expect(saved.readingVersions.map((version: { id: string }) => version.id)).toEqual(expect.arrayContaining([firstId, secondId]));
   expect(saved.readingVersions.find((version: { id: string }) => version.id === saved.activeReadingId).focus).toBe("Check comparable baselines and reproducibility.");

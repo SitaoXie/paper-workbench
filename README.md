@@ -29,6 +29,10 @@ Selection translation/explanation has its own Chinese/English result-language ch
 
 Article and interactive translation can also complete separately. A failed or visibly untranslated set of cards does not discard the article translation. The reader shows the translated article and offers Retry interactive translation; incomplete cards are withheld from the interactive view and export. The Chinese/English mismatch check catches substantial untranslated prose, but is not a guarantee of translation quality or scientific accuracy.
 
+Selection actions can use either a configured model API or an existing Codex/Claude subscription. A copied task is bound to the paper, exact selection, result language, operation, source pages and, for AI overview text, its fixed reading version. Importing the same completed task twice reuses the activity; a conflicting result cannot overwrite it. Refresh loads the result beside the selection without creating a question session. Selections over 12,000 characters are explicitly rejected instead of silently processed as truncated text. Cross-page PDF notes keep one logical note with separate source anchors.
+
+The PDF reader includes a searchable text layer, outline and native internal links, with return-to-reading navigation. Chapter links retain the overview version and work with browser Back/Forward. Conversation scroll position, unsent question drafts and notebook edits are restored within the current browser tab. Opening or resizing the assistant preserves the current PDF position. Ordinary illustrated articles and interactive cards both export standalone HTML with embedded source crops, tables and equations; Markdown copies replace internal figure placeholders with visible captions and public source links.
+
 ## Model configuration and data
 
 Provider settings are supplied at runtime. HTTPS model endpoints are supported, including explicitly configured private inference services. Plain HTTP is restricted to localhost for local inference. This project has no hard-coded institutional endpoint or personal account requirement.
@@ -45,7 +49,7 @@ Text-only models can use source text and figure captions and place actual croppe
 
 Only the latest non-stale analysis for each figure is eligible for later model context. Exclude an incorrect analysis to keep it out of future requests while retaining the audit history; exclusion does not silently fall back to an older observation or rewrite already saved answers. The exact evidence IDs used by a new request are recorded.
 
-The server verifies payload shape and the crop binding supplied by the client; it does not independently render and authenticate those pixels. Model output remains fallible. Original-PDF downloads do not embed notes or handwriting; export annotations as Markdown or JSON to retain them. Offline interactive HTML embeds only its used figure crops, not the full source PDF.
+The server verifies payload shape and the crop binding supplied by the client; it does not independently render and authenticate those pixels. Model output remains fallible. Original-PDF downloads do not embed notes or handwriting; export annotations as Markdown or JSON to retain them. Offline article and interactive HTML embed only their used figure crops, not the full source PDF.
 
 ## Network configuration
 

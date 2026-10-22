@@ -90,6 +90,7 @@ test("wide dock reserves reading space and keyboard/drag resize preserves the pa
 }) => {
   await openPaper(page);
   await page.getByLabel("PDF 页码", { exact: true }).fill("4");
+  await page.getByLabel("PDF 页码", { exact: true }).press("Enter");
   await expect(
     page.locator('[data-pdf-page="4"] canvas[data-rendered="true"]'),
   ).toBeVisible();
@@ -148,7 +149,7 @@ test("narrow startup grows into a wide desktop dock and keeps drafts through ove
     page,
     page.getByRole("button", { name: "关闭助手", exact: true }),
   );
-  await fitsViewport(page, page.getByLabel("切换当前模型"));
+  await fitsViewport(page, page.getByTestId("assistant-dock").getByRole("button", { name: "管理模型连接", exact: true }));
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect
     .poll(
@@ -169,7 +170,7 @@ test("narrow startup grows into a wide desktop dock and keeps drafts through ove
     page,
     page.getByRole("button", { name: "关闭助手", exact: true }),
   );
-  await fitsViewport(page, page.getByLabel("切换当前模型"));
+  await fitsViewport(page, page.getByTestId("assistant-dock").getByRole("button", { name: "管理模型连接", exact: true }));
   await fitsViewport(page, page.getByRole("button", { name: "用 Codex / Claude 订阅回答 · 复制任务" }));
   const phoneComposer = (await page.locator(".assistant-dock .composer").boundingBox())!;
   expect(rect.y + rect.height - phoneComposer.y - phoneComposer.height).toBeLessThanOrEqual(20);
@@ -202,7 +203,7 @@ test("long conversation scrolls inside the dock while composer and close stay vi
       page,
       page.getByRole("button", { name: "关闭助手", exact: true }),
     );
-    await fitsViewport(page, page.getByLabel("切换当前模型"));
+    await fitsViewport(page, page.getByTestId("assistant-dock").getByRole("button", { name: "管理模型连接", exact: true }));
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
@@ -216,6 +217,7 @@ test("PDF controls adapt to a narrow reading column beside the widest desktop as
 }, info) => {
   await openPaper(page, 1280, 800);
   await page.getByLabel("PDF 页码", { exact: true }).fill("4");
+  await page.getByLabel("PDF 页码", { exact: true }).press("Enter");
   await openDock(page);
   const grip = page.getByRole("separator", { name: "调整助手宽度" });
   await grip.focus();
@@ -241,7 +243,9 @@ test("PDF controls adapt to a narrow reading column beside the widest desktop as
       { exact: true },
     );
     await expect(pageNumber).toHaveValue("4");
-    await expect(page.locator(".pdf-selection-hint-compact")).toBeVisible();
+    await expect(page.getByRole("button", { name: language === "en" ? "Reading tools" : "阅读工具", exact: true })).toBeVisible();
+    await expect(page.locator(".pdf-annotation-toolbar")).toHaveCount(0);
+    expect((await page.locator(".pdf-zoom-toolbar").boundingBox())!.height).toBeLessThan((await reader.boundingBox())!.width <= 360 ? 100 : 55);
     await expect
       .poll(() =>
         page
@@ -267,6 +271,7 @@ test("PDF controls adapt to a narrow reading column beside the widest desktop as
       language === "en" ? "PDF paper colors" : "PDF 纸张颜色",
       { exact: true },
     );
+    await page.getByRole("button", { name: language === "en" ? "Reading tools" : "阅读工具", exact: true }).click();
     await paperColors.selectOption("original");
     await expect(page.locator('[data-pdf-page="4"] canvas').first()).toHaveCSS(
       "filter",

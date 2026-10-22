@@ -5,6 +5,7 @@ import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { XMLParser } from "fast-xml-parser";
 import * as cheerio from "cheerio";
 import { ApiError, secureDownload } from "./network.mjs";
+import { extractPdfAbstract } from "./pdf-abstract.mjs";
 
 const clean = (value) =>
   String(value || "")
@@ -95,7 +96,7 @@ export async function searchArxiv(query, download = secureDownload) {
 // PDF text spans may be complete lines, words, or individual glyphs. Preserve
 // source order, infer word boundaries from real spacing, and tolerate baseline
 // rounding differences instead of adding a space between every PDF.js item.
-export function joinPdfTextItems(items) {
+export function joinPdfTextItems(items, spans) {
   let text = "";
   let previous;
   const geometry = (item) => {
@@ -137,13 +138,19 @@ export function joinPdfTextItems(items) {
       if (separator === " " && (/\s$/.test(text) || /^\s/.test(item.str)))
         separator = "";
     }
-    text += separator + item.str;
+    text += separator;
+    if (spans) spans.push({ start: text.length, end: text.length + item.str.length, text: item.str, geometry: current, width: item.width });
+    text += item.str;
     previous = {
       geometry: current,
       width: item.width,
       hasEOL: item.hasEOL,
       dir: item.dir,
     };
+  }
+  if (spans) {
+    const leading = text.length - text.trimStart().length;
+    for (const span of spans) { span.start -= leading; span.end -= leading; }
   }
   return text.trim();
 }
@@ -163,8 +170,10 @@ export async function parsePdf(buffer, filename = "paper.pdf") {
           normalizeWhitespace: true,
           disableCombineTextItems: false,
         });
-        const text = joinPdfTextItems(content.items);
-        pages.push({ number: page.pageNumber || pages.length + 1, text });
+        const number = page.pageNumber || pages.length + 1;
+        const spans = number <= 3 ? [] : undefined;
+        const text = joinPdfTextItems(content.items, spans);
+        pages.push({ number, text, ...(spans ? { spans } : {}) });
         return text;
       },
     });
@@ -182,13 +191,16 @@ export async function parsePdf(buffer, filename = "paper.pdf") {
       "This PDF has no usable text layer (it may be scanned). Run OCR first, then upload the searchable PDF.",
     );
   const infoTitle = clean(parsed.info?.Title);
+  const abstract = extractPdfAbstract(pages);
   return {
     title:
       infoTitle && !/^untitled$|^microsoft word/i.test(infoTitle)
         ? infoTitle
         : filename.replace(/\.pdf$/i, "").replace(/[_-]/g, " "),
     text,
-    pages: pages.map((page) => ({ ...page, text: page.text.slice(0, 50000) })),
+    pages: pages.map((page) => ({ number: page.number, text: page.text.slice(0, 50000) })),
+    abstract: abstract?.text || clean(pages[0]?.text).slice(0, 1800),
+    abstractIsExcerpt: !abstract,
     pageCount: parsed.numpages,
     extractionTruncated:
       parsed.numpages > 250 ||
@@ -235,8 +247,6 @@ export class Ingestor {
       source: "pdf",
       contentHash: createHash("sha256").update(buffer).digest("hex"),
     };
-    paper.abstract = clean(parsed.pages[0]?.text).slice(0, 1800);
-    paper.abstractIsExcerpt = true;
     paper.filePath = await this.savePdf(buffer, paper.id);
     return paper;
   }

@@ -1690,9 +1690,69 @@ test("page annotations persist, validate geometry, export, and support deletion 
   assert.match(markdown, /Reliable evidence/);
   assert.match(markdown, /Compare this claim/);
   assert.match(markdown, /stroke geometry/);
+  assert.match(markdown, /no portable public source URL/);
+  assert.match(markdown, /open this page in your original document/);
+  assert.ok(!markdown.includes(directory));
   assert.equal((await api(`/api/chats?paperId=${paper.id}`)).data.messages.length, 0);
   await api(`/api/papers/${paper.id}`, { method: "DELETE" });
   assert.equal((await createApp({ dataDir: directory })).locals.store.data.annotations.length, 0);
+});
+
+test("cross-page annotations remain one persisted record through edits, exports, deletion and restore", async (t) => {
+  const { api, base, directory, app } = await fixture(t);
+  const form = new FormData();
+  form.set("file", new Blob([makePdf()], { type: "application/pdf" }), "segments.pdf");
+  const paper = (await (await fetch(`${base}/api/upload`, { method: "POST", body: form })).json()).paper;
+  // Geometry and cross-page API validation use controlled source page metadata.
+  // Rendering the actual multi-page PDF is covered by browser reader tests.
+  const source = app.locals.store.paper(paper.id);
+  source.pages.push({ number: 2, text: "A continuation on the next page." });
+  source.pageCount = 2;
+  await app.locals.store.save();
+  const route = `/api/papers/${paper.id}/annotations`;
+  const legacy = [];
+  for (const page of [1, 2]) legacy.push((await api(route, { method: "POST", body: {
+    kind: "note", page, quote: `Legacy page ${page}.`, body: "Previously split comment.",
+  } })).data.annotation);
+  const segments = [{ page: 1, quote: "First page source.", rects: [{ x: .1, y: .8, width: .5, height: .04 }] },
+    { page: 2, quote: "Continuation source.", rects: [{ x: .1, y: .1, width: .6, height: .03 }] }];
+  const created = await api(route, { method: "POST", body: { kind: "note", segments, body: "SHARED_ORIGINAL_COMMENT", tags: ["review"] } });
+  assert.equal(created.status, 201);
+  const annotation = created.data.annotation;
+  assert.equal(annotation.page, 1); assert.equal(annotation.quote, segments[0].quote);
+  assert.deepEqual(annotation.segments, segments);
+  assert.equal((await api(route)).data.annotations.length, 3, "Old split records must never be automatically merged");
+  assert.equal((await api(route, { method: "POST", body: { kind: "highlight", segments: [...segments, { page: 3, quote: "No such source page." }] } })).status, 400);
+  assert.equal((await api(`${route}/${annotation.id}`, { method: "PATCH", body: { page: 1, quote: "A flat edit must not discard other anchors." } })).status, 400);
+  assert.deepEqual((await api(route)).data.annotations.find(item => item.id === annotation.id), annotation);
+  const changed = await api(`${route}/${annotation.id}`, { method: "PATCH", body: { body: "SHARED_EDITED_COMMENT", color: "purple", tags: ["reviewed"] } });
+  assert.equal(changed.status, 200);
+  assert.equal(changed.data.annotation.id, annotation.id);
+  assert.deepEqual(changed.data.annotation.segments, segments);
+  const saved = (await api(route)).data.annotations;
+  for (const item of legacy) assert.deepEqual(saved.find(entry => entry.id === item.id), item);
+  const exported = await api(`${route}/export?format=json`);
+  assert.equal(exported.data.version, 1);
+  assert.deepEqual(exported.data.annotations.find(item => item.id === annotation.id).segments, segments);
+  const markdown = await (await fetch(`${base}${route}/export?format=markdown`)).text();
+  assert.match(markdown, /2 page segments/);
+  assert.match(markdown, /### \[p\.1\]/); assert.match(markdown, /### \[p\.2\]/);
+  assert.equal(markdown.split("SHARED_EDITED_COMMENT").length - 1, 1);
+  assert.ok(!markdown.includes(directory));
+  const deleted = await api(`${route}/${annotation.id}`, { method: "DELETE" });
+  assert.equal(deleted.status, 200); assert.ok(deleted.data.annotation.deletedAt);
+  assert.deepEqual(deleted.data.annotation.segments, segments);
+  assert.equal((await api(route)).data.annotations.length, 2);
+  assert.equal((await api(`${route}?includeDeleted=true`)).data.annotations.length, 3);
+  assert.equal((await createApp({ dataDir: directory })).locals.store.data.annotations.filter(item => !item.deletedAt).length, 2);
+  const restored = await api(`${route}/${annotation.id}`, { method: "PATCH", body: { restore: true } });
+  assert.equal(restored.status, 200); assert.equal(restored.data.annotation.deletedAt, undefined);
+  assert.equal(restored.data.annotation.id, annotation.id);
+  assert.deepEqual(restored.data.annotation.segments, segments);
+  const reopened = (await createApp({ dataDir: directory })).locals.store.data.annotations;
+  assert.equal(reopened.length, 3); assert.equal(reopened.filter(item => item.id === annotation.id).length, 1);
+  assert.deepEqual(reopened.find(item => item.id === annotation.id), restored.data.annotation);
+  assert.deepEqual((await api(`/api/chats?paperId=${paper.id}`)).data.messages, []);
 });
 
 test("inline help uses source context, keeps activities separate, and never fabricates a no-model translation", async (t) => {
@@ -1707,7 +1767,15 @@ test("inline help uses source context, keeps activities separate, and never fabr
   const paper = (await api("/api/import", { method: "POST", body: { url: "https://example.com/inline" } })).data.paper;
   const route = `/api/papers/${paper.id}`;
   const passage = { kind: "translation", text: "Retrieval improves evidence attribution", page: 1, language: "zh-cn" };
-  assert.equal((await api(`${route}/assist`, { method: "POST", body: passage })).status, 400);
+  for (const kind of ["translation", "explanation"]) {
+    const unconfigured = await api(`${route}/assist`, { method: "POST", body: { ...passage, kind } });
+    assert.equal(unconfigured.status, 400);
+    assert.equal(unconfigured.data.code, "selection_model_unconfigured");
+    assert.match(unconfigured.data.error, /Configure a model API or import a result/);
+  }
+  const unrelatedUnconfigured = await api("/api/settings/test", { method: "POST", body: {} });
+  assert.equal(unrelatedUnconfigured.data.code, undefined, "The selection error code must not change unrelated API failures");
+  assert.equal(calls.length, 0);
   assert.deepEqual((await api(`${route}/activities`)).data.activities, []);
   await api("/api/settings", { method: "PUT", body: { apiKey: "private-inline-key" } });
   for (const kind of ["translation", "explanation"]) {
@@ -1729,6 +1797,80 @@ test("inline help uses source context, keeps activities separate, and never fabr
   assert.equal(external.status, 201);
   assert.equal(external.data.activity.source.kind, "agent");
   assert.equal((await createApp({ dataDir: directory })).locals.store.data.activities.length, 3);
+});
+
+test("agent activity tasks coalesce concurrent imports, preserve provenance, and reject changed bindings or results", async t => {
+  let modelCalls = 0;
+  const { api, app, directory } = await fixture(t, { download: async url => response(webpage, url), fetchImpl: async () => { modelCalls++; throw new Error("No provider call is expected"); } });
+  const paper = (await api("/api/import", { method: "POST", body: { url: "https://example.com/task-source" } })).data.paper;
+  const other = (await api("/api/import", { method: "POST", body: { url: "https://example.com/task-other" } })).data.paper;
+  const route = `/api/papers/${paper.id}/activities`;
+  const task = { agentTaskId: "f1f37d81-d1fe-4148-a670-88615ac01ed0", sourceScope: "abstract", kind: "translation", quote: "A paper about retrieval and evidence.", language: "zh-cn", result: "一篇关于检索与证据的论文。", source: { agent: "Fixture subscription agent", model: "Session model" } };
+  const results = await Promise.all([api(route, { method: "POST", body: task }), api(route, { method: "POST", body: task })]);
+  assert.deepEqual(results.map(result => result.status).sort(), [200, 201]);
+  const saved = results.find(result => result.status === 201).data.activity;
+  assert.equal(saved.agentTaskId, task.agentTaskId); assert.equal(saved.language, "zh-CN");
+  assert.equal(saved.page, undefined); assert.equal(saved.pages, undefined);
+  assert.deepEqual(results.find(result => result.status === 200).data, { activity: saved, reused: true });
+  const replay = await api(route, { method: "POST", body: { ...task, agentTaskId: task.agentTaskId.toUpperCase(), text: task.quote, language: "zh-CN", source: { agent: "Other label must not replace provenance" } } });
+  assert.equal(replay.status, 200); assert.deepEqual(replay.data.activity, saved);
+  assert.deepEqual((await api(`${route}?agentTaskId=${task.agentTaskId.toUpperCase()}`)).data.activities, [saved]);
+  assert.deepEqual((await api(`${route}?agentTaskId=f1f37d81-d1fe-4148-a670-88615ac01ed1`)).data.activities, []);
+  assert.deepEqual((await api(`${route}?agentTaskId=${task.agentTaskId}&kind=explanation`)).data.activities, []);
+  assert.deepEqual((await api(`/api/papers/${other.id}/activities?agentTaskId=${task.agentTaskId}`)).data.activities, []);
+  for (const changed of [
+    { quote: "A different exact passage." }, { kind: "explanation" }, { language: "en" },
+    { sourceScope: "source-text", page: 1 }, { result: "A revised result." },
+  ]) assert.equal((await api(route, { method: "POST", body: { ...task, ...changed } })).status, 409);
+  assert.equal((await api(`/api/papers/${other.id}/activities`, { method: "POST", body: task })).status, 409);
+  for (const agentTaskId of [null, "", "not-a-uuid", "__proto__", 1, [task.agentTaskId]])
+    assert.equal((await api(route, { method: "POST", body: { ...task, agentTaskId } })).status, 400);
+  for (const query of ["", "invalid", `${task.agentTaskId}&agentTaskId=${task.agentTaskId}`])
+    assert.equal((await api(`${route}?agentTaskId=${query}`)).status, 400);
+  assert.equal((await api(route, { method: "POST", body: { ...task, text: "Different from quote" } })).status, 400);
+  assert.equal((await api(route, { method: "POST", body: { ...task, readingId: "An irrelevant reading ID" } })).status, 400);
+  assert.equal((await api(route, { method: "POST", body: { ...task, paperId: other.id } })).status, 400);
+  assert.deepEqual(app.locals.store.data.activities, [saved]);
+  const reopened = await createApp({ dataDir: directory });
+  assert.deepEqual(reopened.locals.store.data.activities, [saved], "Task binding survives a server restart");
+  assert.equal(modelCalls, 0); assert.equal(app.locals.store.data.chats.length, 0);
+  assert.equal(app.locals.store.data.conversations.length, 0); assert.equal(app.locals.store.data.annotations.length, 0);
+  const unbound = { ...task }; delete unbound.agentTaskId;
+  assert.equal((await api(route, { method: "POST", body: unbound })).status, 201);
+  assert.equal((await api(route, { method: "POST", body: unbound })).status, 201);
+  assert.equal(app.locals.store.data.activities.length, 3, "Legacy requests remain append-only");
+});
+
+test("agent activity tasks bind exact reading versions and PDF ranges without reserving failed imports", async t => {
+  const { api, app, base } = await fixture(t);
+  const form = new FormData(); form.set("file", new Blob([makePdf()], { type: "application/pdf" }), "agent-task.pdf");
+  const paper = (await (await fetch(`${base}/api/upload`, { method: "POST", body: form })).json()).paper;
+  app.locals.store.paper(paper.id).pages.push({ number: 2, text: "The second page continues the selected evidence." });
+  app.locals.store.paper(paper.id).pageCount = 2;
+  await app.locals.store.save();
+  const route = `/api/papers/${paper.id}/activities`;
+  const task = { agentTaskId: "3c432715-2994-4830-bc8c-aa97b75f814e", sourceScope: "pdf", pages: [1, 2], kind: "explanation", text: "A passage spanning two pages.", language: "en", result: "This is an explanation of the selected passage.", source: { agent: "Fixture session" } };
+  assert.equal((await api(route, { method: "POST", body: { ...task, result: null } })).status, 400);
+  assert.deepEqual((await api(`${route}?agentTaskId=${task.agentTaskId}`)).data.activities, []);
+  const saved = await api(route, { method: "POST", body: task });
+  assert.equal(saved.status, 201); assert.equal(saved.data.activity.page, 1); assert.deepEqual(saved.data.activity.pages, [1, 2]);
+  assert.equal((await api(route, { method: "POST", body: { ...task, pages: [1] } })).status, 409);
+  assert.equal((await api(route, { method: "POST", body: { ...task, pages: [2] } })).status, 409);
+  const single = { ...task, agentTaskId: "3c432715-2994-4830-bc8c-aa97b75f814f", pages: [1] };
+  assert.equal((await api(route, { method: "POST", body: single })).status, 201);
+  delete single.pages; single.page = 1;
+  assert.equal((await api(route, { method: "POST", body: single })).status, 200, "Legacy page and equivalent singleton pages have the same binding");
+  const readings = [];
+  for (const markdown of ["First generated overview.", "Second generated overview."]) readings.push((await api(`/api/papers/${paper.id}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: { language: "en", markdown } } })).data.paper.activeReadingId);
+  const overview = { ...task, agentTaskId: "3c432715-2994-4830-bc8c-aa97b75f814d", sourceScope: "reading", readingId: readings[0] }; delete overview.pages;
+  assert.equal((await api(route, { method: "POST", body: overview })).status, 201);
+  assert.equal((await api(route, { method: "POST", body: { ...overview, readingId: readings[1] } })).status, 409);
+  assert.equal((await api(route, { method: "POST", body: { ...overview, readingId: "missing-reading" } })).status, 404);
+  assert.equal((await api(route, { method: "POST", body: { ...overview, pages: [1] } })).status, 400);
+  const bound = (await api(`${route}?agentTaskId=${overview.agentTaskId}`)).data.activities;
+  assert.equal(bound.length, 1); assert.equal(bound[0].readingId, readings[0]); assert.equal(bound[0].page, undefined);
+  assert.equal(app.locals.store.data.conversations.length, 0); assert.equal(app.locals.store.data.chats.length, 0);
+  assert.equal(app.locals.store.data.annotations.length, 0);
 });
 
 test("inline requests reject duplicates and discard results after source deletion", async (t) => {
@@ -1754,6 +1896,39 @@ test("inline requests reject duplicates and discard results after source deletio
   assert.equal((await pending).status, 409);
   assert.equal(app.locals.store.data.activities.length, 0);
   assert.equal(app.locals.store.data.chats.length, 0);
+});
+
+test("inline assist rejects empty or null-like output without saving activities and avoids translating bare numbers", async (t) => {
+  let output = "null", calls = 0;
+  const { api, base } = await fixture(t, { fetchImpl: async () => {
+    calls++;
+    return new Response(JSON.stringify({ choices: [{ message: { content: output } }] }));
+  } });
+  const paper = await visionPaper(api, base); const route = `/api/papers/${paper.id}`;
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const body = { kind: "translation", text: "A source passage about uncertainty.", page: 1, language: "zh-CN" };
+  for (const value of [null, undefined, "", "  \n ", "null", " NULL ", '"null"', "```json\nnull\n```", "undefined"]) {
+    output = value;
+    for (const kind of ["translation", "explanation"]) {
+      const failed = await api(`${route}/assist`, { method: "POST", body: { ...body, kind } });
+      assert.equal(failed.status, 502);
+      assert.equal(failed.data.code, undefined, "Unknown provider failures must not expose internal error codes");
+      assert.equal(failed.data.result, undefined);
+      assert.equal((await api(`${route}/activities`)).data.activities.length, 0);
+    }
+  }
+  const before = calls;
+  const numeric = await api(`${route}/assist`, { method: "POST", body: { ...body, text: "\n10\n60" } });
+  assert.equal(numeric.status, 400); assert.match(numeric.data.error, /only numbers or symbols/);
+  assert.equal(numeric.data.code, "selection_no_translatable_text");
+  assert.equal(calls, before, "Bare numbers should not consume a model request");
+  for (const result of [null, "null", { text: "undefined" }, { text: " " }])
+    assert.equal((await api(`${route}/activities`, { method: "POST", body: { ...body, source: { agent: "Fixture" }, result } })).status, 400);
+  assert.equal((await api(`${route}/activities`)).data.activities.length, 0);
+  output = "These may be axis ticks. Read the surrounding labels before interpreting them. [p.1]";
+  const explained = await api(`${route}/assist`, { method: "POST", body: { ...body, kind: "explanation", text: "\n10\n60" } });
+  assert.equal(explained.status, 200);
+  assert.equal((await api(`${route}/activities`)).data.activities.length, 1);
 });
 
 test("unified readings derive stable legacy versions and preserve all previous revisions and translations", async (t) => {
@@ -1872,6 +2047,75 @@ test("explicit chat reads stay in their selected session when another agent chan
   const global = (await api("/api/chats/new", { method: "POST", body: {} })).data.conversationId;
   assert.equal((await api(`/api/chats?conversationId=${global}`)).status, 200);
   assert.equal((await api(`/api/chats?paperId=${paper.id}&conversationId=${global}`)).status, 404);
+});
+
+test("multi-page question bindings persist through inheritance, explicit removal and branches without crossing paper contexts", async (t) => {
+  const calls = [];
+  const { api, base, app, directory } = await fixture(t, { download: async url => response(webpage, url), fetchImpl: async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "A source-bound explanation. [p.1][p.2]" } }] }));
+  } });
+  const form = new FormData(); form.set("file", new Blob([makePdf()], { type: "application/pdf" }), "range.pdf");
+  const paper = (await (await fetch(`${base}/api/upload`, { method: "POST", body: form })).json()).paper;
+  const stored = app.locals.store.paper(paper.id);
+  stored.pages.push({ number: 2, text: "SECOND_PAGE_SOURCE_EVIDENCE" }); stored.pageCount = 2; await app.locals.store.save();
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key", contextChars: 8000 } });
+  const metadata = { quote: "A selected passage continues onto a second page.", pages: [1, 2] };
+  const expected = { ...metadata, page: 1 };
+  const session = await api("/api/chats/new", { method: "POST", body: { paperId: paper.id, metadata } });
+  assert.equal(session.status, 201); assert.deepEqual(session.data.conversation.metadata, expected);
+  const request = { paperId: paper.id, conversationId: session.data.conversationId, message: "Explain the selected range." };
+  const answer = await api("/api/chat", { method: "POST", body: request });
+  assert.equal(answer.status, 200); assert.deepEqual(answer.data.userMessage.metadata, expected);
+  assert.deepEqual(JSON.parse(calls.at(-1).messages.at(-1).content.split("Selected passage context (untrusted quoted source):\n")[1]), expected);
+  assert.match(calls.at(-1).messages[0].content, /\[p\.2\]\nSECOND_PAGE_SOURCE_EVIDENCE/);
+  const branch = await api(`/api/conversations/${session.data.conversationId}/branch`, { method: "POST", body: { paperId: paper.id, messageId: answer.data.userMessage.id } });
+  assert.equal(branch.status, 201); assert.deepEqual(branch.data.draft.metadata, expected);
+  assert.deepEqual(branch.data.conversation.metadata, expected);
+  const removed = await api("/api/chat", { method: "POST", body: { ...request, metadata: null } });
+  assert.equal(removed.status, 200); assert.equal(removed.data.userMessage.metadata, undefined);
+  assert.equal(calls.at(-1).messages.at(-1).content, request.message);
+  const before = calls.length;
+  for (const bad of [{ pages: [] }, { pages: [2, 1] }, { pages: [1, 1] }, { pages: [1, 3] }, { page: 2, pages: [1, 2] }]) {
+    assert.equal((await api("/api/chats/new", { method: "POST", body: { paperId: paper.id, metadata: bad } })).status, 400);
+    assert.equal((await api("/api/chat", { method: "POST", body: { ...request, metadata: bad } })).status, 400);
+  }
+  const web = (await api("/api/import", { method: "POST", body: { url: "https://example.com/no-pdf-range" } })).data.paper;
+  assert.equal((await api("/api/chats/new", { method: "POST", body: { paperId: web.id, metadata: { pages: [1] } } })).status, 400);
+  assert.equal((await api("/api/chat", { method: "POST", body: { ...request, paperId: web.id } })).status, 404);
+  assert.equal(calls.length, before);
+  const reopened = await createApp({ dataDir: directory });
+  assert.deepEqual(reopened.locals.store.data.conversations.find(item => item.id === session.data.conversationId).metadata, expected);
+});
+
+test("multi-page inline assistance and imported activity retain one PDF range and reject generated or non-PDF page claims", async (t) => {
+  const calls = [];
+  const { api, base, app } = await fixture(t, { download: async url => response(webpage, url), fetchImpl: async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "The explanation covers both source pages. [p.1][p.2]" } }] }));
+  } });
+  const form = new FormData(); form.set("file", new Blob([makePdf()], { type: "application/pdf" }), "inline-range.pdf");
+  const paper = (await (await fetch(`${base}/api/upload`, { method: "POST", body: form })).json()).paper;
+  const stored = app.locals.store.paper(paper.id); stored.pages.push({ number: 2, text: "SECOND_INLINE_SOURCE_EVIDENCE" }); stored.pageCount = 2; await app.locals.store.save();
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const route = `/api/papers/${paper.id}`;
+  const input = { kind: "explanation", text: "A combined source passage.", pages: [1, 2], language: "en", sourceScope: "pdf" };
+  const result = await api(`${route}/assist`, { method: "POST", body: input });
+  assert.equal(result.status, 200); assert.equal(result.data.activity.page, 1); assert.deepEqual(result.data.activity.pages, [1, 2]);
+  assert.equal(result.data.activity.quote, input.text); assert.equal(result.data.activity.sourceScope, "pdf");
+  const modelInput = JSON.parse(calls[0].messages[1].content);
+  assert.deepEqual(modelInput.pages, [1, 2]); assert.match(modelInput.sourceContext, /\[p\.2\]\nSECOND_INLINE_SOURCE_EVIDENCE/);
+  assert.match(calls[0].messages[0].content, /source pages \[p\.1\], \[p\.2\]/);
+  assert.equal((await api(`${route}/activities`)).data.activities.length, 1);
+  assert.equal((await api(`/api/conversations?paperId=${paper.id}`)).data.conversations.length, 0);
+  const imported = await api(`${route}/activities`, { method: "POST", body: { ...input, result: "An external explanation.", source: { agent: "Fixture reader" } } });
+  assert.equal(imported.status, 201); assert.deepEqual(imported.data.activity.pages, [1, 2]);
+  const readingId = (await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: { markdown: "A generated overview.", language: "en" } } })).data.paper.activeReadingId;
+  for (const invalid of [{ ...input, page: 2 }, { ...input, sourceScope: "reading", readingId }, { ...input, sourceScope: "abstract" }])
+    assert.equal((await api(`${route}/assist`, { method: "POST", body: invalid })).status, 400);
+  const web = (await api("/api/import", { method: "POST", body: { url: "https://example.com/no-inline-pages" } })).data.paper;
+  for (const endpoint of ["assist", "activities"]) assert.equal((await api(`/api/papers/${web.id}/${endpoint}`, { method: "POST", body: { ...input, sourceScope: "source-text", pages: [1], result: "Not a PDF source." } })).status, 400);
+  assert.equal(calls.length, 1); assert.equal((await api(`${route}/activities`)).data.activities.length, 2);
 });
 
 const visionPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6WQAAAAASUVORK5CYII=";
@@ -2129,6 +2373,7 @@ test("interactive translation preserves a completed article when interactive sou
   const { api, base } = await fixture(t, { fetchImpl: async (_url, options) => {
     calls++; const body = JSON.parse(options.body);
     let content = "翻译后的文章。[p.1]";
+    if (body.messages[0].content.startsWith("Translate the following figure captions")) content = JSON.stringify([{ id: "chart", caption: "原文图注的译文。" }]);
     if (/^(Translate the following interactive|Repair the previous interactive translation mapping)/.test(body.messages[0].content)) {
       const interactive = chineseInteractiveFixture();
       if (changed) interactive.blocks[1].id = "changed-binding";
@@ -2142,7 +2387,7 @@ test("interactive translation preserves a completed article when interactive sou
   await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
   const result = await api(`${route}/translate`, { method: "POST", body: { target: "reading", readingId, language: "zh-CN" } });
   assert.equal(result.status, 200, JSON.stringify(result.data));
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
   assert.equal(result.data.translation.interactive.blocks[0].title, "不确定性");
   assert.equal(result.data.paper.readingVersions[0].markdown, "Original reading. [p.1]");
   changed = true;
@@ -2476,7 +2721,7 @@ test("invalid legacy interactive language is hidden without deleting history and
   } } });
   const readingId = imported.data.paper.activeReadingId;
   const body = { target: "reading", readingId, language: "en" };
-  const translated = { ...body, markdown: "A correct existing English article. [p.1]" };
+  const translated = { ...body, markdown: "A correct existing English article. [p.1]", figureCaptions: { chart: "A correct English caption." } };
   assert.equal((await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, translations: [{ ...translated, interactive: chineseInteractiveFixture() }] } })).status, 400, "New agent imports must not publish untranslated display blocks");
   assert.equal((await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, translations: [translated] } })).status, 200);
   const rawPaper = app.locals.store.paper(paper.id);
@@ -2516,6 +2761,8 @@ test("interactive timeout preserves a finished translated article and exposes on
     if (JSON.parse(options.body).messages[0].content.startsWith("Translate the following interactive")) {
       const error = new Error("private-model-url and credential must not escape"); error.name = "TimeoutError"; throw error;
     }
+    if (JSON.parse(options.body).messages[0].content.startsWith("Translate the following figure captions"))
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify([{ id: "chart", caption: "An English figure caption." }]) } }] }));
     return new Response(JSON.stringify({ choices: [{ message: { content: "The completed English article. [p.1]" } }] }));
   } });
   const paper = await visionPaper(api, base); const route = `/api/papers/${paper.id}`;
@@ -2523,10 +2770,502 @@ test("interactive timeout preserves a finished translated article and exposes on
   await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
   const result = await api(`${route}/translate`, { method: "POST", body: { target: "reading", readingId: imported.data.paper.activeReadingId, language: "en" } });
   assert.equal(result.status, 200);
-  assert.equal(calls, 2);
+  assert.equal(calls, 3);
   assert.equal(result.data.translation.markdown, "The completed English article. [p.1]");
   assert.equal(result.data.translation.interactive, undefined);
   assert.match(result.data.translation.interactiveTranslationError, /timed out/);
   assert.ok(!JSON.stringify(result.data).includes("private-model-url"));
   assert.equal((await api(route)).data.paper.readingVersions[0].translations.en.interactiveTranslationError, result.data.translation.interactiveTranslationError);
+});
+
+test("caption-only retry preserves cached article and cards, coalesces requests, and persists the complete caption cache", async (t) => {
+  let calls = 0, fail = true, release, started;
+  const gate = new Promise(resolve => { release = resolve; });
+  const ready = new Promise(resolve => { started = resolve; });
+  const { api, base, server, directory } = await fixture(t, { fetchImpl: async (_url, options) => {
+    calls++; assert.match(JSON.parse(options.body).messages[0].content, /^Translate the following figure captions/);
+    if (fail) return new Response("private deployment details", { status: 503 });
+    started(); await gate;
+    return new Response(JSON.stringify({ choices: [{ message: { content: '[{"id":"chart","caption":"Translated source figure caption."}]' } }] }));
+  } });
+  const paper = await visionPaper(api, base); const route = `/api/papers/${paper.id}`;
+  const imported = await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: { markdown: "原版文章。[p.1]", language: "zh-CN", interactive: chineseInteractiveFixture() } } });
+  const original = imported.data.paper.readingVersions[0];
+  const body = { target: "reading", readingId: original.id, language: "en" };
+  const saved = await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Article translator" }, translations: [{ ...body, markdown: "A complete English article. [p.1]", interactive: interactiveFixture() }] } });
+  const article = saved.data.paper.readingVersions[0].translations.en;
+  assert.match(article.captionTranslationError, /caption translation is incomplete/);
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const partial = await api(`${route}/translate`, { method: "POST", body });
+  assert.equal(partial.status, 200); assert.equal(calls, 1);
+  assert.equal(partial.data.translation.markdown, article.markdown);
+  assert.equal(partial.data.translation.createdAt, article.createdAt);
+  assert.equal(partial.data.translation.sourceHash, article.sourceHash);
+  assert.deepEqual(partial.data.translation.interactive, article.interactive);
+  assert.match(partial.data.translation.captionTranslationError, /HTTP 503/);
+  assert.ok(!JSON.stringify(partial.data).includes("private deployment"));
+  fail = false;
+  const first = api(`${route}/translate`, { method: "POST", body }); await ready;
+  server.once("request", request => request.once("end", () => setImmediate(release)));
+  const second = api(`${route}/translate`, { method: "POST", body });
+  const results = await Promise.all([first, second]);
+  assert.deepEqual(results.map(result => result.status), [200, 200]); assert.equal(calls, 2);
+  assert.deepEqual(results[0].data.translation, results[1].data.translation);
+  assert.deepEqual(results[0].data.translation.figureCaptions, { chart: "Translated source figure caption." });
+  assert.equal(results[0].data.translation.captionTranslationError, undefined);
+  assert.equal(results[0].data.translation.createdAt, article.createdAt);
+  assert.equal(results[0].data.translation.sourceHash, article.sourceHash);
+  assert.deepEqual(results[0].data.paper.readingVersions[0].figures, original.figures);
+  await api("/api/settings", { method: "PUT", body: { clearApiKey: true } });
+  assert.equal((await api(`${route}/translate`, { method: "POST", body })).status, 200); assert.equal(calls, 2);
+  const reopened = publicPaper((await createApp({ dataDir: directory })).locals.store.paper(paper.id));
+  assert.deepEqual(reopened.readingVersions[0].translations.en.figureCaptions, results[0].data.translation.figureCaptions);
+});
+
+test("original-language caption translation reuses original article and cards and empty figures cause no model call", async (t) => {
+  let calls = 0;
+  const { api, base } = await fixture(t, { download: async url => response(webpage, url), fetchImpl: async (_url, options) => {
+    calls++; assert.match(JSON.parse(options.body).messages[0].content, /^Translate the following figure captions into zh-CN/);
+    return new Response(JSON.stringify({ choices: [{ message: { content: '[{"id":"chart","caption":"中文图注，不修改来源页面和裁剪。"}]' } }] }));
+  } });
+  const paper = await visionPaper(api, base); const route = `/api/papers/${paper.id}`;
+  const imported = await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: { markdown: "保持原文章。", language: "zh-CN", interactive: chineseInteractiveFixture() } } });
+  const original = imported.data.paper.readingVersions[0];
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const translated = await api(`${route}/translate`, { method: "POST", body: { target: "reading", readingId: original.id, language: "zh-cn" } });
+  assert.equal(translated.status, 200); assert.equal(calls, 1);
+  assert.equal(translated.data.translation.markdown, original.markdown);
+  assert.equal(translated.data.translation.createdAt, original.createdAt);
+  assert.deepEqual(translated.data.translation.interactive, original.interactive);
+  assert.deepEqual(translated.data.translation.source, original.source);
+  const web = (await api("/api/import", { method: "POST", body: { url: "https://example.com/no-captions" } })).data.paper;
+  const webVersion = (await api(`/api/papers/${web.id}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: { markdown: "No figures.", language: "en" } } })).data.paper.activeReadingId;
+  assert.equal((await api(`/api/papers/${web.id}/translate`, { method: "POST", body: { target: "reading", readingId: webVersion, language: "en" } })).status, 200);
+  assert.equal(calls, 1);
+});
+
+test("caption agent imports enforce exact bound IDs, reject duplicate JSON names, and support caption-only additions", async (t) => {
+  const { api, base } = await fixture(t);
+  const paper = await visionPaper(api, base); const route = `/api/papers/${paper.id}`;
+  const original = (await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: { markdown: "Original English reading.", language: "en", interactive: interactiveFixture() } } })).data.paper.readingVersions[0];
+  const translation = { target: "reading", readingId: original.id, language: "en", figureCaptions: { chart: "An externally translated caption." } };
+  const requestBody = { source: { agent: "Caption translator" }, translations: [translation] };
+  for (const figureCaptions of [{}, { other: "Unknown" }, { chart: null }, { chart: { crop: visionCrop } }, JSON.parse('{"__proto__":"unbound"}')])
+    assert.equal((await api(`${route}/insights`, { method: "PUT", body: { ...requestBody, translations: [{ ...translation, figureCaptions }] } })).status, 400);
+  const duplicate = JSON.stringify(requestBody).replace('"chart":"An externally translated caption."', '"chart":"first","ch\\u0061rt":"last"');
+  assert.equal((await api(`${route}/insights`, { method: "PUT", raw: duplicate, headers: { "Content-Type": "application/json" } })).status, 400);
+  assert.equal((await api(`${route}/insights`, { method: "PUT", body: { ...requestBody, translations: [{ ...translation, readingId: "wrong-paper-version" }] } })).status, 404);
+  assert.equal((await api(`${route}/insights`, { method: "PUT", body: { ...requestBody, translations: [{ ...translation, language: "fr" }] } })).status, 400);
+  const result = await api(`${route}/insights`, { method: "PUT", body: requestBody });
+  assert.equal(result.status, 200);
+  const imported = result.data.paper.readingVersions[0].translations.en;
+  assert.deepEqual(imported.figureCaptions, translation.figureCaptions);
+  assert.equal(imported.markdown, original.markdown); assert.equal(imported.createdAt, original.createdAt);
+  assert.deepEqual(imported.interactive, original.interactive);
+  assert.deepEqual(result.data.paper.readingVersions[0].figures, original.figures);
+  assert.equal({}.polluted, undefined);
+});
+
+test("untranslated legacy captions are hidden and repaired without regenerating cached article or interactive content", async (t) => {
+  const untranslated = "图 9：以优化器步数衡量的尺度行为。两条定律均拟合至第 200 步，并外推至第 350 步；其定性模式与按 GPU-hours 拟合的结果相同。";
+  const english = "Figure 9: Scaling measured in optimizer steps. Both laws fit through step 200 and extrapolate to step 350, with the same qualitative pattern as GPU-hours fits.";
+  let calls = 0, valid = false;
+  const { api, base, app } = await fixture(t, { fetchImpl: async (_url, options) => {
+    calls++;
+    assert.match(JSON.parse(options.body).messages[0].content, /^(?:Translate the following figure captions|Repair the previous caption translation mapping)/);
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify([{ id: "chart", caption: valid ? english : untranslated }]) } }] }));
+  } });
+  const paper = await visionPaper(api, base); const route = `/api/papers/${paper.id}`;
+  const original = (await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" },
+    figures: [{ id: "chart", page: 1, crop: visionCrop, caption: untranslated }],
+    summary: { markdown: "固定的中文文章。", language: "zh-CN", interactive: chineseInteractiveFixture() },
+  } })).data.paper.readingVersions[0];
+  const body = { target: "reading", readingId: original.id, language: "en" };
+  const imported = await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture translator" }, translations: [{ ...body,
+    markdown: "A finished English article that must not be replaced.", interactive: interactiveFixture(), figureCaptions: { chart: english },
+  }] } });
+  const article = imported.data.paper.readingVersions[0].translations.en;
+  const raw = app.locals.store.paper(paper.id).readingVersions[0].translations.en;
+  raw.figureCaptions.chart = untranslated; // Simulate an older cache accepted before the language guard.
+  await app.locals.store.save();
+  const read = (await api(route)).data.paper.readingVersions[0].translations.en;
+  assert.equal(read.figureCaptions, undefined); assert.match(read.captionTranslationError, /incomplete/);
+  assert.equal(raw.figureCaptions.chart, untranslated, "A read must not erase the historical raw record");
+  assert.equal(read.markdown, article.markdown); assert.deepEqual(read.interactive, article.interactive);
+  const external = await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Untranslated import" }, translations: [{ ...body, figureCaptions: { chart: untranslated } }] } });
+  assert.equal(external.status, 400); assert.match(external.data.error, /untranslated/);
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const partial = await api(`${route}/translate`, { method: "POST", body });
+  assert.equal(partial.status, 200); assert.equal(calls, 2, "At most one repair for unchanged prose");
+  assert.equal(partial.data.translation.figureCaptions, undefined);
+  assert.match(partial.data.translation.captionTranslationError, /basic check for the requested language/);
+  assert.equal(partial.data.translation.markdown, article.markdown);
+  assert.equal(partial.data.translation.sourceHash, article.sourceHash);
+  assert.equal(partial.data.translation.createdAt, article.createdAt);
+  assert.deepEqual(partial.data.translation.interactive, article.interactive);
+  valid = true;
+  const repaired = await api(`${route}/translate`, { method: "POST", body });
+  assert.equal(repaired.status, 200); assert.equal(calls, 3, "Only captions are retried");
+  assert.deepEqual(repaired.data.translation.figureCaptions, { chart: english });
+  assert.equal(repaired.data.translation.captionTranslationError, undefined);
+  assert.equal(repaired.data.translation.createdAt, article.createdAt);
+  assert.deepEqual(repaired.data.translation.interactive, article.interactive);
+  await api(`${route}/translate`, { method: "POST", body }); assert.equal(calls, 3);
+});
+
+test("caption source changes invalidate only caption cache and obsolete in-flight captions cannot be saved", async (t) => {
+  let calls = 0, started, release;
+  const ready = new Promise(resolve => { started = resolve; }); const gate = new Promise(resolve => { release = resolve; });
+  const { api, base, app } = await fixture(t, { fetchImpl: async (_url, options) => {
+    calls++; assert.match(JSON.parse(options.body).messages[0].content, /^Translate the following figure captions/);
+    if (calls === 2) { started(); await gate; }
+    return new Response(JSON.stringify({ choices: [{ message: { content: '[{"id":"chart","caption":"Fresh caption."}]' } }] }));
+  } });
+  const paper = await visionPaper(api, base); const route = `/api/papers/${paper.id}`;
+  const original = (await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: { markdown: "中文原文。", language: "zh-CN" } } })).data.paper.readingVersions[0];
+  const body = { target: "reading", readingId: original.id, language: "en" };
+  const first = await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, translations: [{ ...body, markdown: "Cached English article.", figureCaptions: { chart: "Old caption." } }] } });
+  const before = first.data.paper.readingVersions[0].translations.en;
+  const raw = app.locals.store.paper(paper.id).readingVersions[0];
+  raw.figures[0].caption = "A corrected source caption.";
+  const stale = (await api(route)).data.paper.readingVersions[0].translations.en;
+  assert.equal(stale.figureCaptions, undefined); assert.match(stale.captionTranslationError, /out of date/);
+  assert.deepEqual(raw.translations.en.figureCaptions, { chart: "Old caption." });
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const fresh = await api(`${route}/translate`, { method: "POST", body });
+  assert.equal(fresh.status, 200); assert.equal(calls, 1);
+  assert.equal(fresh.data.translation.markdown, before.markdown); assert.equal(fresh.data.translation.createdAt, before.createdAt);
+  assert.equal(fresh.data.translation.sourceHash, before.sourceHash);
+  assert.notEqual(fresh.data.translation.figureCaptionsSourceHash, before.figureCaptionsSourceHash);
+  raw.figures[0].caption = "Second correction.";
+  const pending = api(`${route}/translate`, { method: "POST", body }); await ready;
+  raw.figures[0].caption = "Third correction during inference."; release();
+  assert.equal((await pending).status, 409);
+  assert.equal(raw.translations.en.figureCaptionsSourceHash, fresh.data.translation.figureCaptionsSourceHash);
+});
+
+test("an external caption-only import wins a race with an in-flight caption model", async (t) => {
+  let started, release; const ready = new Promise(resolve => { started = resolve; }); const gate = new Promise(resolve => { release = resolve; });
+  const { api, base } = await fixture(t, { fetchImpl: async () => {
+    started(); await gate;
+    return new Response(JSON.stringify({ choices: [{ message: { content: '[{"id":"chart","caption":"Late model caption."}]' } }] }));
+  } });
+  const paper = await visionPaper(api, base); const route = `/api/papers/${paper.id}`;
+  const original = (await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: { markdown: "Original article.", language: "en" } } })).data.paper.readingVersions[0];
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const body = { target: "reading", readingId: original.id, language: "en" };
+  const pending = api(`${route}/translate`, { method: "POST", body }); await ready;
+  const imported = await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Independent translator" }, translations: [{ ...body, figureCaptions: { chart: "Agent caption to preserve." } }] } });
+  assert.equal(imported.status, 200); release();
+  const result = await pending;
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.data.translation.figureCaptions, { chart: "Agent caption to preserve." });
+  assert.equal(result.data.translation.createdAt, original.createdAt);
+});
+
+test("translation binding failures save no broken article, retain existing versions, and allow an explicit retry", async t => {
+  let fail = true, calls = 0;
+  const { api, base } = await fixture(t, { fetchImpl: async (_url, options) => {
+    calls++;
+    const request = JSON.parse(options.body);
+    const source = request.messages[1].content.replace(/^<source>\n/, "").replace(/\n<\/source>$/, "");
+    const text = fail ? "译文丢失了原文链接。" : source.replace("Evidence", "证据").replace(/\)$/, ' "模型误译的引句")');
+    return new Response(JSON.stringify({ choices: [{ message: { content: text } }] }));
+  } });
+  const form = new FormData(); form.set("file", new Blob([makePdf()], { type: "application/pdf" }), "source-binding.pdf");
+  const paper = (await (await fetch(base + "/api/upload", { method: "POST", body: form })).json()).paper;
+  const route = `/api/papers/${paper.id}`;
+  const original = '[Evidence](#page=1 "Reliable evidence supports careful scientific research.")';
+  const published = (await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: { language: "en", markdown: original } } })).data.paper;
+  const readingId = published.activeReadingId;
+  await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Earlier translation" }, translations: [{ target: "reading", readingId, language: "fr", markdown: "La traduction précédente reste disponible." }] } });
+  const before = (await api(route)).data.paper.readingVersions.find(version => version.id === readingId);
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const body = { target: "reading", readingId, language: "zh-CN" };
+  const rejected = await api(`${route}/translate`, { method: "POST", body });
+  assert.equal(rejected.status, 502); assert.match(rejected.data.error, /source citation or figure marker/);
+  const retained = (await api(route)).data.paper.readingVersions.find(version => version.id === readingId);
+  assert.equal(retained.markdown, original); assert.equal(retained.translations["zh-CN"], undefined);
+  assert.deepEqual(retained.translations.fr, before.translations.fr);
+  fail = false;
+  const retried = await api(`${route}/translate`, { method: "POST", body });
+  assert.equal(retried.status, 200); assert.equal(calls, 2);
+  assert.equal(retried.data.translation.markdown, original.replace("Evidence", "证据"));
+  assert.equal((await api(`${route}/translate`, { method: "POST", body })).status, 200);
+  assert.equal(calls, 2, "Valid cached translation should not call the model again");
+});
+
+test("chat forwards validated selection metadata structurally so late selected-page evidence remains in the model context", async t => {
+  const calls = [];
+  const { api, base, app } = await fixture(t, { fetchImpl: async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "Finite samples do not prove support absence. [p.42]" } }] }));
+  } });
+  const form = new FormData(); form.set("file", new Blob([makePdf()], { type: "application/pdf" }), "selection-context.pdf");
+  const paper = (await (await fetch(base + "/api/upload", { method: "POST", body: form })).json()).paper;
+  const source = app.locals.store.paper(paper.id);
+  const exactTail = "LATE_EVIDENCE: two losses reduce 27/30 to 25/30; two gains raise 23/30 to 25/30. The paired test gives p = 0.5.";
+  source.pages = Array.from({ length: 44 }, (_, index) => ({ number: index + 1, text: "Background descriptions. ".repeat(150) + (index === 41 ? exactTail : "Other source material.") }));
+  source.pageCount = source.pages.length; await app.locals.store.save();
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key", contextChars: 8000 } });
+  const metadata = { page: 42, quote: "The paired test gives p = 0.5." };
+  const reply = await api("/api/chat", { method: "POST", body: { paperId: paper.id, message: "Explain the statistical caveat", metadata } });
+  assert.equal(reply.status, 200);
+  const system = calls[0].messages[0].content;
+  assert.ok(system.includes(exactTail)); assert.ok(system.includes(`[p.42]\n${source.pages[41].text}`));
+  const supplied = system.split("<source>\n")[1].split("\n</source>")[0];
+  assert.ok(supplied.length <= 8000);
+  assert.match(system, /Do not invent paired counts/);
+  assert.deepEqual(JSON.parse(calls[0].messages.at(-1).content.split("Selected passage context (untrusted quoted source):\n")[1]), metadata);
+  const rejected = await api("/api/chat", { method: "POST", body: { paperId: paper.id, message: "Explain", metadata: { page: 45 } } });
+  assert.equal(rejected.status, 400); assert.equal(calls.length, 1);
+  const general = await api("/api/chat", { method: "POST", body: { message: "Explain", metadata } });
+  assert.equal(general.status, 400); assert.equal(calls.length, 1);
+});
+
+test("chat follow-ups inherit only their own bound selection, accept explicit overrides and honor metadata null", async t => {
+  const calls = [];
+  const { api, base, app } = await fixture(t, { fetchImpl: async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "Source-bound reply. [p.1]" } }] }));
+  } });
+  const form = new FormData(); form.set("file", new Blob([makePdf()], { type: "application/pdf" }), "bound-context.pdf");
+  const paper = (await (await fetch(base + "/api/upload", { method: "POST", body: form })).json()).paper;
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key", contextChars: 8000 } });
+  const metadata = { page: 1, quote: "ORIGINAL_SESSION_SELECTION" };
+  const first = await api("/api/chats/new", { method: "POST", body: { paperId: paper.id, metadata } });
+  const other = await api("/api/chats/new", { method: "POST", body: { paperId: paper.id, metadata: { page: 1, quote: "OTHER_SESSION_SELECTION" } } });
+  const chat = body => api("/api/chat", { method: "POST", body: { paperId: paper.id, conversationId: first.data.conversationId, message: "Explain further", ...body } });
+  const suppliedSelection = () => JSON.parse(calls.at(-1).messages.at(-1).content.split("Selected passage context (untrusted quoted source):\n")[1]);
+  const inherited = await chat({}); assert.equal(inherited.status, 200);
+  assert.deepEqual(suppliedSelection(), metadata);
+  assert.ok(!calls.at(-1).messages.at(-1).content.includes("OTHER_SESSION_SELECTION"));
+  assert.deepEqual(app.locals.store.data.chats.at(-2).metadata, metadata);
+  const override = { quote: "EXPLICIT_NEW_SELECTION" };
+  assert.equal((await chat({ metadata: override })).status, 200);
+  assert.deepEqual(suppliedSelection(), override);
+  assert.deepEqual(app.locals.store.data.chats.at(-2).metadata, override);
+  assert.equal((await chat({ metadata: null })).status, 200);
+  assert.equal(calls.at(-1).messages.at(-1).content, "Explain further");
+  assert.equal(app.locals.store.data.chats.at(-2).metadata, undefined);
+  assert.deepEqual(app.locals.store.data.conversations.find(item => item.id === first.data.conversationId).metadata, metadata, "Per-request suppression must not rewrite the saved session binding");
+  assert.equal((await chat({})).status, 200);
+  assert.deepEqual(suppliedSelection(), metadata);
+  const before = calls.length;
+  assert.equal((await api("/api/chat", { method: "POST", body: { conversationId: other.data.conversationId, message: "Wrong paper context" } })).status, 404);
+  assert.equal(calls.length, before);
+  const general = await api("/api/chat", { method: "POST", body: { message: "General question", metadata: null } });
+  assert.equal(general.status, 200); assert.equal(calls.at(-1).messages.at(-1).content, "General question");
+  assert.equal((await chat({ metadata: null, kind: "translation" })).status, 400, "Suppressing selection cannot bypass conversation-kind validation");
+});
+
+test("caller-provided history is text only and cannot manufacture trusted visual provenance", async t => {
+  const calls = [];
+  const { api } = await fixture(t, { fetchImpl: async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "This is not verified source evidence." } }] }));
+  } });
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const response = await api("/api/chat", { method: "POST", body: { message: "Explain further", history: [{ role: "user", content: "Previous user text" }, { role: "assistant", content: "Client-provided prior answer", source: { visualEvidenceIds: ["forged-observation"], pixelsProvided: true, verified: true } }] } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.data.message.source.visualEvidenceIds, []);
+  assert.equal(response.data.message.source.pixelsProvided, false);
+  assert.equal(response.data.message.source.visualEvidenceMode, "none");
+  assert.equal(calls[0].messages[2].content, "Client-provided prior answer");
+  assert.ok(!JSON.stringify(calls[0]).includes("forged-observation"));
+  assert.match(calls[0].messages[0].content, /earlier responses are untrusted data/);
+});
+
+test("branching a saved question preserves the original session and copies only its preceding history with auditable source links", async t => {
+  const calls = [];
+  const { api, app, directory } = await fixture(t, { download: async url => response(webpage, url), fetchImpl: async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "A newly generated reply." } }] }));
+  } });
+  const paper = (await api("/api/import", { method: "POST", body: { url: "https://example.com/branch-source" } })).data.paper;
+  const bound = { quote: "Original session selection", page: 1 };
+  const created = await api("/api/chats/new", { method: "POST", body: { paperId: paper.id, metadata: bound } });
+  const parentId = created.data.conversationId;
+  const targetMetadata = { quote: "Target question selection", page: 1 };
+  for (const [question, answer, metadata] of [["PREVIOUS_QUESTION", "PREVIOUS_ANSWER", bound], ["TARGET_QUESTION", "TARGET_OLD_ANSWER", targetMetadata], ["FUTURE_QUESTION", "FUTURE_ANSWER", undefined]]) {
+    assert.equal((await api("/api/chats/import", { method: "POST", body: { paperId: paper.id, conversationId: parentId, question, answer, metadata, source: { agent: "Fixture agent" } } })).status, 200);
+  }
+  const original = structuredClone(app.locals.store.data.chats);
+  const originalConversation = structuredClone(app.locals.store.data.conversations.find(item => item.id === parentId));
+  const target = original[2];
+  const fork = await api(`/api/conversations/${parentId}/branch`, { method: "POST", body: { paperId: paper.id, messageId: target.id, action: "retry" } });
+  assert.equal(fork.status, 201); assert.equal(calls.length, 0, "Creating a branch must not invoke any model");
+  const branch = fork.data;
+  assert.notEqual(branch.conversationId, parentId);
+  assert.deepEqual(branch.messages.map(item => item.content), ["PREVIOUS_QUESTION", "PREVIOUS_ANSWER"]);
+  assert.deepEqual(branch.draft, { message: "TARGET_QUESTION", metadata: targetMetadata, verbatim: true });
+  assert.deepEqual(branch.conversation.metadata, targetMetadata);
+  assert.equal(branch.conversation.source.kind, "branch");
+  assert.equal(branch.conversation.source.conversationId, parentId);
+  assert.equal(branch.conversation.source.messageId, target.id);
+  assert.equal(branch.conversation.source.action, "retry");
+  for (const [index, message] of branch.messages.entries()) {
+    assert.notEqual(message.id, original[index].id);
+    assert.equal(message.conversationId, branch.conversationId);
+    assert.equal(message.paperId, paper.id);
+    assert.equal(message.branchSource.conversationId, parentId);
+    assert.equal(message.branchSource.messageId, original[index].id);
+    assert.deepEqual(message.source, original[index].source);
+    assert.deepEqual(message.metadata, original[index].metadata);
+  }
+  assert.deepEqual(app.locals.store.data.chats.filter(item => item.conversationId === parentId), original);
+  assert.deepEqual(app.locals.store.data.conversations.find(item => item.id === parentId), originalConversation);
+  assert.equal((await api(`/api/conversations?paperId=${paper.id}`)).data.activeConversationId, branch.conversationId);
+  const persisted = await createApp({ dataDir: directory });
+  assert.deepEqual(persisted.locals.store.data.chats.filter(item => item.conversationId === branch.conversationId), branch.messages);
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const answered = await api("/api/chat", { method: "POST", body: { paperId: paper.id, conversationId: branch.conversationId, message: "Edited question", questionText: "Edited question" } });
+  assert.equal(answered.status, 200); assert.equal(calls.length, 1);
+  assert.equal(answered.data.userMessage.questionText, "Edited question");
+  assert.deepEqual(answered.data.userMessage.metadata, targetMetadata);
+  assert.equal(answered.data.userMessage.id, app.locals.store.data.chats.at(-2).id);
+  const delivered = JSON.stringify(calls[0].messages);
+  for (const forbidden of ["TARGET_OLD_ANSWER", "FUTURE_QUESTION", "FUTURE_ANSWER"]) assert.ok(!delivered.includes(forbidden));
+  assert.ok(delivered.includes("PREVIOUS_QUESTION")); assert.ok(delivered.includes("PREVIOUS_ANSWER"));
+  assert.deepEqual(app.locals.store.data.chats.filter(item => item.conversationId === parentId), original);
+});
+
+test("branch validation enforces paper/conversation/user-message ownership before changing state", async t => {
+  const { api, app } = await fixture(t, { download: async url => response(webpage, url) });
+  const paper = (await api("/api/import", { method: "POST", body: { url: "https://example.com/branch-one" } })).data.paper;
+  const anotherPaper = (await api("/api/import", { method: "POST", body: { url: "https://example.com/branch-two" } })).data.paper;
+  const first = (await api("/api/chats/new", { method: "POST", body: { paperId: paper.id, metadata: { quote: "Session-only selection", page: 1 } } })).data;
+  await api("/api/chats/import", { method: "POST", body: { paperId: paper.id, conversationId: first.conversationId, metadata: null, question: "A question with no selection", answer: "An imported answer", source: { agent: "Fixture" } } });
+  const [target, assistant] = app.locals.store.data.chats;
+  const other = (await api("/api/chats/new", { method: "POST", body: { paperId: paper.id } })).data;
+  const route = `/api/conversations/${first.conversationId}/branch`;
+  const before = structuredClone(app.locals.store.data);
+  for (const [body, status] of [
+    [{ messageId: target.id }, 400], [{ paperId: "", messageId: target.id }, 400],
+    [{ paperId: anotherPaper.id, messageId: target.id }, 404], [{ paperId: null, messageId: target.id }, 404],
+    [{ paperId: paper.id, messageId: assistant.id }, 400], [{ paperId: paper.id, messageId: "missing" }, 404],
+    [{ paperId: paper.id, messageId: target.id, action: "delete" }, 400],
+    [{ paperId: paper.id, messageId: target.id, question: "Client cannot replace target here" }, 400],
+  ]) assert.equal((await api(route, { method: "POST", body })).status, status);
+  assert.equal((await api(`/api/conversations/${other.conversationId}/branch`, { method: "POST", body: { paperId: paper.id, messageId: target.id } })).status, 404);
+  assert.deepEqual(app.locals.store.data, before, "Rejected branches must not create sessions or change active selection");
+  const branch = await api(route, { method: "POST", body: { paperId: paper.id, messageId: target.id } });
+  assert.equal(branch.status, 201); assert.deepEqual(branch.data.messages, []);
+  assert.equal(branch.data.draft.metadata, null); assert.equal(branch.data.conversation.metadata, undefined, "Do not resurrect a session selection absent from the target message");
+  assert.equal(branch.data.conversation.source.action, "edit");
+});
+
+test("branching retains history outside the last-100 display window and preserves invalidated vision provenance for later filtering", async t => {
+  const { api, app } = await fixture(t);
+  const parent = (await api("/api/chats/new", { method: "POST", body: {} })).data.conversationId;
+  const messages = Array.from({ length: 124 }, (_, index) => ({ id: `message-${index}`, role: index % 2 ? "assistant" : "user", content: `Original message ${index}`, paperId: null, conversationId: parent, createdAt: new Date().toISOString() }));
+  messages[3].source = { kind: "model", visualEvidenceIds: ["superseded-observation"], pixelsProvided: false };
+  app.locals.store.data.chats.push(...messages); await app.locals.store.save();
+  assert.equal((await api(`/api/chats?conversationId=${parent}`)).data.messages.length, 100);
+  const result = await api(`/api/conversations/${parent}/branch`, { method: "POST", body: { paperId: null, messageId: "message-120", action: "edit" } });
+  assert.equal(result.status, 201); assert.equal(result.data.messages.length, 120);
+  assert.equal(result.data.messages[0].content, "Original message 0");
+  assert.equal(result.data.messages.at(-1).content, "Original message 119");
+  assert.deepEqual(result.data.messages[3].source, messages[3].source);
+  assert.equal(result.data.draft.message, "Original message 120");
+  assert.equal(app.locals.store.data.chats.filter(item => item.conversationId === parent).length, 124);
+});
+
+test("chat returns persistent user IDs and branches prefer exact questionText without parsing legacy prompt strings", async t => {
+  const { api, app } = await fixture(t);
+  const rawQuestion = "  Original question\nwith line breaks  ";
+  const result = await api("/api/chat", { method: "POST", body: { message: "Original question\n\nAutomatically included legacy context.", questionText: rawQuestion } });
+  assert.equal(result.status, 200); assert.ok(result.data.userMessage.id);
+  assert.equal(result.data.userMessage.questionText, rawQuestion);
+  assert.deepEqual(result.data.userMessage, app.locals.store.data.chats.at(-2));
+  const branch = await api(`/api/conversations/${result.data.conversationId}/branch`, { method: "POST", body: { paperId: null, messageId: result.data.userMessage.id } });
+  assert.equal(branch.status, 201);
+  assert.deepEqual(branch.data.draft, { message: rawQuestion, metadata: null, verbatim: false });
+  const count = app.locals.store.data.chats.length;
+  for (const questionText of [null, " ", 42, "x".repeat(12001)])
+    assert.equal((await api("/api/chat", { method: "POST", body: { message: "Valid question", questionText } })).status, 400);
+  assert.equal(app.locals.store.data.chats.length, count);
+});
+
+test("question source scopes survive new, model, subscription-import and branch flows without fabricating PDF anchors", async t => {
+  const calls = [];
+  const { api, app } = await fixture(t, {
+    download: async url => response(webpage, url),
+    fetchImpl: async (_url, options) => {
+      calls.push(JSON.parse(options.body));
+      return new Response(JSON.stringify({ choices: [{ message: { content: "Generated interpretations must be checked against original evidence." } }] }));
+    },
+  });
+  const paper = (await api("/api/import", { method: "POST", body: { url: "https://example.com/scoped-question" } })).data.paper;
+  const published = await api(`/api/papers/${paper.id}/insights`, { method: "PUT", body: {
+    source: { agent: "scope fixture" }, summary: { language: "en", markdown: "A generated interpretation, not a source quotation." },
+  } });
+  const metadata = { quote: "A generated interpretation", sourceScope: "reading", readingId: published.data.paper.activeReadingId };
+  const session = await api("/api/chats/new", { method: "POST", body: { paperId: paper.id, metadata } });
+  assert.equal(session.status, 201); assert.deepEqual(session.data.conversation.metadata, metadata);
+  const empty = await api(`/api/chats?paperId=${paper.id}&conversationId=${session.data.conversationId}`);
+  assert.deepEqual(empty.data.conversation, session.data.conversation); assert.deepEqual(empty.data.messages, []);
+  assert.equal((await api("/api/chats")).data.conversation, null);
+  assert.equal((await api(`/api/chats?conversationId=${session.data.conversationId}`)).status, 404);
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key", contextChars: 8000 } });
+  const asked = await api("/api/chat", { method: "POST", body: { paperId: paper.id, conversationId: session.data.conversationId, message: "Explain this interpretation." } });
+  assert.equal(asked.status, 200); assert.deepEqual(asked.data.userMessage.metadata, metadata);
+  assert.match(calls[0].messages[0].content, /generated reading version.*NOT original paper text/);
+  assert.ok(!calls[0].messages[0].content.split("<source>\n")[1].includes(metadata.quote), "Generated selection must remain outside the primary source corpus");
+  assert.deepEqual(JSON.parse(calls[0].messages.at(-1).content.split("declared source scope):\n")[1]), metadata);
+  const imported = await api("/api/chats/import", { method: "POST", body: { paperId: paper.id, conversationId: session.data.conversationId,
+    question: "Subscription follow-up", answer: "This is a generated interpretation.", source: { agent: "scope fixture" } } });
+  assert.equal(imported.status, 200); assert.equal(calls.length, 1, "Agent import invokes no provider");
+  const messages = (await api(`/api/chats?paperId=${paper.id}&conversationId=${session.data.conversationId}`)).data.messages;
+  assert.deepEqual(messages.at(-2).metadata, metadata);
+  const branch = await api(`/api/conversations/${session.data.conversationId}/branch`, { method: "POST", body: { paperId: paper.id, messageId: messages.at(-2).id } });
+  assert.equal(branch.status, 201); assert.deepEqual(branch.data.draft.metadata, metadata);
+  assert.deepEqual(branch.data.conversation.metadata, metadata); assert.deepEqual(branch.data.messages[0].metadata, metadata);
+  const unbound = await api("/api/chats/import", { method: "POST", body: { paperId: paper.id, conversationId: session.data.conversationId,
+    metadata: null, question: "Without selected context", answer: "A separate answer.", source: { agent: "scope fixture" } } });
+  assert.equal(unbound.status, 200); assert.equal(app.locals.store.data.chats.at(-2).metadata, undefined);
+  const override = { sourceScope: "abstract", quote: paper.abstract };
+  assert.equal((await api("/api/chats/import", { method: "POST", body: { paperId: paper.id, conversationId: session.data.conversationId,
+    metadata: override, question: "About the abstract", answer: "Check the full study.", source: { agent: "scope fixture" } } })).status, 200);
+  assert.deepEqual(app.locals.store.data.chats.at(-2).metadata, override);
+  assert.deepEqual(app.locals.store.data.conversations.find(item => item.id === session.data.conversationId).metadata, metadata);
+});
+
+test("question selection scopes reject cross-paper versions and non-PDF page claims while retaining legacy shapes", async t => {
+  const { api, base, app } = await fixture(t, { download: async url => response(webpage, url) });
+  const web = (await api("/api/import", { method: "POST", body: { url: "https://example.com/scoped-web" } })).data.paper;
+  const other = (await api("/api/import", { method: "POST", body: { url: "https://example.com/scoped-other" } })).data.paper;
+  const version = (await api(`/api/papers/${other.id}/insights`, { method: "PUT", body: { source: { agent: "scope fixture" }, summary: { language: "en", markdown: "Another paper's generated interpretation." } } })).data.paper.activeReadingId;
+  const form = new FormData(); form.set("file", new Blob([makePdf()], { type: "application/pdf" }), "scoped.pdf");
+  const pdf = (await (await fetch(base + "/api/upload", { method: "POST", body: form })).json()).paper;
+  const create = (paperId, metadata) => api("/api/chats/new", { method: "POST", body: { paperId, metadata } });
+  for (const metadata of [
+    { quote: "Selected", sourceScope: "reading", readingId: version },
+    { quote: "Selected", sourceScope: "reading" },
+  ]) assert.equal((await create(web.id, metadata)).status, 404);
+  for (const metadata of [
+    { quote: "Selected", readingId: version },
+    { quote: "Selected", sourceScope: "abstract", readingId: version },
+    { quote: "Selected", sourceScope: "unknown" },
+    { quote: "Selected", sourceScope: "pdf" },
+    ...["reading", "abstract", "source-text"].flatMap(sourceScope => [{ quote: "Selected", sourceScope, page: 1 }, { quote: "Selected", sourceScope, pages: [1] }]),
+    { sourceScope: "abstract" },
+  ]) assert.equal((await create(web.id, metadata)).status, 400, JSON.stringify(metadata));
+  assert.equal((await create(pdf.id, { quote: "Selected", sourceScope: "source-text" })).status, 400);
+  for (const [paperId, metadata, expected] of [
+    [web.id, { quote: "Legacy overview" }, { quote: "Legacy overview" }],
+    [web.id, { page: 1 }, { page: 1 }],
+    [web.id, { sourceScope: "source-text", quote: "Source passage" }, { sourceScope: "source-text", quote: "Source passage" }],
+    [web.id, { sourceScope: "abstract", quote: web.abstract }, { sourceScope: "abstract", quote: web.abstract }],
+    [pdf.id, { sourceScope: "pdf", quote: "PDF passage", pages: [1] }, { sourceScope: "pdf", quote: "PDF passage", page: 1, pages: [1] }],
+  ]) {
+    const saved = await create(paperId, metadata); assert.equal(saved.status, 201);
+    assert.deepEqual(saved.data.conversation.metadata, expected);
+  }
+  const before = app.locals.store.data.chats.length;
+  for (const route of ["/api/chat", "/api/chats/import"]) {
+    const bad = await api(route, { method: "POST", body: { paperId: web.id, metadata: { sourceScope: "reading", readingId: version, quote: "Wrong paper" }, message: "Explain", question: "Explain", answer: "No", source: { agent: "scope fixture" } } });
+    assert.equal(bad.status, 404);
+  }
+  assert.equal(app.locals.store.data.chats.length, before);
 });

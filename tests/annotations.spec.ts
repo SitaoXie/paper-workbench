@@ -81,7 +81,7 @@ async function setup(page: Page) {
       }
       const text = body.language.startsWith("en")
         ? "This is an inline reading result."
-        : "这是就地生成的阅读结果。";
+        : "这是就地生成的阅读结果。 $p=0.5$";
       result = {
         result: {
           text,
@@ -153,10 +153,16 @@ test("annotations retain coordinates across zoom and reload; notes store quote a
   page,
 }) => {
   const state = await setup(page);
+  const readerTop = await page.getByLabel("连续滚动论文页面", {exact:true}).evaluate(el=>el.getBoundingClientRect().top);
   await selectPassage(page);
   await page.getByRole("button", { name: "绿色", exact: true }).click();
   await page.getByRole("button", { name: "高亮选中内容", exact: true }).click();
   await expect.poll(() => state.annotations.length).toBe(1);
+  await expect(page.locator('.pdf-annotation-feedback')).toContainText('已保存到笔记');
+  await expect(page.locator('.pdf-annotation-toolbar')).toBeHidden();
+  expect(await page.getByLabel("连续滚动论文页面", {exact:true}).evaluate(el=>el.getBoundingClientRect().top)).toBe(readerTop);
+  await page.getByRole('button',{name:'关闭保存提示',exact:true}).click();
+  await expect(page.locator('.pdf-annotation-feedback')).toBeHidden();
   expect(state.annotations[0]).toMatchObject({
     kind: "highlight",
     color: "green",
@@ -224,6 +230,7 @@ test("inline explanation retries, switches language and saves without starting a
   await expect(inline).toContainText("This is an inline reading result.");
   await inline.getByLabel("就地结果语言").selectOption("zh-CN");
   await expect(inline).toContainText("这是就地生成的阅读结果。");
+  await expect(inline.locator(".katex")).toBeVisible();
   expect(state.sessions).toHaveLength(0);
   await inline.getByLabel("就地结果语言").selectOption("en");
   await expect(inline).toContainText("This is an inline reading result.");
@@ -396,6 +403,7 @@ test("PDF theme follows the app while original colors preserve pixels, position 
   );
   await expect(canvas).toBeVisible();
   const colors = page.getByLabel("PDF 纸张颜色", { exact: true });
+  const showColors = async () => { if (!(await colors.isVisible())) await page.getByRole("button", { name: "阅读工具", exact: true }).click(); };
   const zoom = await page
     .getByLabel("PDF 缩放比例", { exact: true })
     .innerText();
@@ -456,6 +464,7 @@ test("PDF theme follows the app while original colors preserve pixels, position 
     ).toBeLessThan(3);
   };
 
+  await showColors();
   await expect(colors).toHaveValue("theme");
   await expect(canvas).toHaveCSS("filter", "none");
   await switchTheme(true);
@@ -466,6 +475,7 @@ test("PDF theme follows the app while original colors preserve pixels, position 
     "filter",
     "none",
   );
+  await showColors();
   await expect(page.locator(".pdf-theme-color-notice")).toBeVisible();
   await expectPositionAndData();
   await page.screenshot({ path: info.outputPath("pdf-theme-dark.png") });
@@ -485,22 +495,26 @@ test("PDF theme follows the app while original colors preserve pixels, position 
     return text;
   });
   expect(selectedText).toContain("Second page evidence");
+  await showColors();
   await colors.selectOption("original");
   await expect(canvas).toHaveCSS("filter", "none");
   await expect(overlay).toHaveCSS("mix-blend-mode", "multiply");
   await expect(page.locator(".pdf-theme-color-notice")).toBeHidden();
   await expectPositionAndData();
   await page.screenshot({ path: info.outputPath("pdf-theme-original.png") });
+  await showColors();
   await colors.selectOption("theme");
   await switchTheme(false);
   await expect(canvas).toHaveCSS("filter", "none");
   await expectPositionAndData();
+  await showColors();
   await colors.selectOption("original");
   await switchTheme(true);
   await expect(canvas).toHaveCSS("filter", "none");
   await expectPositionAndData();
   await page.reload();
   await openReader(page);
+  await showColors();
   await expect(colors).toHaveValue("original");
   expect(JSON.stringify(state.annotations)).toBe(savedAnnotations);
   expect(
@@ -508,4 +522,56 @@ test("PDF theme follows the app while original colors preserve pixels, position 
       () => document.documentElement.scrollWidth <= innerWidth + 1,
     ),
   ).toBeTruthy();
+});
+
+async function selectAcrossPages(page: Page) {
+  const smaller=page.getByRole('button',{name:'缩小 PDF',exact:true});
+  for(let i=0;i<8 && await smaller.isEnabled();i++) await smaller.click();
+  await expect(page.locator('[data-pdf-page="2"] .pdf-text-layer[data-rendered="true"]')).toBeVisible();
+  await page.evaluate(()=>{
+    const start=Array.from(document.querySelectorAll('[data-pdf-page="1"] .pdf-text-layer span')).find(el=>el.textContent?.includes('controlled experiment'))!;
+    const end=Array.from(document.querySelectorAll('[data-pdf-page="2"] .pdf-text-layer span')).find(el=>el.textContent?.includes('Normalized coordinates'))!;
+    start.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));
+    const range=document.createRange();range.setStart(start.firstChild!,0);range.setEnd(end.firstChild!,end.textContent!.length);
+    const selection=window.getSelection()!;selection.removeAllRanges();selection.addRange(range);document.dispatchEvent(new Event('selectionchange'));
+  });
+  await expect(page.getByRole('dialog',{name:'选中文字操作',exact:true})).toContainText('p.1–2');
+}
+
+test('one cross-page selection saves one logical note and each painted page opens that same note at its own source',async({page})=>{
+  const state=await setup(page);await selectAcrossPages(page);
+  await page.getByRole('button',{name:'添加选区笔记',exact:true}).click();
+  const editor=page.getByRole('dialog',{name:'添加笔记',exact:true});
+  await expect(editor).toContainText('p.1–2');
+  await page.getByLabel('笔记内容',{exact:true}).fill('A single comment shared by both pages.');
+  await page.getByRole('button',{name:'保存笔记',exact:true}).click();
+  await expect.poll(()=>state.annotations.length).toBe(1);
+  const note=state.annotations[0];expect(note.segments).toHaveLength(2);
+  expect(note.segments.map((segment:any)=>segment.page)).toEqual([1,2]);
+  expect(note.quote).toContain('controlled experiment');expect(note.quote).not.toContain('Normalized coordinates');
+  expect(note.segments[1].quote).toContain('Normalized coordinates');
+  expect(note.body).toBe('A single comment shared by both pages.');
+  await expect(page.locator('.pdf-annotation-feedback')).toContainText('保存为一条笔记');
+  for(const number of [1,2])await expect(page.locator(`[data-pdf-page="${number}"] .reader-annotation-paint rect`).first()).toBeVisible();
+  // At the minimum zoom both whole pages fit without any scroll range. Return
+  // to a reading scale before asserting that page 2 becomes the active page.
+  for(let i=0;i<6;i++)await page.getByRole('button',{name:'放大 PDF',exact:true}).click();
+  await page.locator('[data-pdf-page="2"]').scrollIntoViewIfNeeded();
+  await page.locator('[data-pdf-page="2"]').getByRole('button',{name:/打开笔记: A single comment/}).first().click();
+  await expect(page.getByLabel('PDF 页码',{exact:true})).toHaveValue('2');
+  await expect(page.getByRole('complementary',{name:'论文笔记',exact:true})).toContainText('p.1–2');
+  await expect(page.getByLabel('笔记内容',{exact:true})).toHaveValue('A single comment shared by both pages.');
+  await page.reload();
+  expect(state.annotations).toHaveLength(1);await expect(page.locator('.notebook-panel')).toContainText('p.1–2');
+});
+
+test('saving a cross-page inline explanation keeps both source anchors in one annotation',async({page})=>{
+  const state=await setup(page);await selectAcrossPages(page);
+  await page.getByRole('button',{name:'解释选中内容',exact:true}).click();
+  const inline=page.getByRole('dialog',{name:'就地阅读助手',exact:true});
+  await expect(inline).toContainText('p.1–2');await expect(inline).toContainText('这是就地生成的阅读结果');
+  await inline.getByRole('button',{name:'保存到笔记',exact:true}).click();
+  await expect.poll(()=>state.annotations.length).toBe(1);expect(state.annotations[0].segments).toHaveLength(2);
+  expect(state.annotations[0].kind).toBe('explanation');expect(state.annotations[0].body).toContain('就地生成');
+  expect(state.sessions).toHaveLength(0);
 });

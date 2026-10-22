@@ -20,6 +20,8 @@ type Props = {
   onConfigure: () => void;
   onPage: (page: number) => void;
   language: string;
+  compact?: boolean;
+  onManageFigures?: () => void;
 };
 
 /** Vision is opt-in, independently configured, and never presented as ground truth. */
@@ -30,6 +32,8 @@ export default function VisionTools({
   onConfigure,
   onPage,
   language,
+  compact = false,
+  onManageFigures,
 }: Props) {
   const english = language.startsWith("en");
   const t = (zh: string, en: string) => (english ? en : zh);
@@ -38,6 +42,7 @@ export default function VisionTools({
   const [focus, setFocus] = useState("");
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const detailsRef = useRef<HTMLDetailsElement>(null);
   const [error, setError] = useState("");
   const [changingEvidence, setChangingEvidence] = useState("");
   const [stage, setStage] = useState<"crop" | "analyze">("crop");
@@ -60,6 +65,12 @@ export default function VisionTools({
   const evidence = [...(paper.visualEvidence || [])].sort((a, b) =>
     b.createdAt.localeCompare(a.createdAt),
   );
+  useEffect(() => {
+    if (!compact) return;
+    const outside = (event: PointerEvent) => { if (detailsRef.current?.open && !detailsRef.current.contains(event.target as Node)) detailsRef.current.open = false; };
+    document.addEventListener('pointerdown', outside);
+    return () => document.removeEventListener('pointerdown', outside);
+  }, [compact]);
   useEffect(() => {
     request.current += 1;
     controller.current?.abort();
@@ -129,11 +140,13 @@ export default function VisionTools({
     finally { setChangingEvidence(""); }
   }
   return (
-    <details className="vision-tools" key={paper.id} onToggle={event => setExpanded(event.currentTarget.open)}>
-      <summary>
+    <details ref={detailsRef} className={`vision-tools ${compact ? 'is-compact' : ''}`} key={paper.id} onToggle={event => setExpanded(event.currentTarget.open)} onKeyDown={event => {
+      if (compact && event.key === 'Escape') { event.preventDefault(); event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus({preventScroll:true}); }
+    }}>
+      <summary aria-label={t("图像证据", "Image evidence")} title={t("图像证据", "Image evidence")}>
         <span>
           <Eye size={16} />
-          {t("图像证据", "Image evidence")}
+          <span className="vision-summary-label">{t("图像证据", "Image evidence")}</span>
           {!!evidence.length && <small>{evidence.length}</small>}
         </span>
         <span className="vision-summary-state">
@@ -143,6 +156,8 @@ export default function VisionTools({
         </span>
       </summary>
       <div className="vision-tools-body">
+        {compact && <div className="vision-panel-heading"><strong>{t("图像证据", "Image evidence")}</strong><span>{evidence.length ? t("已收到图像 · 未独立核验", "Images received · Unverified") : t("尚无图像输入记录", "No image input recorded")}</span></div>}
+        {onManageFigures && <button type="button" className="soft-button" onClick={onManageFigures}><Image size={15}/>{t("管理图表裁切", "Manage figure crops")}</button>}
         <p className="vision-evidence-boundary">
           {evidence.length
             ? t(

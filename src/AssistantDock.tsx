@@ -2,29 +2,8 @@ import { useLocale } from "./i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, GripVertical } from "lucide-react";
 
-const DESKTOP_MIN = 1000;
-const MIN_WIDTH = 420;
-const MAX_WIDTH = 960;
-const WIDTH_PREFERENCE = "paper-workbench:assistant-width";
-function savedAssistantWidth(): number | null {
-  try {
-    const value = Number(window.localStorage.getItem(WIDTH_PREFERENCE));
-    return Number.isFinite(value) && value >= MIN_WIDTH && value <= MAX_WIDTH ? value : null;
-  } catch { return null; }
-}
-function responsiveWidth(viewport: number) {
-  // A phone width must never become the desktop width preference.
-  const desktopViewport = viewport < DESKTOP_MIN ? 1440 : viewport;
-  return Math.round(Math.max(MIN_WIDTH, Math.min(maximumWidth(desktopViewport), desktopViewport * 0.5)));
-}
-function maximumWidth(viewport: number) {
-  // Keep a useful reading column beside the rail, even on small laptops.
-  return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, viewport - 408));
-}
-export function defaultAssistantWidth() {
-  const viewport = typeof window === "undefined" ? 1440 : window.innerWidth;
-  return savedAssistantWidth() ?? responsiveWidth(viewport);
-}
+import { ASSISTANT_DESKTOP_MIN as DESKTOP_MIN, ASSISTANT_MIN_WIDTH as MIN_WIDTH, initialAssistantWidth, maximumAssistantWidth as maximumWidth, responsiveAssistantWidth as responsiveWidth, savedAssistantWidth, saveAssistantWidth } from "./assistant-layout";
+export const defaultAssistantWidth = initialAssistantWidth;
 
 type Props = {
   width: number;
@@ -48,6 +27,11 @@ export default function AssistantDock({ width, onWidthChange, onClose, children,
   widthRef.current = width;
   const frame = useRef(0);
   const queuedWidth = useRef(width);
+  const renderedWidth = useRef(width);
+  if (renderedWidth.current !== width) {
+    renderedWidth.current = width;
+    if (!frame.current) queuedWidth.current = width;
+  }
 
   useEffect(() => {
     const resize = () => {
@@ -56,6 +40,9 @@ export default function AssistantDock({ width, onWidthChange, onClose, children,
       if (nextViewport < DESKTOP_MIN) return;
       const preferred = manualWidth.current ?? responsiveWidth(nextViewport);
       const nextWidth = Math.max(MIN_WIDTH, Math.min(maximumWidth(nextViewport), preferred));
+      cancelAnimationFrame(frame.current);
+      frame.current = 0;
+      queuedWidth.current = nextWidth;
       if (nextWidth !== widthRef.current) callback.current(nextWidth);
     };
     resize();
@@ -66,12 +53,16 @@ export default function AssistantDock({ width, onWidthChange, onClose, children,
   const change = (next: number) => {
     queuedWidth.current = Math.round(Math.max(MIN_WIDTH, Math.min(maximumWidth(window.innerWidth), next)));
     manualWidth.current = queuedWidth.current;
-    try { window.localStorage.setItem(WIDTH_PREFERENCE, String(queuedWidth.current)); } catch { /* Width remains a session preference if storage is unavailable. */ }
+    saveAssistantWidth(queuedWidth.current);
     cancelAnimationFrame(frame.current);
-    frame.current = requestAnimationFrame(() => callback.current(queuedWidth.current));
+    frame.current = requestAnimationFrame(() => {
+      frame.current = 0;
+      callback.current(queuedWidth.current);
+    });
   };
   const stopResize = () => {
     cancelAnimationFrame(frame.current);
+    frame.current = 0;
     callback.current(queuedWidth.current);
     setResizing(false);
   };
@@ -105,7 +96,7 @@ export default function AssistantDock({ width, onWidthChange, onClose, children,
       onPointerDown={event => {
         if (event.button !== 0 || viewport < DESKTOP_MIN) return;
         event.preventDefault();
-        queuedWidth.current = width;
+        if (!frame.current) queuedWidth.current = width;
         event.currentTarget.setPointerCapture(event.pointerId);
         setResizing(true);
       }}
@@ -121,7 +112,7 @@ export default function AssistantDock({ width, onWidthChange, onClose, children,
       onPointerCancel={stopResize}
       onKeyDown={event => {
         const step = event.shiftKey ? 64 : 16;
-        const next = event.key === "ArrowLeft" ? width + step : event.key === "ArrowRight" ? width - step : event.key === "Home" ? MIN_WIDTH : event.key === "End" ? maximumWidth(viewport) : null;
+        const next = event.key === "ArrowLeft" ? queuedWidth.current + step : event.key === "ArrowRight" ? queuedWidth.current - step : event.key === "Home" ? MIN_WIDTH : event.key === "End" ? maximumWidth(viewport) : null;
         if (next === null) return;
         event.preventDefault();
         change(next);

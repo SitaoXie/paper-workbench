@@ -30,11 +30,15 @@ test('overview selection translates in place and asks in a separate session with
   expect(writes[0].body).toMatchObject({sourceScope:'reading',readingId:reading.id,kind:'translation',language:'en'});
   expect(writes[0].body.page).toBeUndefined();
   expect(writes.some(w=>w.path==='/chats/new'||w.path==='/chat')).toBeFalsy();
+  await dialog.getByLabel('针对摘要选文的问题',{exact:true}).fill('为什么有限采样不能说明策略不存在？');
+  await page.mouse.wheel(0,300);
+  await expect(dialog.getByLabel('针对摘要选文的问题',{exact:true})).toBeVisible();
   await dialog.getByRole('button',{name:'提问',exact:true}).click();
   await expect(page.getByTestId('assistant-dock')).toBeVisible();
   const question=writes.find(w=>w.path==='/chats/new')!;
   expect(question.body.metadata.quote).toContain('有限采样');
   expect(question.body.metadata.page).toBeUndefined();
+  await expect(page.getByLabel('向研究助手提问',{exact:true})).toHaveValue('为什么有限采样不能说明策略不存在？');
   await expect(page.locator('.selected-passage')).toContainText('解读选文');
   await expect(page.locator('.selected-passage')).not.toContainText('p.undefined');
   await expect(page.getByRole('button',{name:'收起悬浮助手',exact:true})).toBeVisible();
@@ -113,7 +117,8 @@ test('history without PDF pages preserves abstract and reading origins and canno
   await expect(page.getByRole('tab',{name:'Overview',exact:true})).toHaveAttribute('aria-selected','true');
   await expect(page.getByLabel('Reading version',{exact:true})).toHaveValue(prior.id);
   await expect(page.locator('.reading-prose')).toContainText('Evidence in the earlier fixed version');
-  expect(writes.filter(write=>write.body?.activeReadingId).map(write=>write.body.activeReadingId)).toEqual([prior.id]);
+  expect(writes.filter(write=>write.body?.activeReadingId).map(write=>write.body.activeReadingId)).toEqual([]);
+  expect(paper.activeReadingId).toBe(current.id);
   await expect(page.getByTestId('assistant-dock')).toHaveCount(0);
 
   history=await openHistory();
@@ -131,7 +136,8 @@ test('history without PDF pages preserves abstract and reading origins and canno
   await abstractEntry.getByRole('button',{name:'Back to source · Original abstract',exact:true}).click();
   await expect(page.getByRole('tab',{name:'Overview',exact:true})).toHaveAttribute('aria-selected','true');
   await expect(page.getByLabel('Reading version',{exact:true})).toHaveValue(prior.id);
-  expect(writes.filter(write=>write.body?.activeReadingId)).toHaveLength(1);
+  expect(writes.filter(write=>write.body?.activeReadingId)).toHaveLength(0);
+  expect(paper.activeReadingId).toBe(current.id);
   expect(writes.some(write=>write.path.endsWith('/annotations'))).toBeFalsy();
 });
 
@@ -252,7 +258,7 @@ async function translationNavigationFixture(page: Page) {
   async function sourcePage() {
     await page.getByTestId('interactive-reading').getByRole('button',{name:'p.1',exact:true}).click();
     await expect(page.getByRole('tab',{name:'Paper',exact:true})).toHaveAttribute('aria-selected','true');
-    await expect(page.locator('.reading-overview')).toHaveCount(0);
+    await expect(page.locator('.reading-overview')).toBeHidden();
   }
   async function finish(index=0) {
     const request=requests[index];

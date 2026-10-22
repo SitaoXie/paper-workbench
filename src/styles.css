@@ -3019,3 +3019,7 @@ a svg {
 @media (max-width: 700px) {
   .app-shell:has(.continuous-reading) > .mobile-menu { top: 9px; }
 }
+
+.message-source-link { display:inline-flex;align-items:center;gap:4px;font-size:11px;margin-bottom:8px; }
+
+.abstract-excerpt-notice { color:var(--secondary);font-size:12px;line-height:1.6;margin:0 0 12px; }

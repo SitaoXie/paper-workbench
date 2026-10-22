@@ -1,10 +1,22 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Clock3, MessageSquare, Languages, Sparkles, X } from "lucide-react";
 import type { Activity, Conversation, Paper } from "./types";
 import { readingVersions } from "./ReadingOverview";
 import Mark from "./Markdown";
+import { activityResultText, usableActivityResult } from "./activity-result";
 import { useLocale } from "./i18n";
+import { pageLabel } from "./page-label";
 import "./locale-polish.css";
+
+function historyView(paperId: string) {
+  try {
+    const raw = sessionStorage.getItem(`pw-history-view:${paperId}`);
+    if (!raw || raw.length > 1000) return;
+    const value = JSON.parse(raw);
+    if (['questions', 'translations', 'explanations', 'versions'].includes(value?.tab) &&
+      (value.opened === null || (typeof value.opened === 'string' && value.opened.length < 256))) return value as {tab:string;opened:string|null};
+  } catch { /* History remains usable when browser storage is unavailable. */ }
+}
 export default function ReadingHistory({
   paper,
   conversations,
@@ -24,26 +36,31 @@ export default function ReadingHistory({
   onClose: () => void;
   onConversation: (id: string) => void;
   onVersion: (id: string) => void;
-  onPage: (page: number) => void;
+  onPage: (page: number, quote?: string) => void;
   onOverview: () => void;
   onSaveActivity?: (activity: Activity) => Promise<void>;
 }) {
   const { locale, t } = useLocale();
   const date = (value: string) => new Date(value).toLocaleDateString(locale === "en" ? "en-US" : "zh-CN", { year: "numeric", month: "short", day: "numeric" });
-  const [tab, setTab] = useState("questions"),
-    [opened, setOpened] = useState<string | null>(null),
+  const context = paper?.id || 'research';
+  const [tab, setTab] = useState(() => historyView(context)?.tab || "questions"),
+    [opened, setOpened] = useState<string | null>(() => historyView(context)?.opened || null),
     [saving, setSaving] = useState(false),
     [saved, setSaved] = useState<string[]>([]),
     [error, setError] = useState("");
+  useEffect(() => {
+    try { sessionStorage.setItem(`pw-history-view:${context}`, JSON.stringify({tab,opened})); }
+    catch { /* Only view state is cached; activities stay on the local server. */ }
+  }, [context, tab, opened]);
   const versions = paper ? readingVersions(paper) : [];
   const sourceLabel = (activity: Activity) => activity.sourceScope === "reading"
     ? t("解读选文", "Overview selection")
-    : activity.sourceScope === "abstract" ? t("原始摘要", "Original abstract")
-    : activity.page ? `p.${activity.page}` : t("原文选文", "Source text");
+    : activity.sourceScope === "abstract" ? (paper?.abstractIsExcerpt ? t("首页摘录", "Opening excerpt") : t("原始摘要", "Original abstract"))
+    : activity.page ? pageLabel(activity.page,activity.pages) : t("原文选文", "Source text");
   const returnToSource = (activity: Activity) => {
     if (activity.sourceScope === "reading" && activity.readingId) onVersion(activity.readingId);
     else if (activity.sourceScope === "abstract" || !activity.page) onOverview();
-    else onPage(activity.page);
+    else { const quote=activity.quote || activity.text; onPage(activity.page, (activity.pages?.length || 0)<=1 && quote && quote.length<=500 ? quote : undefined); }
   };
   const entries = activities.filter((a) =>
     tab === "translations"
@@ -91,7 +108,7 @@ export default function ReadingHistory({
       <div className="history-content">
         {tab === "questions"
           ? conversations
-              .filter((c) => c.messageCount > 0)
+              .filter((c) => c.messageCount > 0 || c.draft)
               .map((c) => (
                 <button
                   key={c.id}
@@ -100,8 +117,8 @@ export default function ReadingHistory({
                   onClick={() => onConversation(c.id)}
                 >
                   <MessageSquare size={14} />
-                  <span>{c.title}</span>
-                  <small>{c.messageCount}</small>
+                  <span>{c.title}{c.source?.kind === "branch" && <small>{t("分支对话", "Branched conversation")}</small>}</span>
+                  <small>{c.draft ? t("草稿", "Draft") : c.messageCount}</small>
                 </button>
               ))
           : tab === "versions"
@@ -145,25 +162,26 @@ export default function ReadingHistory({
                   {opened === a.id && (
                     <div className="history-activity-detail">
                       <blockquote>{a.quote || a.text}</blockquote>
-                      <div className="prose">
-                        <Mark onPage={onPage}>
-                          {typeof a.result === "string"
-                            ? a.result
-                            : a.result?.text || ""}
-                        </Mark>
-                      </div>
+                      {usableActivityResult(a.result) ? <div className="prose">
+                        <Mark onPage={onPage}>{activityResultText(a.result)}</Mark>
+                      </div> : <div className="history-invalid-result" role="status">
+                        <p>{t("这条历史记录没有有效的翻译或解释结果，不能保存为笔记。请回到原文重新选择周围的句子。", "This older entry has no usable translation or explanation to save. Return to the source and select the surrounding sentence again.")}</p>
+                        <details><summary>{t("查看原始记录", "View original record")}</summary><pre>{activityResultText(a.result) || t("空结果", "Empty result")}</pre></details>
+                      </div>}
                       <div className="history-detail-actions">
+                        {(a.pages?.length || 0) > 1 && a.pages!.map(page => <button className="text-button" key={page} onClick={()=>onPage(page)}>{t('源页','Source page')} · p.{page}</button>)}
                         <button
                           className="text-button"
                           onClick={() => returnToSource(a)}
                         >
                           {t("回到原文", "Back to source")} · {sourceLabel(a)}
                         </button>
-                        {onSaveActivity && !!a.page && (!a.sourceScope || a.sourceScope === "pdf") && (
+                        {onSaveActivity && !!a.page && (a.pages?.length || 0) <= 1 && (!a.sourceScope || a.sourceScope === "pdf") && (
                           <button
                             className="text-button"
-                            disabled={saving || saved.includes(a.id)}
+                            disabled={saving || saved.includes(a.id) || !usableActivityResult(a.result)}
                             onClick={async () => {
+                              if (!usableActivityResult(a.result)) return;
                               setSaving(true);
                               setError("");
                               try {
@@ -182,12 +200,13 @@ export default function ReadingHistory({
                           </button>
                         )}
                       </div>
+                      {(a.pages?.length || 0) > 1 && <p className="muted">{t('跨页结果已保留在历史中。需要带原文定位的笔记时，请在 PDF 选文结果中保存。','This multi-page result is saved in history. To attach precise source anchors, save it from the PDF selection result.')}</p>}
                     </div>
                   )}
                 </div>
               ))}
         {((tab === "questions" &&
-          !conversations.some((c) => c.messageCount > 0)) ||
+          !conversations.some((c) => c.messageCount > 0 || c.draft)) ||
           (tab === "versions" && !versions.length) ||
           (["translations", "explanations"].includes(tab) &&
             !entries.length)) && (

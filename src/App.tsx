@@ -1,6 +1,13 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { prepareAgentQuestionTask } from "./agent-task";
+import { parseReadingSectionLocation, readingSectionUrl, READING_SECTION_EVENT } from "./reading-sections";
+import { activityResultText, usableActivityResult } from "./activity-result";
+import { useChatScroll } from "./useChatScroll";
+import { adoptChatScroll, readChatScroll, removePaperChatScroll } from "./chat-scroll";
+import "./chat-scroll.css";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import {
   ArrowUp,
+  ArrowDown,
   ArrowUpRight,
   BookOpen,
   Bookmark,
@@ -39,12 +46,16 @@ import {
   X,
 } from "lucide-react";
 import Mark from "./Markdown";
+import MessageActions from "./MessageActions";
 import SelectionTools from "./SelectionTools";
 import ReadingOverview from "./ReadingOverview";
 import NotebookPanel from "./NotebookPanel";
 import ReadingHistory from "./ReadingHistory";
+import PaperCardExcerpt from "./PaperCardExcerpt";
+import { flushReadingPositions, pdfDocumentKey, positionHash, readReadingPosition, removeReadingPosition, saveOverviewPosition, savePdfPosition, saveReadingTab, type OverviewReadingContext, type OverviewReadingPosition, type PdfReadingPosition } from "./reading-position";
 import type { Annotation, AnnotationDraft } from "./reader-annotations";
-import type { Activity } from "./types";
+import type { Activity, Conversation } from "./types";
+import { adoptChatDraft, chatDraftKey, clearChatDraft, readChatDraft, removePaperDrafts, writeChatDraft, type DraftPassage } from "./chat-drafts";
 import { useLocale, t, getLocale } from "./i18n";
 import { lazy, Suspense } from "react";
 const PdfReader = lazy(() => import("./PdfReader"));
@@ -57,10 +68,16 @@ import {
 } from "./types";
 import SettingsDialog from "./SettingsDialog";
 import AssistantDock, { defaultAssistantWidth } from "./AssistantDock";
+import { readCompanionMode, saveCompanionMode, type CompanionMode } from "./assistant-layout";
+import { selectionErrorMessage } from "./selection-errors";
+import { pageLabel } from "./page-label";
 import ReadingTools, { ModelSelect } from "./ReadingTools";
 const PdfFigure = lazy(() => import("./PdfFigure"));
 
 type View = "discover" | "library" | "saved" | "research" | "paper";
+function passageMetadata(passage: DraftPassage) {
+  return {quote:passage.text,page:passage.page,pages:passage.pages,sourceScope:passage.sourceScope,readingId:passage.readingId};
+}
 const suggestions = () => [
   t("这篇论文的核心贡献是什么？"),
   t("方法有哪些假设与局限？"),
@@ -101,23 +118,53 @@ export default function App() {
   const [papers, setPapers] = useState<Paper[]>([]);
   const [paper, setPaper] = useState<Paper | null>(null);
   const [tab, setTab] = useState<"summary" | "paper">("summary");
-  const [assistant, setAssistant] = useState(false);
-  const [notebook, setNotebook] = useState(false);
+  const [pdfVisited, setPdfVisited] = useState(false);
+  const [pdfNavigation, setPdfNavigation] = useState<{ page: number; nonce: number; fromOverview?: boolean; quote?: string }>();
+  const [overviewReturn, setOverviewReturn] = useState(false);
+  const overviewScroll = useRef(0);
+  const summaryRef = useRef<HTMLElement>(null);
+  const [initialPdfPosition, setInitialPdfPosition] = useState<PdfReadingPosition>();
+  const [initialPresentation, setInitialPresentation] = useState<"article" | "interactive">();
+  const [overviewContext, setOverviewContext] = useState<(OverviewReadingContext & { paperId: string; source: string })>();
+  const restoringOverview = useRef(false);
+  const navigationSequence = useRef(0);
+  function changePaperTab(next: "summary" | "paper") {
+    if (next === tab) return;
+    if (tab === "summary") rememberOverview(true);
+    if (next === "paper") setPdfVisited(true);
+    setTab(next);
+  }
+  useLayoutEffect(() => {
+    if (view === "paper" && tab === "paper") window.scrollTo({ top: 0, behavior: "instant" });
+  }, [tab, view, paper?.id]);
+  const [companion, setCompanion] = useState<CompanionMode>(readCompanionMode);
+  const companionRef = useRef(companion);
+  const assistant = companion === "assistant", notebook = companion === "notebook";
+  function changeCompanion(next: CompanionMode) {
+    chatScroll.remember();
+    companionRef.current = next;
+    setCompanion(next);
+    saveCompanionMode(next);
+  }
+  function setAssistant(open: boolean) {
+    changeCompanion(open ? "assistant" : companionRef.current === "assistant" ? null : companionRef.current);
+  }
+  function setNotebook(open: boolean) {
+    changeCompanion(open ? "notebook" : companionRef.current === "notebook" ? null : companionRef.current);
+  }
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [annotationsLoading, setAnnotationsLoading] = useState(false);
   const [annotationFocus, setAnnotationFocus] = useState<{
     id: string;
     nonce: number;
+    page?: number;
   }>();
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string>();
   const [activities, setActivities] = useState<Activity[]>([]);
   const [conversationId, setConversationId] = useState<string>();
   const [dockWidth, setDockWidth] = useState(defaultAssistantWidth);
-  const [selectedPassage, setSelectedPassage] = useState<{
-    text: string;
-    page?: number;
-    sourceLabel?: string;
-  } | null>(null);
+  const [draft, setDraft] = useState(() => readChatDraft(chatDraftKey()));
+  const prompt = draft.text, selectedPassage = draft.passage;
   const [abstractOverflow, setAbstractOverflow] = useState(false);
   const abstractRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -154,23 +201,59 @@ export default function App() {
   }, [language]);
   const [expanded, setExpanded] = useState(false);
   const [chat, setChat] = useState<Message[]>([]);
-  const [prompt, setPrompt] = useState("");
   const [chatting, setChatting] = useState(false);
   const [conversationBusy, setConversationBusy] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
-  const [copyState, setCopyState] = useState(false);
+  const [copyState, setCopyState] = useState<{kind: "citation" | "agent"; context: string} | null>(null);
+  const [copyingAgent, setCopyingAgent] = useState(false);
   const [showCite, setShowCite] = useState(false);
   const [pdfPage, setPdfPage] = useState(1);
-  const [conversations, setConversations] = useState<
-    { id: string; title: string; messageCount: number }[]
-  >([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const chatEnd = useRef<HTMLDivElement>(null);
   const paperRef = useRef<string | undefined>(undefined);
   const searchToken = useRef(0);
   const paperMutation = useRef(0);
   const annotationMutation = useRef(0);
+  const chatContext = useRef({ paperId: undefined as string | undefined, conversationId: undefined as string | undefined, key: chatDraftKey() });
+  const pendingChats = useRef(new Set<string>());
+  const chatScroll = useChatScroll(chatContext.current.key, chat, chatting);
+  const navigationRevision = useRef(0);
+  const initialized = useRef(false);
+  const initialNavigation = useRef((() => {
+    const params = new URLSearchParams(location.search);
+    const page = Number(params.get("page"));
+    return { paperId: params.get("paper"), page: Number.isInteger(page) && page > 0 ? page : undefined };
+  })());
+  useEffect(() => {
+    const followSectionLink = () => {
+      if (view === "paper" && paper && !new URLSearchParams(location.search).has("page") && parseReadingSectionLocation(location.href, paper.id)) {
+        setTab("summary"); setOverviewReturn(false);
+      }
+    };
+    window.addEventListener("hashchange", followSectionLink);
+    return () => window.removeEventListener("hashchange", followSectionLink);
+  }, [view, paper?.id]);
+  function setPrompt(text: string) {
+    setDraft(writeChatDraft(chatContext.current.key, { ...readChatDraft(chatContext.current.key), text }));
+  }
+  function setSelectedPassage(passage: DraftPassage | null) {
+    setDraft(writeChatDraft(chatContext.current.key, { text: readChatDraft(chatContext.current.key).text, passage, contextPolicy: passage ? undefined : "omit" }));
+  }
+  function activateChat(paperId?: string, nextId?: string, adoptPending = false) {
+    chatScroll.remember();
+    const next = { paperId, conversationId: nextId, key: chatDraftKey(paperId, nextId) };
+    if (nextId && !chatContext.current.conversationId && chatContext.current.paperId === paperId)
+      adoptChatScroll(chatContext.current.key, next.key);
+    if (adoptPending && !chatContext.current.conversationId && chatContext.current.paperId === paperId)
+      adoptChatDraft(chatContext.current.key, next.key);
+    chatContext.current = next;
+    setConversationId(nextId);
+    setDraft(readChatDraft(next.key));
+    setChatting(pendingChats.current.has(next.key));
+    setConversationBusy(false);
+    return next;
+  }
   useEffect(() => {
     if (view !== "paper" || !paper?.id) return;
     const id = paper.id;
@@ -236,16 +319,17 @@ export default function App() {
           : old.map((a) => (a.id === id ? result.annotation : a)),
     );
   }
-  function selectAnnotation(entry: Annotation) {
+  function selectAnnotation(entry: Annotation, page = entry.page) {
     setSelectedAnnotationId(entry.id || undefined);
     if (entry.id) {
-      setAnnotationFocus({ id: entry.id, nonce: Date.now() });
-      goToPage(entry.page);
+      setAnnotationFocus({ id: entry.id, nonce: Date.now(), page });
+      goToPage(page);
     }
   }
   async function inlineAssist(input: {
     text: string;
     page: number;
+    pages?: number[];
     kind: "translation" | "explanation";
     language?: string;
   }) {
@@ -260,7 +344,7 @@ export default function App() {
     }>(`/papers/${paper.id}/assist`, {
       method: "POST",
       body: JSON.stringify({ ...input, language: input.language || language }),
-    });
+    }).catch(reason => { throw new Error(selectionErrorMessage(reason, getLocale())); });
     if (paperRef.current === paper.id)
       setActivities((old) => [response.activity, ...old]);
     return {
@@ -280,7 +364,7 @@ export default function App() {
     const update = async () => {
       if (document.hidden || pending) return;
       pending = true;
-      const revision = paperMutation.current, annotationRevision = annotationMutation.current;
+      const revision = paperMutation.current, annotationRevision = annotationMutation.current, context = chatContext.current;
       try {
         const r = await api<{ paper: Paper }>(
           `/papers/${encodeURIComponent(id)}`,
@@ -292,8 +376,8 @@ export default function App() {
         const c = await api<{ messages: Message[]; conversationId?: string }>(
           `/chats?paperId=${encodeURIComponent(id)}${conversationId ? `&conversationId=${encodeURIComponent(conversationId)}` : ""}`,
         );
-        if (!disposed && paperRef.current === id && !chatting) {
-          if (!conversationId && c.conversationId) setConversationId(c.conversationId);
+        if (!disposed && paperRef.current === id && !pendingChats.current.has(context.key) && chatContext.current === context) {
+          if (!conversationId && c.conversationId) activateChat(id, c.conversationId, true);
           setChat((old) =>
             JSON.stringify(old) === JSON.stringify(c.messages)
               ? old
@@ -323,17 +407,22 @@ export default function App() {
     localStorage.setItem("pw-theme", theme);
   }, [theme]);
   useEffect(() => {
+    // StrictMode runs effects twice. Keep the initial URL intent and launch only
+    // one initial navigation; a later user navigation always takes precedence.
+    if (initialized.current) return;
+    initialized.current = true;
+    const revision = navigationRevision.current;
     api<{ papers: Paper[] }>("/papers")
       .then((r) => setPapers(r.papers))
       .catch((e) => setError(e.message));
     api<Settings>("/settings")
       .then(setSettings)
       .catch((e) => setError(e.message));
-    const id = new URLSearchParams(location.search).get("paper");
+    const { paperId: id, page } = initialNavigation.current;
     if (id)
       api<{ paper: Paper }>(`/papers/${encodeURIComponent(id)}`)
-        .then((r) => openPaper(r.paper))
-        .catch((e) => setError(e.message));
+        .then((r) => { if (navigationRevision.current === revision) openPaper(r.paper, { page }); })
+        .catch((e) => { if (navigationRevision.current === revision) setError(e.message); });
   }, []);
   useEffect(() => {
     if (notice) {
@@ -377,53 +466,68 @@ export default function App() {
       previous?.focus();
     };
   }, [showImport, showSettings, showCite, importing]);
-  useEffect(() => {
-    chatEnd.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  }, [chat, chatting, assistant, view]);
   async function refresh() {
     const r = await api<{ papers: Paper[] }>("/papers");
     setPapers(r.papers);
   }
   function navigate(v: View) {
+    rememberOverview(true);
+    if (view === "paper" && paper) saveReadingTab(paper.id, pdfDocumentKey(paper), tab);
+    flushReadingPositions();
+    navigationRevision.current++;
     setView(v);
     setError("");
     setMobileNav(false);
     setResults(null);
     history.replaceState({}, "", location.pathname);
     if (v !== "paper") paperRef.current = undefined;
+    const context = activateChat();
     if (v === "research") {
       setChat([]);
-      setConversationId(undefined);
-      setPrompt("");
-      setSelectedPassage(null);
       setShowHistory(false);
+      setConversationBusy(true);
       api<{ messages: Message[]; conversationId?: string }>("/chats")
         .then((r) => {
-          if (paperRef.current === undefined) { setChat(r.messages); setConversationId(r.conversationId); }
+          if (chatContext.current === context) {
+            activateChat(undefined, r.conversationId, true);
+            setChat(r.messages);
+          }
         })
-        .catch(() => {});
+        .catch((e) => { if (chatContext.current === context) setError(e.message); })
+        .finally(() => { if (chatContext.current === context) setConversationBusy(false); });
     }
   }
-  async function openPaper(p: Paper) {
+  async function openPaper(p: Paper, intent?: { page?: number }) {
+    rememberOverview(true);
+    if (view === "paper" && paper) saveReadingTab(paper.id, pdfDocumentKey(paper), tab);
+    flushReadingPositions();
+    const saved = readReadingPosition(p.id, pdfDocumentKey(p));
+    const previousOverview = saved?.overviews.find(position => position.language === language && (!p.activeReadingId || position.versionId === p.activeReadingId));
+    setOverviewContext(undefined);
+    setInitialPresentation(previousOverview?.presentation);
+    const explicitPage = intent?.page;
+    const resume = explicitPage ? { page: explicitPage, fraction: 0, left: 0, zoom: saved?.pdf?.zoom ?? null } : saved?.pdf;
+    setInitialPdfPosition(resume);
+    const revision = ++navigationRevision.current;
     paperRef.current = p.id;
+    const context = activateChat(p.id);
+    setConversationBusy(true);
     setPaper(p);
     setView("paper");
-    setExpanded(false);
-    setTab(new URLSearchParams(location.search).has("page") ? "paper" : "summary");
-    setPrompt("");
+    setExpanded(!!previousOverview?.expanded);
+    const startInPdf = !!explicitPage || (!parseReadingSectionLocation(location.href, p.id) && saved?.tab === "paper");
+    const startPage = Math.max(1, Math.min(resume?.page || 1, p.pageCount || resume?.page || 1));
+    overviewScroll.current = 0;
+    setPdfVisited(startInPdf);
+    setPdfNavigation(undefined);
+    setOverviewReturn(false);
+    setTab(startInPdf ? "paper" : "summary");
     setShowHistory(false);
-    setPdfPage(
-      Math.max(
-        1,
-        Number(new URLSearchParams(location.search).get("page")) || 1,
-      ),
-    );
-    setSelectedPassage(null);
+    setPdfPage(startPage);
     setActivities([]);
-    setConversationId(undefined);
     setChat([]);
     setError("");
-    history.replaceState({}, "", `?paper=${encodeURIComponent(p.id)}`);
+    history.replaceState({}, "", `${location.pathname}?paper=${encodeURIComponent(p.id)}${explicitPage ? `&page=${startPage}` : ""}${location.hash}`);
     try {
       const [detail, r] = await Promise.all([
         api<{ paper: Paper }>(`/papers/${encodeURIComponent(p.id)}`),
@@ -431,13 +535,18 @@ export default function App() {
           `/chats?paperId=${encodeURIComponent(p.id)}`,
         ),
       ]);
-      if (paperRef.current === p.id) {
+      if (navigationRevision.current === revision && paperRef.current === p.id) {
         setPaper(detail.paper);
-        setChat(r.messages);
-        setConversationId(r.conversationId);
+        setPapers(previous => previous.map(item => item.id === detail.paper.id ? detail.paper : item));
+        if (chatContext.current === context) {
+          activateChat(p.id, r.conversationId, true);
+          setChat(r.messages);
+        }
       }
     } catch (e) {
-      setError((e as Error).message);
+      if (navigationRevision.current === revision) setError((e as Error).message);
+    } finally {
+      if (chatContext.current === context) setConversationBusy(false);
     }
   }
   async function importUrl(value = url) {
@@ -492,6 +601,11 @@ export default function App() {
     setQuery(q);
     setSearching(true);
     setError("");
+    rememberOverview(true);
+    flushReadingPositions();
+    navigationRevision.current++;
+    paperRef.current = undefined;
+    activateChat();
     setView("discover");
     try {
       const r = await api<{ papers: Paper[]; warnings?: string[] }>(
@@ -567,45 +681,91 @@ export default function App() {
       setTranslating(false);
     }
   }
-  async function ask(text = prompt) {
-    if (!text.trim() || chatting || conversationBusy) return;
-    const id = view === "paper" ? paper?.id : undefined;
-    const previous = chat;
-    const passage = selectedPassage;
-    const message = passage
-      ? `${text.trim()}\n\n${passage.sourceLabel || t("选中的原文", "Selected passage")}${passage.page ? ` [p.${passage.page}]` : ""}:\n> ${passage.text.replace(/\n/g, "\n> ")}`
+  async function ask(text = prompt, branch?: { history: Message[] }) {
+    const context = chatContext.current;
+    if (!text.trim() || pendingChats.current.has(context.key) || (conversationBusy && !branch)) return;
+    chatScroll.followLatest(context.key);
+    const previous = branch?.history || chat;
+    const passage = readChatDraft(context.key).passage;
+    // Keep the submitted draft until success. Editing while the request is in
+    // flight creates a newer revision which this request must never clear.
+    const submitted = writeChatDraft(context.key, { text, passage, contextPolicy: readChatDraft(context.key).contextPolicy, verbatim: readChatDraft(context.key).verbatim });
+    setDraft(submitted);
+    const message = passage && !submitted.verbatim
+      ? `${text.trim()}\n\n${passage.sourceLabel || t("选中的原文", "Selected passage")}${passage.page ? ` [${pageLabel(passage.page,passage.pages)}]` : ""}:\n> ${passage.text.replace(/\n/g, "\n> ")}`
       : text.trim();
-    setPrompt("");
-    setSelectedPassage(null);
-    setChat((xs) => [...xs, { role: "user", content: message }]);
+    const metadata = context.paperId && passage ? passageMetadata(passage) : submitted.contextPolicy === "omit" ? null : undefined;
+    setChat((xs) => [...xs, { role: "user", content: message, ...(metadata ? { metadata } : {}) }]);
+    pendingChats.current.add(context.key);
     setChatting(true);
     setError("");
     try {
-      const r = await api<{ message: Message }>("/chat", {
+      const r = await api<{ message: Message; userMessage?: Message; conversationId?: string }>("/chat", {
         method: "POST",
         body: JSON.stringify({
-          paperId: id,
-          conversationId,
+          paperId: context.paperId,
+          conversationId: context.conversationId,
           message,
-          history: previous,
+          ...(!submitted.verbatim ? { questionText: text.trim() } : {}),
+          ...(metadata !== undefined ? { metadata } : {}),
+          // Saved sessions carry server-verified source provenance. Sending a
+          // text-only UI copy would discard it and bypass stale-evidence checks.
+          ...(!context.conversationId ? { history: previous } : {}),
         }),
       });
-      if (paperRef.current === id) setChat((xs) => [...xs, r.message]);
+      clearChatDraft(context.key, submitted.revision);
+      if (!context.conversationId && r.conversationId)
+        adoptChatDraft(context.key, chatDraftKey(context.paperId, r.conversationId));
+      if (chatContext.current.key === context.key) {
+        if (!context.conversationId && r.conversationId) activateChat(context.paperId, r.conversationId);
+        else setDraft(readChatDraft(context.key));
+        setChat((xs) => [...xs.map((item, index) => index === previous.length && r.userMessage ? r.userMessage : item), r.message]);
+      }
     } catch (e) {
-      setError((e as Error).message);
-      if (paperRef.current === id) {
+      if (chatContext.current.key === context.key) {
+        setError((e as Error).message);
         setChat(previous);
-        setPrompt(text);
-        setSelectedPassage(passage);
+        setDraft(readChatDraft(context.key));
       }
     } finally {
-      setChatting(false);
+      pendingChats.current.delete(context.key);
+      if (chatContext.current.key === context.key) setChatting(false);
+    }
+  }
+  async function branchQuestion(question: Message, action: "edit" | "retry") {
+    const context = chatContext.current;
+    if (!question.id || !context.conversationId || chatting || conversationBusy) return;
+    setConversationBusy(true); setError("");
+    try {
+      const response = await api<{ conversationId: string; messages: Message[]; draft: { message: string; metadata: Message["metadata"] | null; verbatim?: boolean } }>(
+        `/conversations/${encodeURIComponent(context.conversationId)}/branch`,
+        { method: "POST", body: JSON.stringify({ paperId: context.paperId || null, messageId: question.id, action }) },
+      );
+      if (chatContext.current !== context) return;
+      const next = activateChat(context.paperId, response.conversationId);
+      const metadata = response.draft.metadata;
+      setDraft(writeChatDraft(next.key, {
+        text: response.draft.message,
+        passage: metadata?.quote ? { text: metadata.quote, page: metadata.page, pages: metadata.pages, sourceScope:metadata.sourceScope,readingId:metadata.readingId } : null,
+        contextPolicy: metadata ? undefined : "omit", verbatim: response.draft.verbatim,
+      }));
+      setChat(response.messages); setShowHistory(false);
+      setNotice(t("已创建分支，原对话仍保留在历史中。", "Created a branch. The original conversation remains in history."));
+      if (action === "retry" && modelReady) await ask(response.draft.message, {history:response.messages});
+      else requestAnimationFrame(() => composerRef.current?.focus({preventScroll:true}));
+    } catch (reason) {
+      if (chatContext.current === context) setError((reason as Error).message);
+    } finally {
+      if (chatContext.current === context) setConversationBusy(false);
     }
   }
   async function remove(p: Paper) {
     if (!confirm(t(`从本地文库删除《${p.title}》及其解读、笔记和会话？`, `Delete “${p.title}” and its overviews, notes and conversations from your local library?`))) return;
     try {
       await api(`/papers/${p.id}`, { method: "DELETE" });
+      removePaperDrafts(p.id);
+      removePaperChatScroll(p.id);
+      removeReadingPosition(p.id);
       await refresh();
       if (paperRef.current === p.id) {
         setPaper(null);
@@ -616,11 +776,12 @@ export default function App() {
       setError((e as Error).message);
     }
   }
-  async function copy(text: string) {
+  async function copy(text: string, kind: "citation" | "agent", context: string) {
     try {
       await navigator.clipboard.writeText(text);
-      setCopyState(true);
-      setTimeout(() => setCopyState(false), 1800);
+      const confirmation = { kind, context };
+      setCopyState(confirmation);
+      setTimeout(() => setCopyState(current => current === confirmation ? null : current), 1800);
     } catch {
       setError(t("无法访问剪贴板，请使用下载。"));
     }
@@ -637,14 +798,104 @@ export default function App() {
     : paper?.translations?.[language];
   const translationFor = (target: "abstract" | "summary" | "report") =>
     translations?.[target]?.stale ? undefined : translations?.[target];
-  const agentQuestion = selectedPassage
-    ? `${prompt.trim() || t("请解释这段原文")}\n\n${selectedPassage.sourceLabel || t("选中的原文", "Selected passage")}${selectedPassage.page ? ` [p.${selectedPassage.page}]` : ""}:\n${selectedPassage.text}`
+  const agentQuestion = selectedPassage && !draft.verbatim
+    ? `${prompt.trim() || t("请解释这段原文")}\n\n${selectedPassage.sourceLabel || t("选中的原文", "Selected passage")}${selectedPassage.page ? ` [${pageLabel(selectedPassage.page,selectedPassage.pages)}]` : ""}:\n${selectedPassage.text}`
     : prompt;
+  const agentCopied = copyState?.kind === "agent" && copyState.context === JSON.stringify([paper?.id, conversationId, agentQuestion, language, locale]);
+  const citationCopied = copyState?.kind === "citation" && copyState.context === paper?.id;
+  async function prepareCurrentAgentQuestionTask() {
+    const context = chatContext.current;
+    if (!paper || context.paperId !== paper.id) throw new Error(t("论文仍在加载，请稍后重试。", "The paper is still loading. Try again shortly."));
+    const currentDraft = readChatDraft(context.key);
+    const result = await prepareAgentQuestionTask({
+      origin: location.origin, paperId: paper.id, conversationId: context.conversationId,
+      sessionKey: context, question: agentQuestion.trim() || t("这篇论文的核心贡献和证据边界是什么？", "What are the paper's main contributions and evidence limits?"),
+      language, locale, omitConversationSelection: currentDraft.contextPolicy === "omit",
+      metadata: currentDraft.passage ? passageMetadata(currentDraft.passage) : undefined,
+    }, body => api<{conversationId:string}>("/chats/new", {method:"POST",body:JSON.stringify(body)}));
+    if (chatContext.current !== context) throw new Error(t("已切换会话，请在当前会话重新复制任务。", "The conversation changed. Copy a task from the current conversation."));
+    if (!context.conversationId) activateChat(context.paperId, result.conversationId, true);
+    return result;
+  }
+  async function copyAgentQuestion() {
+    setCopyingAgent(true);
+    try {
+      const result = await prepareCurrentAgentQuestionTask();
+      await copy(result.task, "agent", JSON.stringify([paper?.id, result.conversationId, agentQuestion, language, locale]));
+    }
+    catch (reason) { setError((reason as Error).message); }
+    finally { setCopyingAgent(false); }
+  }
   const abstractText =
     translationFor("abstract")?.markdown ||
     paper?.abstract ||
     paper?.text?.slice(0, 1800) ||
     "";
+  function overviewAnchors() {
+    return Array.from(summaryRef.current?.querySelectorAll<HTMLElement>('h1, .abstract-text p, .reading-prose h2, .reading-prose h3, .reading-prose p, .reading-prose li, .reading-prose figure') || []).filter(element => element.getBoundingClientRect().height > 0);
+  }
+  function rememberOverview(force = false) {
+    if (view !== "paper" || tab !== "summary" || !paper || overviewContext?.paperId !== paper.id || (restoringOverview.current && !force)) return;
+    const elements = overviewAnchors();
+    const index = elements.findIndex(element => element.getBoundingClientRect().bottom > 90);
+    const element = index >= 0 ? elements[index] : undefined;
+    const position: OverviewReadingPosition = {
+      ...overviewContext,
+      scrollY: Math.max(0, window.scrollY),
+      expanded,
+      anchor: element ? { index, hash: positionHash(element.textContent || ''), offset: element.getBoundingClientRect().top } : undefined,
+    };
+    overviewScroll.current = position.scrollY;
+    saveOverviewPosition(paper.id, overviewContext.source, position);
+  }
+  useEffect(() => {
+    if (view !== "paper" || !paper) return;
+    saveReadingTab(paper.id, pdfDocumentKey(paper), tab);
+    if (tab !== "summary") return;
+    let frame = 0;
+    const capture = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => rememberOverview()); };
+    const flush = () => { rememberOverview(true); flushReadingPositions(); };
+    window.addEventListener('scroll', capture, { passive: true });
+    window.addEventListener('pagehide', flush);
+    return () => { cancelAnimationFrame(frame); window.removeEventListener('scroll', capture); window.removeEventListener('pagehide', flush); };
+  }, [view, tab, paper?.id, overviewContext?.key, expanded]);
+  useEffect(() => {
+    const flush = () => flushReadingPositions();
+    window.addEventListener('pagehide', flush);
+    return () => { flush(); window.removeEventListener('pagehide', flush); };
+  }, []);
+  useLayoutEffect(() => {
+    if (view !== 'paper' || tab !== 'summary' || !paper || overviewContext?.paperId !== paper.id || !summaryRef.current) return;
+    const saved = readReadingPosition(paper.id, overviewContext.source)?.overviews.find(position => position.key === overviewContext.key);
+    let frame = 0, stopped = false;
+    restoringOverview.current = true;
+    const restore = () => {
+      if (stopped) return;
+      const elements = overviewAnchors();
+      const anchor = saved?.anchor;
+      const element = anchor ? elements[anchor.index] : undefined;
+      const top = element && anchor && positionHash(element.textContent || '') === anchor.hash
+        ? window.scrollY + element.getBoundingClientRect().top - anchor.offset
+        : saved?.scrollY || 0;
+      window.scrollTo({ top: Math.max(0, top), behavior: 'instant' });
+      overviewScroll.current = Math.max(0, top);
+    };
+    const stop = () => { stopped = true; restoringOverview.current = false; cancelAnimationFrame(frame); observer.disconnect(); rememberOverview(true); };
+    const sectionNavigation = (event: Event) => {
+      if ((event as CustomEvent<{paperId?:string}>).detail?.paperId === paper.id) stop();
+    };
+    const resize = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(restore); };
+    const observer = new ResizeObserver(resize);
+    restore(); observer.observe(summaryRef.current);
+    const timeout = setTimeout(stop, 1200);
+    for (const event of ['wheel', 'pointerdown', 'touchstart', 'keydown']) window.addEventListener(event, stop, { once: true, passive: true });
+    window.addEventListener(READING_SECTION_EVENT, sectionNavigation);
+    return () => {
+      stopped = true; restoringOverview.current = false; clearTimeout(timeout); cancelAnimationFrame(frame); observer.disconnect();
+      for (const event of ['wheel', 'pointerdown', 'touchstart', 'keydown']) window.removeEventListener(event, stop);
+      window.removeEventListener(READING_SECTION_EVENT, sectionNavigation);
+    };
+  }, [view, tab, paper?.id, overviewContext?.key]);
   const summaryText =
     translationFor("summary")?.markdown || paper?.summary?.markdown || "";
   const reportText =
@@ -677,9 +928,10 @@ export default function App() {
   }
   useEffect(() => {
     const element = abstractRef.current;
-    if (!element || expanded) return;
-    const update = () =>
-      setAbstractOverflow(element.scrollHeight > element.clientHeight + 1);
+    if (!element || expanded || tab !== "summary") return;
+    const update = () => {
+      if (element.clientWidth) setAbstractOverflow(element.scrollHeight > element.clientHeight + 1);
+    };
     const observer = new ResizeObserver(update);
     observer.observe(element);
     update();
@@ -687,22 +939,30 @@ export default function App() {
   }, [abstractText, expanded, view, tab]);
   useEffect(() => {
     if (assistant) {
-      const timer = setTimeout(
-        () => composerRef.current?.focus({ preventScroll: true }),
-        100,
-      );
+      const timer = setTimeout(() => {
+        // Reopening old messages is a reading action. A delayed composer focus
+        // must also respect any control the user has already focused.
+        if (document.activeElement?.closest(".assistant-panel") || readChatScroll(chatContext.current.key)?.following === false) return;
+        composerRef.current?.focus({ preventScroll: true });
+      }, 100);
       return () => clearTimeout(timer);
     }
   }, [assistant]);
+  const selectionSessionPending = useRef(false);
   async function askSelection(selection: {
     text: string;
     page?: number;
+    pages?: number[];
+    sourceScope?: DraftPassage['sourceScope'];
+    readingId?: string;
     sourceLabel?: string;
     intent?: "ask" | "explain" | "translate";
     question?: string;
-  }) {
-    if (chatting || conversationBusy || !paper) return;
+  }): Promise<boolean> {
+    if (conversationBusy || selectionSessionPending.current || !paper) return false;
+    selectionSessionPending.current = true;
     const id = paper.id;
+    const context = chatContext.current;
     setConversationBusy(true);
     setError("");
     try {
@@ -711,14 +971,14 @@ export default function App() {
         body: JSON.stringify({
           paperId: id,
           kind: "question",
-          metadata: { quote: selection.text, page: selection.page },
+          metadata: passageMetadata({...selection,sourceScope:selection.sourceScope || (selection.page?'pdf':undefined)}),
         }),
       });
-      if (paperRef.current !== id) return;
-      setConversationId(response.conversationId);
+      if (chatContext.current !== context) return false;
+      activateChat(id, response.conversationId);
       setChat([]);
       setShowHistory(false);
-      setSelectedPassage({ text: selection.text, page: selection.page, sourceLabel: selection.sourceLabel });
+      setSelectedPassage({ text: selection.text, page: selection.page, pages: selection.pages, sourceLabel: selection.sourceLabel,sourceScope:selection.sourceScope || (selection.page?'pdf':undefined),readingId:selection.readingId });
       setPrompt(
         selection.question?.trim() ||
           t("关于这段原文，", "About this passage, "),
@@ -728,15 +988,29 @@ export default function App() {
       requestAnimationFrame(() =>
         composerRef.current?.focus({ preventScroll: true }),
       );
+      return true;
     } catch (e) {
-      if (paperRef.current === id) setError((e as Error).message);
+      if (chatContext.current === context) setError((e as Error).message);
+      return false;
     } finally {
-      setConversationBusy(false);
+      selectionSessionPending.current = false;
+      if (chatContext.current === context) setConversationBusy(false);
     }
   }
   const updateCurrentPaper = (updated: Paper) => {
     if (paperRef.current === updated.id) { paperMutation.current++; setPaper(updated); }
+    setPapers(previous => previous.map(item => item.id === updated.id ? updated : item));
   };
+  function openQuestionSource(metadata: Message['metadata']) {
+    if (!paper || !metadata) return;
+    if (metadata.sourceScope === 'reading' && metadata.readingId) {
+      history.pushState({},'',readingSectionUrl(location.href,paper.id,metadata.readingId,0));
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+      changePaperTab('summary');
+      setAssistant(false);
+    } else if (metadata.page) goToPage(metadata.page,(!metadata.pages || metadata.pages.length===1) && metadata.quote && metadata.quote.length<=500 ? metadata.quote : undefined);
+    else { changePaperTab('summary');setAssistant(false);requestAnimationFrame(()=>summaryRef.current?.scrollTo({top:0})); }
+  }
 
   const bib = paper
     ? `@misc{${paper.id.replace(/[^a-z0-9]/gi, "")},\n  title = {${paper.title}},\n  author = {${paper.authors.join(" and ")}},\n  year = {${new Date(paper.publishedAt || paper.createdAt).getFullYear()}},\n  url = {${paper.url}}\n}`
@@ -756,81 +1030,75 @@ export default function App() {
   async function newConversation() {
     if (conversationBusy || chatting) return;
     setConversationBusy(true);
-    const context = view === "paper" ? paper?.id : undefined;
+    const context = chatContext.current;
     try {
       const created = await api<{ conversationId: string }>("/chats/new", {
         method: "POST",
-        body: JSON.stringify({
-          paperId: view === "paper" ? paper?.id : undefined,
-        }),
+        body: JSON.stringify({ paperId: context.paperId }),
       });
-      if (paperRef.current !== context) return;
-      setConversationId(created.conversationId);
+      if (chatContext.current !== context) return;
+      activateChat(context.paperId, created.conversationId);
       setChat([]);
-      setPrompt("");
-      setSelectedPassage(null);
       setShowHistory(false);
     } catch (e) {
-      setError((e as Error).message);
+      if (chatContext.current === context) setError((e as Error).message);
     } finally {
-      setConversationBusy(false);
+      if (chatContext.current === context) setConversationBusy(false);
     }
   }
   async function listConversations() {
     if (conversationBusy || chatting) return;
     setConversationBusy(true);
-    const context = view === "paper" ? paper?.id : undefined;
+    const context = chatContext.current;
     try {
-      const r = await api<{
-        conversations: { id: string; title: string; messageCount: number }[];
-      }>(
-        "/conversations" +
-          (view === "paper" && paper
-            ? "?paperId=" + encodeURIComponent(paper.id)
-            : ""),
+      const r = await api<{ conversations: Conversation[] }>(
+        "/conversations" + (context.paperId ? "?paperId=" + encodeURIComponent(context.paperId) : ""),
       );
-      if (paperRef.current !== context) return;
-      setConversations(r.conversations);
-      if (context) {
-        const result = await api<{ activities: Activity[] }>(
-          `/papers/${context}/activities`,
-        );
-        if (paperRef.current !== context) return;
+      if (chatContext.current !== context) return;
+      setConversations(r.conversations.map(conversation => {
+        const saved = readChatDraft(chatDraftKey(context.paperId, conversation.id));
+        return { ...conversation, draft: !!(saved.text || saved.passage), title: conversation.messageCount ? conversation.title : saved.text || saved.passage?.text || conversation.title };
+      }));
+      if (context.paperId) {
+        const result = await api<{ activities: Activity[] }>(`/papers/${context.paperId}/activities`);
+        if (chatContext.current !== context) return;
         setActivities(result.activities || []);
       }
       setShowHistory(!showHistory);
     } catch (e) {
-      setError((e as Error).message);
+      if (chatContext.current === context) setError((e as Error).message);
     } finally {
-      setConversationBusy(false);
+      if (chatContext.current === context) setConversationBusy(false);
     }
   }
   async function selectConversation(id: string) {
     if (conversationBusy || chatting) return;
     setConversationBusy(true);
-    const context = view === "paper" ? paper?.id : undefined;
+    const context = chatContext.current;
     try {
       const r = await api<{ messages: Message[] }>("/conversations/active", {
         method: "PUT",
-        body: JSON.stringify({
-          paperId: view === "paper" ? paper?.id : undefined,
-          conversationId: id,
-        }),
+        body: JSON.stringify({ paperId: context.paperId, conversationId: id }),
       });
-      if (paperRef.current !== context) return;
+      if (chatContext.current !== context) return;
+      activateChat(context.paperId, id);
       setChat(r.messages);
-      setConversationId(id);
-      setPrompt("");
-      setSelectedPassage(null);
       setShowHistory(false);
     } catch (e) {
-      setError((e as Error).message);
+      if (chatContext.current === context) setError((e as Error).message);
     } finally {
-      setConversationBusy(false);
+      if (chatContext.current === context) setConversationBusy(false);
     }
   }
-  function goToPage(page: number) {
-    setPdfPage(Math.max(1, Math.min(page, paper?.pageCount || page)));
+  function goToPage(page: number, quote?: string) {
+    const next = Math.max(1, Math.min(page, paper?.pageCount || page));
+    if (tab === "summary") {
+      rememberOverview(true);
+      setOverviewReturn(true);
+    }
+    setPdfPage(next);
+    setPdfNavigation({ page: next, nonce: ++navigationSequence.current, fromOverview: tab === "summary", quote });
+    setPdfVisited(true);
     setTab("paper");
   }
   function assistantPanel(full = false) {
@@ -876,14 +1144,15 @@ export default function App() {
         <>
           {showHistory && (
             <ReadingHistory
+              key={view === 'paper' ? paper?.id : 'research'}
               paper={view === "paper" ? paper : undefined}
               conversations={conversations}
               activities={activities}
               busy={conversationBusy || chatting}
               onClose={() => setShowHistory(false)}
               onConversation={selectConversation}
-              onPage={(page) => {
-                goToPage(page);
+              onPage={(page,quote) => {
+                goToPage(page,quote);
                 setShowHistory(false);
                 setAssistant(false);
               }}
@@ -892,38 +1161,26 @@ export default function App() {
                 setShowHistory(false);
                 setAssistant(false);
               }}
-              onVersion={async (id) => {
+              onVersion={(id) => {
                 if (!paper) return;
-                try {
-                  const r = await api<{ paper: Paper }>(`/papers/${paper.id}`, {
-                    method: "PATCH",
-                    body: JSON.stringify({ activeReadingId: id }),
-                  });
-                  updateCurrentPaper(r.paper);
-                  setTab("summary");
-                  setShowHistory(false);
-                  setAssistant(false);
-                } catch (e) {
-                  setError((e as Error).message);
-                }
+                openQuestionSource({sourceScope:'reading', readingId:id});
+                setShowHistory(false);
               }}
               onSaveActivity={async (activity) => {
-                if (!activity.page || (activity.sourceScope && activity.sourceScope !== "pdf")) return;
+                if (!activity.page || (activity.pages?.length || 0) > 1 || (activity.sourceScope && activity.sourceScope !== "pdf") || !usableActivityResult(activity.result)) return;
                 await createAnnotation({
                   kind: activity.kind,
                   page: activity.page,
                   quote: activity.quote || activity.text,
-                  body:
-                    typeof activity.result === "string"
-                      ? activity.result
-                      : activity.result?.text || "",
+                  body: activityResultText(activity.result),
                   color: "blue",
                 });
               }}
             />
           )}
         </>
-        <div className="conversation">
+        <div className="conversation-frame">
+        <div className="conversation" ref={chatScroll.ref} onScroll={chatScroll.onScroll} tabIndex={0} aria-label={t("对话消息", "Conversation messages")}>
           {chat.length === 0 ? (
             <div className="assistant-welcome">
               <div className="assistant-symbol">
@@ -971,15 +1228,20 @@ export default function App() {
           ) : (
             <div className="messages">
               {chat.map((m, i) => (
-                <div key={i} className={`message ${m.role}`}>
+                <div key={i} className={`message ${m.role}`} data-chat-anchor={chatScroll.anchors[i]}>
                   {m.role === "assistant" && (
                     <div className="message-label">
                       <Sparkles size={14} /> {t("研究助手")}
                     </div>
                   )}
+                  {m.role === "user" && view === "paper" && (m.metadata?.page || m.metadata?.sourceScope === 'reading' || m.metadata?.sourceScope === 'abstract') && <button className="message-source-link citation-link" onClick={() => openQuestionSource(m.metadata)}>
+                    <FileText size={12}/>{m.metadata?.sourceScope === 'reading' ? t('AI 解读选文 · 查看版本','AI overview selection · View version') : m.metadata?.sourceScope === 'abstract' ? t('摘要选文','Abstract selection') : `${t("提问选文", "Question source")} · ${pageLabel(m.metadata!.page,m.metadata!.pages)}`}
+                  </button>}
                   <Mark onPage={view === "paper" ? goToPage : undefined}>
                     {m.content}
                   </Mark>
+                  <MessageActions message={m} paper={view === "paper" ? paper || undefined : undefined} question={chat.slice(0, i).reverse().find(item => item.role === "user")}
+                    busy={chatting || conversationBusy} onBranch={(message, action) => void branchQuestion(message, action)}/>
                 </div>
               ))}
               {chatting && (
@@ -987,9 +1249,12 @@ export default function App() {
                   <Loader2 size={16} className="spin" /> {t("正在阅读与思考…")}
                 </div>
               )}
-              <div ref={chatEnd} />
             </div>
           )}
+        </div>
+        {chatScroll.away && <button className={`chat-latest ${chatScroll.unread ? "has-unread" : ""}`} onClick={() => chatScroll.followLatest(undefined, true)} aria-label={chatScroll.unread ? t("有新消息，跳到最新消息", "New messages, jump to latest") : t("跳到最新消息", "Jump to latest messages")}>
+          <ArrowDown size={14}/><span aria-live="polite" aria-atomic="true">{chatScroll.unread ? t("有新消息", "New messages") : t("回到最新消息", "Jump to latest")}</span>
+        </button>}
         </div>
         <div className="composer-wrap">
           {!modelReady && (
@@ -997,16 +1262,17 @@ export default function App() {
               className="setup-hint"
               onClick={() => { setMobileNav(false); setShowSettings(true); }}
             >
-              <Settings2 size={13} /> {t("配置模型 API，开启完整问答")}{" "}
-              <ChevronRight size={13} />
+              <Settings2 size={13} /> {paper && view === "paper"
+                ? t("可用下方 Codex / Claude 订阅入口问答，也可在此连接 API。", "Use Codex / Claude below, or connect an API here.")
+                : t("配置模型 API，开启完整问答")}{" "}<ChevronRight size={13} />
             </button>
           )}
           {selectedPassage && (
             <div className="selected-passage">
               <div>
                 {selectedPassage.page ? <button className="citation-link" onClick={() => goToPage(selectedPassage.page!)}>
-                  {t("已选原文 · p.")}{selectedPassage.page}
-                </button> : <span>{selectedPassage.sourceLabel || t("已选文本", "Selected text")}</span>}
+                  {t("已选原文", "Selected passage")} · {pageLabel(selectedPassage.page,selectedPassage.pages)}
+                </button> : selectedPassage.sourceScope === 'reading' ? <button className="citation-link" onClick={()=>openQuestionSource(passageMetadata(selectedPassage))}>{t('AI 解读选文 · 查看版本','AI overview selection · View version')}</button> : <span>{selectedPassage.sourceLabel || (selectedPassage.sourceScope === 'abstract' ? t('摘要选文','Abstract selection') : t("已选文本", "Selected text"))}</span>}
                 <button
                   className="icon-button"
                   aria-label={t("移除选中原文")}
@@ -1032,6 +1298,7 @@ export default function App() {
                 full ? t("问一个研究问题…") : t("询问有关这篇论文的问题…")
               }
               value={prompt}
+              disabled={conversationBusy}
               onChange={(e) => setPrompt(e.target.value)}
               onKeyDown={(e) => {
                 if (
@@ -1054,24 +1321,22 @@ export default function App() {
               >
                 <Plus size={19} />
               </button>
-              <ModelSelect
+              {(modelReady || view !== "paper") && <ModelSelect
                 settings={settings}
                 onChange={setSettings}
                 disabled={chatting || reporting || translating}
-              />
+              />}
               {paper && view === "paper" && (
                 <button
                   type="button"
                   className="icon-button subscription-chat"
-                  aria-label={copyState ? t("任务已复制 · 在代理会话中粘贴") : t("用 Codex / Claude 订阅回答 · 复制任务")}
-                  title={copyState ? t("任务已复制 · 在代理会话中粘贴") : t("用 Codex / Claude 订阅回答 · 复制任务")}
-                  onClick={() =>
-                    copy(
-                      `在 Paper Workbench 项目中使用 skills/paper-workbench/SKILL.md。工作台 ${location.origin}，论文 ID ${paper.id}。读取 source 后，用当前已登录的代理会话回答：${agentQuestion.trim() || t("这篇论文的核心贡献和证据边界是什么？")}。用 ${language} 回答，附页码证据；不要调用工作台模型生成接口。通过 CLI answer 写回问题和答案，不覆盖对话历史。`,
-                    )
-                  }
+                  aria-label={agentCopied ? t("任务已复制 · 在代理会话中粘贴") : t("用 Codex / Claude 订阅回答 · 复制任务")}
+                  title={agentCopied ? t("任务已复制 · 在代理会话中粘贴") : t("用 Codex / Claude 订阅回答 · 复制任务")}
+                  disabled={copyingAgent || conversationBusy}
+                  onClick={() => void copyAgentQuestion()}
                 >
-                  {copyState ? <Check size={17} /> : <Code2 size={17} />}
+                  {copyingAgent ? <Loader2 size={17} className="spin"/> : agentCopied ? <Check size={17} /> : <Code2 size={17} />}
+                  {!modelReady && <span>Codex / Claude</span>}
                 </button>
               )}
               <button
@@ -1228,7 +1493,7 @@ export default function App() {
                   role="tab"
                   aria-selected={tab === "summary"}
                   className={tab === "summary" ? "selected" : ""}
-                  onClick={() => setTab("summary")}
+                  onClick={() => changePaperTab("summary")}
                 >
                   <Sparkles size={14} /> {t("摘要")}
                 </button>
@@ -1236,13 +1501,14 @@ export default function App() {
                   role="tab"
                   aria-selected={tab === "paper"}
                   className={tab === "paper" ? "selected" : ""}
-                  onClick={() => setTab("paper")}
+                  onClick={() => changePaperTab("paper")}
                 >
                   <FileText size={14} /> {t("论文")}
                 </button>
               </div>
               <button
                 className={`toolbar-notebook ${notebook ? "is-open" : ""}`}
+                aria-label={t("笔记与批注", "Notes & annotations")}
                 title={t("笔记与批注", "Notes & annotations")}
                 onClick={() => {
                   setNotebook(!notebook);
@@ -1268,11 +1534,7 @@ export default function App() {
             <div
               className={`paper-layout ${tab === "paper" ? "reader-wide" : ""}`}
             >
-              <article
-                className={`paper-content ${tab === "paper" ? "reader-content" : ""}`}
-              >
-                {tab === "summary" ? (
-                  <>
+              <article ref={summaryRef} className="paper-content paper-summary" hidden={tab !== "summary"} key={`summary-${paper.id}`}>
                     <div className="paper-date">
                       <span>{date(paper.publishedAt || paper.createdAt)}</span>
                       <span className="language-label">
@@ -1319,22 +1581,25 @@ export default function App() {
                       onSettings={() => setShowSettings(true)}
                       modelReady={!!modelReady}
                       question={agentQuestion}
+                      conversationId={conversationId}
+                      onPrepareQuestionTask={prepareCurrentAgentQuestionTask}
                     />
                     <section className="abstract-section">
                       <h2>
-                        {t("原始摘要")}{" "}
+                        {paper.abstractIsExcerpt ? t("首页摘录", "Opening excerpt") : t("原始摘要")}{" "}
                         <span>
                           {translationFor("abstract")
                             ? `译文 · ${language}`
-                            : t("Abstract · 原文")}
+                            : paper.abstractIsExcerpt ? t("原文摘录", "Source excerpt") : t("Abstract · 原文")}
                         </span>
                       </h2>
+                      {paper.abstractIsExcerpt && <p className="abstract-excerpt-notice">{t("未识别出独立摘要，以下显示论文开头的原文摘录。", "A separate abstract was not identified. This is an excerpt from the beginning of the source.")}</p>}
                       {translationStatus("abstract")}
                       <div
                         ref={abstractRef}
                         className={`abstract-text ${expanded ? "expanded" : ""}`}
                       >
-                        <SelectionTools paperId={paper.id} scope="abstract" language={language} model={settings.model} onAsk={(text, sourceLabel)=>void askSelection({text,sourceLabel})}>
+                        <SelectionTools active={tab === "summary"} paperId={paper.id} scope="abstract" sourceLabel={paper.abstractIsExcerpt ? t("首页摘录选文", "Opening excerpt selection") : undefined} language={language} model={settings.model} modelReady={!!modelReady} onAsk={(text, sourceLabel, question,source)=>askSelection({text,sourceLabel,question,...source})}>
                           <Mark>{abstractText.replace(/\\emph\{([^}]+)\}/g, "*$1*")}</Mark>
                         </SelectionTools>
                       </div>
@@ -1354,7 +1619,7 @@ export default function App() {
                     <div className="paper-actions">
                       <button
                         className="primary-button"
-                        onClick={() => setTab("paper")}
+                        onClick={() => changePaperTab("paper")}
                       >
                         <BookOpen size={15} /> {t("阅读论文")}
                       </button>
@@ -1389,10 +1654,17 @@ export default function App() {
                       </button>
                     </div>
                     <ReadingOverview
+                      active={tab === "summary"}
                       key={paper.id}
                       paper={paper}
                       language={language}
                       original={showOriginal}
+                      initialPresentation={initialPresentation}
+                      positionContext={positionHash(JSON.stringify([abstractText, expanded]))}
+                      onReadingContextChange={context => {
+                        const key = positionHash(JSON.stringify([context.key, abstractText, expanded]));
+                        setOverviewContext(previous => previous?.paperId === paper.id && previous.key === key ? previous : { ...context, key, paperId: paper.id, source: pdfDocumentKey(paper) });
+                      }}
                       settings={settings}
                       onSettings={setSettings}
                       onConfigure={() => setShowSettings(true)}
@@ -1400,7 +1672,7 @@ export default function App() {
                       onPage={goToPage}
                       onError={setError}
                       onBusy={setReporting}
-                      onAskSelection={(text,sourceLabel)=>void askSelection({text,sourceLabel})}
+                      onAskSelection={(text,sourceLabel,question,source)=>askSelection({text,sourceLabel,question,...source})}
                     />
                     <section className="source-section">
                       <div>
@@ -1420,9 +1692,9 @@ export default function App() {
                         </a>
                       )}
                     </section>
-                  </>
-                ) : (
-                  <>
+              </article>
+              <article className="paper-content reader-content" hidden={tab !== "paper"} key={`pdf-${paper.id}`}>
+                {pdfVisited && <>
                     {pdfSource ? (
                       <Suspense
                         fallback={
@@ -1434,14 +1706,21 @@ export default function App() {
                       >
                         <PdfReader
                           url={pdfSource}
+                          paperId={paper.id}
+                          modelReady={!!modelReady}
                           page={pdfPage}
-                          onPage={goToPage}
+                          initialPosition={initialPdfPosition}
+                          onPositionChange={position => savePdfPosition(paper.id, pdfDocumentKey(paper), position)}
+                          active={tab === "paper"}
+                          navigation={pdfNavigation}
+                          onPage={setPdfPage}
+                          onReturnToOverview={overviewReturn ? () => { changePaperTab("summary"); setOverviewReturn(false); } : undefined}
                           onAskSelection={askSelection}
                           annotations={annotations}
                           onCreateAnnotation={createAnnotation}
-                          onSelectAnnotation={(id) => {
+                          onSelectAnnotation={(id, page) => {
                             const entry = annotations.find((a) => a.id === id);
-                            if (entry) selectAnnotation(entry);
+                            if (entry) selectAnnotation(entry, page);
                             setNotebook(true);
                             setAssistant(false);
                           }}
@@ -1483,8 +1762,7 @@ export default function App() {
                       </button>
                       。
                     </div>
-                  </>
-                )}
+                  </>}
               </article>
               {assistant || notebook ? (
                 <AssistantDock
@@ -1502,10 +1780,11 @@ export default function App() {
                       paperId={paper.id}
                       annotations={annotations}
                       selectedId={selectedAnnotationId}
+                      selectionNonce={annotationFocus?.nonce}
                       page={pdfPage}
                       loading={annotationsLoading}
                       onClose={() => setNotebook(false)}
-                      onSelect={(entry, locate = true) => { if (locate) selectAnnotation(entry); else setSelectedAnnotationId(entry.id || undefined); }}
+                      onSelect={(entry, locate = true, page) => { if (locate) selectAnnotation(entry, page); else setSelectedAnnotationId(entry.id || undefined); }}
                       onCreate={createAnnotation}
                       onUpdate={(id, patch) => mutateAnnotation(id, patch)}
                       onDelete={(id) => mutateAnnotation(id, undefined, true)}
@@ -1544,7 +1823,7 @@ export default function App() {
                     <button
                       className="icon-button"
                       aria-label={t("复制引用")}
-                      onClick={() => copy(bib)}
+                      onClick={() => copy(bib, "citation", paper?.id || "")}
                     >
                       <Copy size={14} />
                     </button>
@@ -1787,7 +2066,7 @@ export default function App() {
                           <div className="card-authors">
                             {p.authors?.join(" · ") || t("本地导入文献")}
                           </div>
-                          <p>{p.abstract || p.text?.slice(0, 300)}</p>
+                          <PaperCardExcerpt paper={p} language={language} />
                           <div className="card-tags">
                             {p.tags?.slice(0, 3).map((t) => (
                               <span key={t}>{t}</span>
@@ -2037,9 +2316,9 @@ export default function App() {
               </button>
             </div>
             <pre>{bib}</pre>
-            <button className="primary-button" onClick={() => copy(bib)}>
-              {copyState ? <Check size={15} /> : <Copy size={15} />}{" "}
-              {copyState ? t("已复制") : t("复制 BibTeX")}
+            <button className="primary-button" onClick={() => copy(bib, "citation", paper?.id || "")}>
+              {citationCopied ? <Check size={15} /> : <Copy size={15} />}{" "}
+              {citationCopied ? t("已复制") : t("复制 BibTeX")}
             </button>
             <button
               className="soft-button"

@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { ApiError } from "./network.mjs";
+import net from "node:net";
+import { ApiError, isPublicAddress } from "./network.mjs";
 
 export const annotationKinds = ["highlight", "underline", "note", "ink", "translation", "explanation"];
 const colors = ["yellow", "green", "blue", "pink", "purple"];
-const fields = ["kind", "page", "rects", "quote", "body", "color", "tags", "strokes", "language"];
+const fields = ["kind", "page", "rects", "quote", "body", "color", "tags", "strokes", "language", "segments"];
 const number = (value) => typeof value === "number" && Number.isFinite(value);
 const point = (value) => value && number(value.x) && number(value.y) && value.x >= 0 && value.y >= 0 && value.x <= 1 && value.y <= 1;
 const plain = (value, name, max, required = false) => {
@@ -22,17 +23,79 @@ export function validatePage(page, paper) {
   return page;
 }
 
+function validateRects(rects) {
+  if (!Array.isArray(rects) || rects.length > 300) throw new ApiError("rects must contain at most 300 rectangles.");
+  return rects.map(rect => {
+    if (!point(rect) || !number(rect.width) || !number(rect.height) || rect.width <= 0 || rect.height <= 0 || rect.x + rect.width > 1.000001 || rect.y + rect.height > 1.000001)
+      throw new ApiError("Annotation rectangles must stay within their normalized page.");
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  });
+}
+
+function validateSegments(input, paper) {
+  if (!paper.filePath) throw new ApiError("Annotation segments require a locally imported PDF.");
+  if (!Array.isArray(input) || !input.length || input.length > 20)
+    throw new ApiError("segments must contain between 1 and 20 page anchors.");
+  let previousPage = 0, quoteCharacters = 0, rectangleCount = 0;
+  return input.map(entry => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(entry)) ||
+      Object.keys(entry).some(key => !["page", "quote", "rects"].includes(key)))
+      throw new ApiError("Each annotation segment accepts only page, quote and rects.");
+    const segment = { page: validatePage(entry.page, paper) };
+    if (segment.page <= previousPage) throw new ApiError("Annotation segment pages must be unique and strictly increasing.");
+    previousPage = segment.page;
+    if (entry.quote !== undefined) segment.quote = plain(entry.quote, "segment quote", 12000);
+    if (entry.rects !== undefined) segment.rects = validateRects(entry.rects);
+    if (!segment.quote && !segment.rects?.length) throw new ApiError("Every annotation segment requires a quote or page rectangles.");
+    quoteCharacters += segment.quote?.length || 0;
+    rectangleCount += segment.rects?.length || 0;
+    if (quoteCharacters > 12000 || rectangleCount > 300)
+      throw new ApiError("A complete annotation is limited to 12,000 quoted characters and 300 rectangles across all segments.");
+    return segment;
+  });
+}
+
+export function annotationSegments(annotation) {
+  return annotation.segments?.length ? annotation.segments : [{ page: annotation.page, ...(annotation.quote === undefined ? {} : { quote: annotation.quote }), ...(annotation.rects === undefined ? {} : { rects: annotation.rects }) }];
+}
+
 export function validateAnnotation(input, paper, previous) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new ApiError("Annotation must be a JSON object.");
   if (Object.keys(input).some((key) => !fields.includes(key) && key !== "restore"))
     throw new ApiError("Annotation contains unsupported fields.");
   if (input.restore !== undefined && (input.restore !== true || !previous))
     throw new ApiError("restore must be true on an existing annotation.");
+  if (Object.hasOwn(input, "segments") && input.segments === undefined)
+    throw new ApiError("segments cannot remove existing anchors; provide the complete segments array.");
   const merged = { ...previous, ...input };
   const { kind } = merged;
   if (!annotationKinds.includes(kind)) throw new ApiError("Unknown annotation kind.");
-  const result = { kind, page: validatePage(merged.page ?? 1, paper) };
-  if (merged.quote !== undefined) result.quote = plain(merged.quote, "quote", 12000);
+  const result = { kind };
+  if (merged.segments !== undefined) {
+    if (kind === "ink" || merged.strokes !== undefined) throw new ApiError("Ink strokes retain their single-page annotation format; segments cannot contain ink.");
+    const aliases = ["page", "quote", "rects"];
+    if (previous?.segments?.length > 1 && !("segments" in input) && aliases.some(key => key in input))
+      throw new ApiError("Update multi-page source anchors through the complete segments array, not a single-page alias.");
+    let anchors = merged.segments;
+    // Preserve flat edits for a one-segment record, while never collapsing a
+    // multi-page record because an older client sent only its first-page fields.
+    if (previous?.segments?.length === 1 && !("segments" in input))
+      anchors = [{ ...previous.segments[0], ...Object.fromEntries(aliases.filter(key => key in input).map(key => [key, input[key]])) }];
+    result.segments = validateSegments(anchors, paper);
+    const first = result.segments[0];
+    for (const key of aliases) {
+      if ("segments" in input && key in input) {
+        const supplied = key === "page" ? validatePage(input.page, paper) : key === "quote" ? plain(input.quote, "quote", 12000) : validateRects(input.rects);
+        if (JSON.stringify(supplied) !== JSON.stringify(first[key])) throw new ApiError("Top-level page, quote and rects must match the first annotation segment.");
+      }
+      if (first[key] !== undefined) result[key] = first[key];
+    }
+  } else {
+    result.page = validatePage(merged.page ?? 1, paper);
+    if (merged.quote !== undefined) result.quote = plain(merged.quote, "quote", 12000);
+    if (merged.rects !== undefined) result.rects = validateRects(merged.rects);
+  }
   if (merged.body !== undefined) result.body = plain(merged.body, "body", 50000);
   if (merged.language !== undefined) {
     if (typeof merged.language !== "string" || !/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8}){0,3}$/.test(merged.language))
@@ -47,14 +110,6 @@ export function validateAnnotation(input, paper, previous) {
   if (merged.tags !== undefined) {
     if (!Array.isArray(merged.tags) || merged.tags.length > 20) throw new ApiError("tags must contain at most 20 items.");
     result.tags = [...new Set(merged.tags.map((tag) => plain(tag, "tag", 80, true)))];
-  }
-  if (merged.rects !== undefined) {
-    if (!Array.isArray(merged.rects) || merged.rects.length > 300) throw new ApiError("rects must contain at most 300 rectangles.");
-    result.rects = merged.rects.map((rect) => {
-      if (!point(rect) || !number(rect.width) || !number(rect.height) || rect.width <= 0 || rect.height <= 0 || rect.x + rect.width > 1.000001 || rect.y + rect.height > 1.000001)
-        throw new ApiError("Annotation rectangles must stay within their normalized page.");
-      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-    });
   }
   if (merged.strokes !== undefined) {
     if (!Array.isArray(merged.strokes) || merged.strokes.length > 200) throw new ApiError("strokes must contain at most 200 strokes.");
@@ -84,7 +139,34 @@ export function validateAnnotation(input, paper, previous) {
 
 export function annotationMarkdown(paper, annotations) {
   const safe = (value) => String(value || "").replace(/[<>]/g, (char) => char === "<" ? "&lt;" : "&gt;");
-  return `# ${safe(paper.title)} — Notes\n\n${annotations.map((item) =>
-    `## ${item.kind} · [p.${item.page}]\n\n${item.quote ? item.quote.split("\n").map((line) => `> ${safe(line)}`).join("\n") + "\n\n" : ""}${safe(item.body || (item.kind === "ink" ? "Handwritten annotation (stroke geometry is available in the JSON export)." : ""))}${item.tags?.length ? `\n\nTags: ${item.tags.map(safe).join(", ")}` : ""}\n\n${item.createdAt}`
-  ).join("\n\n---\n\n")}\n`;
+  const sourceUrl = portableSourceUrl(paper.url);
+  const pdfUrl = portableSourceUrl(paper.pdfUrl || (paper.source === "pdf" ? paper.url : ""));
+  const isPdf = Boolean(paper.filePath || paper.pages?.length);
+  const provenance = sourceUrl
+    ? `Source: [Original paper](<${sourceUrl}>).${pdfUrl && pdfUrl !== sourceUrl ? ` [PDF](<${pdfUrl}>).` : ""}`
+    : "Source: Local document; no portable public source URL is available. Local filesystem paths are omitted.";
+  const authors = Array.isArray(paper.authors) && paper.authors.length ? `Authors: ${paper.authors.map(safe).join(", ")}\n\n` : "";
+  const locator = item => {
+    if (isPdf && pdfUrl) return `[p.${item.page}](<${pdfUrl}#page=${item.page}>)`;
+    if (!isPdf && sourceUrl) return `[Source text](<${sourceUrl}>)`;
+    return `[p.${item.page}]${sourceUrl ? ` · [Original paper](<${sourceUrl}>)` : " (open this page in your original document)"}`;
+  };
+  return `# ${safe(paper.title)} — Notes\n\n${authors}${provenance}\n\n${isPdf ? "Page references use one-based PDF page indexes; printed page labels may differ.\n\n" : ""}${annotations.map(item => {
+    const segments = annotationSegments(item);
+    const excerpts = segments.map(segment => `${segments.length > 1 ? `### ${locator(segment)}\n\n` : ""}${segment.quote ? segment.quote.split("\n").map(line => `> ${safe(line)}`).join("\n") + "\n\n" : ""}`).join("");
+    return `## ${item.kind} · ${segments.length > 1 ? `${segments.length} page segments` : locator(item)}\n\n${excerpts}${safe(item.body || (item.kind === "ink" ? "Handwritten annotation (stroke geometry is available in the JSON export)." : ""))}${item.tags?.length ? `\n\nTags: ${item.tags.map(safe).join(", ")}` : ""}\n\n${item.createdAt}`;
+  }).join("\n\n---\n\n")}\n`;
+}
+
+function portableSourceUrl(value) {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.replace(/^\[|\]$/g, "");
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password ||
+      host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") ||
+      (net.isIP(host) && !isPublicAddress(host)) ||
+      [...url.searchParams.keys()].some(key => /token|api.?key|signature|credential|authorization|password|secret|session/i.test(key))) return "";
+    url.hash = "";
+    return url.href.replace(/[<>"\s]/g, character => encodeURIComponent(character));
+  } catch { return ""; }
 }

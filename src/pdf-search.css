@@ -1,0 +1,20 @@
+.pdf-search-bar{background:var(--panel,#fff);border-bottom:1px solid var(--line,#e5e2df);padding:9px 12px;color:var(--text,#292725);flex-shrink:0;min-width:0}
+.pdf-search-controls{display:flex;align-items:center;gap:6px;min-width:0}
+.pdf-search-controls>svg{flex-shrink:0;color:var(--muted,#777)}
+.pdf-search-controls input{flex:1;min-width:70px;height:34px;padding:5px 8px;background:var(--panel,#fff);color:inherit;border:1px solid var(--line,#d8d4cf);border-radius:7px;font:inherit;font-size:13px;outline-offset:2px}
+.pdf-search-controls button{display:flex;align-items:center;justify-content:center;flex-shrink:0;width:32px;height:34px;padding:0;border:1px solid transparent;border-radius:6px;background:transparent;color:inherit;cursor:pointer}
+.pdf-search-controls button:hover:not(:disabled){background:var(--hover,#f1efec);border-color:var(--line,#ddd)}
+.pdf-search-controls button:disabled{opacity:.35;cursor:default}
+.pdf-search-count{font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap;min-width:34px;text-align:center;color:var(--muted,#777)}
+.pdf-search-status{display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-top:5px;min-height:17px;font-size:11px;line-height:1.4;color:var(--muted,#777)}
+@media(max-width:600px){.pdf-search-bar{padding:8px}.pdf-search-controls{gap:3px}.pdf-search-controls>svg{display:none}.pdf-search-controls input{font-size:16px}.pdf-search-controls button{width:30px;min-height:36px}.pdf-search-count{font-size:11px}}
+.pdf-find-toggle{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;height:30px;padding:0;border:1px solid transparent;border-radius:6px;color:var(--text);background:transparent;cursor:pointer}
+.pdf-find-toggle:hover,.pdf-find-toggle[aria-expanded=true]{background:var(--tint);border-color:var(--line)}
+.pdf-search-highlights{position:absolute;inset:0;pointer-events:none;z-index:3}
+.pdf-search-highlight{position:absolute;background:#ffb42e66;border:1px solid #d08114aa;border-radius:2px;box-sizing:border-box;mix-blend-mode:multiply;pointer-events:none}
+[data-theme=dark] .pdf-reader[data-paper-colors="theme"] .pdf-search-highlight{background:#ffbd4766;border-color:#ffc257;mix-blend-mode:screen}
+@media(pointer:coarse){.pdf-find-toggle{min-width:36px;min-height:40px}}
+.pdf-citation-status{position:absolute;right:16px;top:56px;z-index:6;display:flex;align-items:center;gap:6px;max-width:calc(100% - 32px);padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--panel);box-shadow:0 2px 8px #0001;color:var(--muted);font-size:11px;line-height:1.5}
+.pdf-citation-status button{display:flex;align-items:center;justify-content:center;background:transparent;border:0;color:inherit;padding:2px;cursor:pointer;flex-shrink:0}
+.citation-link small{font:inherit;opacity:.7;white-space:nowrap}
+@container(max-width:360px){.pdf-citation-status{top:100px}}

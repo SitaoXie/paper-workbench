@@ -3,6 +3,7 @@ import { validateLanguage } from "./models.mjs";
 import { contentHash } from "./storage.mjs";
 import { readingState, readingFormat } from "./reading.mjs";
 import { validateInteractive, validateInteractiveTranslation } from "./interactive.mjs";
+import { validateFigureCaptions, figureCaptionsSourceHash } from "./captions.mjs";
 
 export function validateAgentSource(source) {
   if (
@@ -168,20 +169,42 @@ export function prepareInsights(body, paper) {
         update.readingVersions ||= JSON.parse(JSON.stringify(state.readingVersions));
         const version = update.readingVersions.find((item) => item.id === (translation.readingId || state.activeReadingId));
         if (!version) throw new ApiError("Reading version not found in this paper.", 404);
-        const entry = contentEntry(translation, source);
+        const language = validateLanguage(translation.language);
+        const sourceHash = contentHash(version.markdown);
+        const previous = version.translations?.[language];
+        let entry;
+        if (translation.markdown === undefined && translation.figureCaptions !== undefined) {
+          const reusable = typeof previous?.markdown === "string" && previous.markdown.trim() && previous.markdown.trim().toLowerCase() !== "null" && !previous.stale &&
+            (previous.sourceHash ? previous.sourceHash === sourceHash : previous.sourceUpdatedAt === version.createdAt);
+          if (reusable) entry = { ...previous };
+          else if (language === validateLanguage(version.language || "en")) entry = {
+            markdown: version.markdown, language, createdAt: version.createdAt,
+            ...(version.mode ? { mode: version.mode } : {}), ...(version.source ? { source: version.source } : {}),
+            ...(version.interactive ? { interactive: version.interactive } : {}),
+          };
+          else throw new ApiError("Caption-only import requires an existing valid translated article or the original reading language.");
+        } else entry = contentEntry(translation, source);
         if (translation.interactive !== undefined) {
           if (!version.interactive) throw new ApiError("This reading version has no interactive content to translate.");
           entry.interactive = validateInteractiveTranslation(translation.interactive, version.interactive, {
             pageCount: paper.pages?.length, figures: version.figures || paper.figures || [], language: entry.language,
           });
         }
+        if (translation.figureCaptions !== undefined) {
+          const figures = version.figures || paper.figures || [];
+          entry.figureCaptions = validateFigureCaptions(translation.figureCaptions, figures, { language: entry.language });
+          entry.figureCaptionsSourceHash = figureCaptionsSourceHash(figures);
+          delete entry.captionTranslationError;
+        }
         version.translations ||= {};
-        version.translations[entry.language] = { ...entry, sourceUpdatedAt: version.createdAt, sourceHash: contentHash(version.markdown) };
+        version.translations[entry.language] = { ...entry, sourceUpdatedAt: version.createdAt, sourceHash };
         continue;
       }
       if (!translationSource({ ...paper, ...update }, translation.target))
         throw new ApiError(`No ${translation.target} exists to translate.`);
       const entry = contentEntry(translation, source);
+      if (translation.figureCaptions !== undefined)
+        throw new ApiError("figureCaptions requires target reading and its bound reading version.");
       if (translation.interactive !== undefined) {
         const original = update[translation.target] || paper[translation.target];
         if (!original?.interactive) throw new ApiError("The translation source has no interactive content.");

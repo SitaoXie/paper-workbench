@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useModelSelection, writeWorkspaceSettings } from "./model-selection";
 import { t, useLocale } from "./i18n";
 import "./locale-polish.css";
 import "./vision-tools.css";
@@ -59,6 +60,8 @@ export default function SettingsDialog({
   onSaved: (s: Settings) => void;
 }) {
   useLocale();
+  const sharedWrite = useModelSelection();
+  const openedDuringWrite = useRef(sharedWrite.pending);
   const [profiles, setProfiles] = useState(() =>
     profileList(current).map(toDraft),
   );
@@ -94,6 +97,16 @@ export default function SettingsDialog({
   const [busy, setBusy] = useState("");
   const [feedback, setFeedback] = useState("");
   const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (!openedDuringWrite.current || sharedWrite.pending || busy) return;
+    // A selector can finish after this dialog opens. Its disabled, pristine form
+    // must receive the confirmed settings before allowing a full-profile save.
+    openedDuringWrite.current = false;
+    setProfiles(profileList(current).map(toDraft));
+    setActive(current.activeProfileId || profileList(current)[0].id);
+    setSelected(current.activeProfileId || profileList(current)[0].id);
+    setVision(current.vision || {enabled:false});
+  }, [current, sharedWrite.pending, busy]);
   const draft = profiles.find((p) => p.id === selected) || profiles[0];
   const update = (patch: Partial<Draft>) => {
     const origin = (url: string) => {
@@ -159,6 +172,7 @@ export default function SettingsDialog({
     }),
   });
   async function run(action: "save" | "test") {
+    if (busy || sharedWrite.pending) return;
     setBusy(action);
     setFeedback("");
     try {
@@ -174,15 +188,16 @@ export default function SettingsDialog({
               "Declare a vision-capable model, then choose its connection and model.",
             ),
           );
-        const s = await api<Settings>("/settings", {
-          method: "PUT",
-          body: JSON.stringify(body),
+        const result = await writeWorkspaceSettings(() => api<Settings>("/settings", {
+          method: "PUT", body: JSON.stringify(body),
+        }), s => {
+          onSaved(s);
+          setProfiles(profileList(s).map(toDraft));
+          setActive(s.activeProfileId || active);
+          setVision(s.vision || { enabled: false });
+          setFeedback(t("配置已保存"));
         });
-        onSaved(s);
-        setProfiles(profileList(s).map(toDraft));
-        setActive(s.activeProfileId || active);
-        setVision(s.vision || { enabled: false });
-        setFeedback(t("配置已保存"));
+        if (!result.ok) throw new Error(result.error || t("其他模型配置正在保存，请稍后重试。", "Another model setting is being saved. Try again shortly."));
       } else {
         await api("/settings/test", {
           method: "POST",
@@ -257,6 +272,7 @@ export default function SettingsDialog({
         <div className="profile-list" aria-label={t("已保存的模型连接")}>
           {profiles.map((p) => (
             <button
+              disabled={!!busy || sharedWrite.pending}
               key={p.id}
               className={p.id === draft.id ? "selected" : ""}
               onClick={() => {
@@ -273,19 +289,19 @@ export default function SettingsDialog({
               </small>
             </button>
           ))}
-          <button className="add-profile" onClick={add}>
+          <button className="add-profile" onClick={add} disabled={!!busy || sharedWrite.pending}>
             <Plus size={15} /> {t("添加连接")}
           </button>
         </div>
         <label htmlFor="profile-name">{t("连接名称")}</label>
-        <input
+        <input disabled={!!busy || sharedWrite.pending}
           id="profile-name"
           value={draft.name}
           onChange={(e) => update({ name: e.target.value })}
           placeholder={t("例如：个人 API / 本地模型")}
         />
         <label htmlFor="provider">{t("API 协议")}</label>
-        <select
+        <select disabled={!!busy || sharedWrite.pending}
           id="provider"
           value={draft.provider}
           onChange={(e) =>
@@ -303,14 +319,14 @@ export default function SettingsDialog({
           <option value="anthropic">Anthropic</option>
         </select>
         <label htmlFor="base-url">API Base URL</label>
-        <input
+        <input disabled={!!busy || sharedWrite.pending}
           id="base-url"
           value={draft.baseUrl}
           onChange={(e) => update({ baseUrl: e.target.value })}
           placeholder="https://api.example.com/v1"
         />
         <label htmlFor="models-list">{t("预填模型列表")}</label>
-        <textarea
+        <textarea disabled={!!busy || sharedWrite.pending}
           id="models-list"
           className="models-list"
           rows={4}
@@ -324,7 +340,7 @@ export default function SettingsDialog({
           {t("同一 URL 与 API Key 共用；每行或逗号分隔一个模型 ID。")}
         </p>
         <label htmlFor="model">{t("模型名称")}</label>
-        <input
+        <input disabled={!!busy || sharedWrite.pending}
           id="model"
           list="configured-models"
           value={draft.model}
@@ -351,7 +367,7 @@ export default function SettingsDialog({
             {declaredModels(draft).map((model) => (
               <label key={model}>
                 <span title={model}>{model}</span>
-                <select
+                <select disabled={!!busy || sharedWrite.pending}
                   aria-label={t(`${model} 模型能力`, `${model} capabilities`)}
                   value={draft.modelCapabilities?.[model] || "text"}
                   onChange={(event) =>
@@ -381,7 +397,7 @@ export default function SettingsDialog({
             </span>
           )}
         </label>
-        <input
+        <input disabled={!!busy || sharedWrite.pending}
           id="api-key"
           type="password"
           autoComplete="new-password"
@@ -397,7 +413,7 @@ export default function SettingsDialog({
         />
         {draft.apiKeyConfigured && (
           <label className="checkbox-label">
-            <input
+            <input disabled={!!busy || sharedWrite.pending}
               type="checkbox"
               checked={draft.clearApiKey || false}
               onChange={(e) => update({ clearApiKey: e.target.checked })}
@@ -407,7 +423,7 @@ export default function SettingsDialog({
         )}
         <div className="profile-actions">
           <label className="checkbox-label">
-            <input
+            <input disabled={!!busy || sharedWrite.pending}
               type="checkbox"
               checked={active === draft.id}
               onChange={() => setActive(draft.id)}
@@ -416,7 +432,7 @@ export default function SettingsDialog({
           </label>
           <button
             className="text-button danger"
-            disabled={profiles.length < 2}
+            disabled={profiles.length < 2 || !!busy || sharedWrite.pending}
             onClick={remove}
           >
             <Trash2 size={13} /> {t("删除连接")}
@@ -437,7 +453,7 @@ export default function SettingsDialog({
             )}
           </p>
           <label className="checkbox-label">
-            <input
+            <input disabled={!!busy || sharedWrite.pending}
               type="checkbox"
               checked={vision.enabled}
               onChange={(event) => {
@@ -470,7 +486,7 @@ export default function SettingsDialog({
               <label htmlFor="vision-profile">
                 {t("视觉连接", "Vision connection")}
               </label>
-              <select
+              <select disabled={!!busy || sharedWrite.pending}
                 id="vision-profile"
                 value={vision.profileId || ""}
                 onChange={(event) => {
@@ -504,7 +520,7 @@ export default function SettingsDialog({
               <label htmlFor="vision-model">
                 {t("视觉模型", "Vision model")}
               </label>
-              <select
+              <select disabled={!!busy || sharedWrite.pending}
                 id="vision-model"
                 value={vision.model || ""}
                 onChange={(event) =>
@@ -536,7 +552,7 @@ export default function SettingsDialog({
             {t("高级请求参数")} <ChevronDown size={12} />
           </summary>
           <label htmlFor="request-timeout">{t("单次模型请求超时（秒）", "Model request timeout (seconds)")}</label>
-          <input
+          <input disabled={!!busy || sharedWrite.pending}
             id="request-timeout"
             type="number"
             min={15}
@@ -547,7 +563,7 @@ export default function SettingsDialog({
           />
           <p className="field-hint">{t("慢速推理或高清图像可增加等待时间；每个连接独立设置，最多10分钟。", "Allow more time for slow reasoning or high-resolution images. Each connection has its own limit, up to 10 minutes.")}</p>
           <label htmlFor="context-budget">{t("论文上下文预算（字符）")}</label>
-          <input
+          <input disabled={!!busy || sharedWrite.pending}
             id="context-budget"
             type="number"
             min="8000"
@@ -557,7 +573,7 @@ export default function SettingsDialog({
             onChange={(e) => update({ contextChars: Number(e.target.value) })}
           />
           <label htmlFor="max-output">{t("模型输出上限（Tokens）")}</label>
-          <input
+          <input disabled={!!busy || sharedWrite.pending}
             id="max-output"
             type="number"
             min="512"
@@ -569,7 +585,7 @@ export default function SettingsDialog({
             }
           />
           <label htmlFor="extra-body">{t("额外 JSON 参数")}</label>
-          <textarea
+          <textarea disabled={!!busy || sharedWrite.pending}
             id="extra-body"
             spellCheck={false}
             value={draft.extra}
@@ -584,6 +600,7 @@ export default function SettingsDialog({
             )}
           </p>
         </div>
+        {sharedWrite.pending && busy !== "save" && <p className="field-hint" role="status">{t("正在应用模型设置，请稍候…", "Applying model settings. Please wait…")}</p>}
         {feedback && (
           <div className={failed ? "form-error" : "form-success"} role="status">
             {feedback}
@@ -592,7 +609,7 @@ export default function SettingsDialog({
         <div className="settings-actions">
           <button
             className="soft-button"
-            disabled={!!busy || !draft.model || !draft.baseUrl}
+            disabled={!!busy || sharedWrite.pending || !draft.model || !draft.baseUrl}
             onClick={() => run("test")}
           >
             {busy === "test" ? (
@@ -604,7 +621,7 @@ export default function SettingsDialog({
           </button>
           <button
             className="primary-button"
-            disabled={!!busy}
+            disabled={!!busy || sharedWrite.pending}
             onClick={() => run("save")}
           >
             {busy === "save" ? (

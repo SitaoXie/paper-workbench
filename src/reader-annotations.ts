@@ -6,6 +6,11 @@ export type AnnotationRect = {
   width: number;
   height: number;
 };
+export type AnnotationSegment = {
+  page: number;
+  quote?: string;
+  rects?: AnnotationRect[];
+};
 export type InkPoint = { x: number; y: number; pressure?: number };
 export type InkStroke = { points: InkPoint[]; width: number };
 export type Annotation = {
@@ -16,6 +21,8 @@ export type Annotation = {
   page: number;
   rects?: AnnotationRect[];
   quote?: string;
+  /** One logical annotation can have source anchors on multiple pages. */
+  segments?: AnnotationSegment[];
   body?: string;
   color?: AnnotationColor;
   tags?: string[];
@@ -28,6 +35,27 @@ export type AnnotationDraft = Omit<
   Annotation,
   "id" | "paperId" | "createdAt" | "updatedAt"
 >;
+/** Older single-page records remain independent; no inferred grouping occurs. */
+export function annotationSegments(annotation: Pick<Annotation, "page" | "quote" | "rects" | "segments">): AnnotationSegment[] {
+  return annotation.segments?.length ? annotation.segments : [{
+    page: annotation.page,
+    ...(annotation.quote === undefined ? {} : { quote: annotation.quote }),
+    ...(annotation.rects === undefined ? {} : { rects: annotation.rects }),
+  }];
+}
+
+/** Compress consecutive source pages without suggesting a gap is selected. */
+export function annotationPageLabel(annotation: Pick<Annotation, "page" | "quote" | "rects" | "segments">): string {
+  const pages = [...new Set(annotationSegments(annotation).map(segment => segment.page))].sort((a, b) => a - b);
+  const ranges: string[] = [];
+  for (let index = 0; index < pages.length; index++) {
+    const start = pages[index];
+    let end = start;
+    while (pages[index + 1] === end + 1) end = pages[++index];
+    ranges.push(start === end ? String(start) : `${start}–${end}`);
+  }
+  return `p.${ranges.join(", ")}`;
+}
 export const annotationColors: Record<AnnotationColor, string> = {
   yellow: "#f0c83b",
   green: "#63b87d",

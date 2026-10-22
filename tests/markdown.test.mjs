@@ -38,3 +38,31 @@ test('escaped delimiters, inline and fenced code, math and ordinary English keep
   ];
   for (const source of cases) assert.deepEqual(parse(source), parse(source, false), source);
 });
+
+const citationCode = ts.transpileModule(fs.readFileSync(new URL('../src/remark-page-citations.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
+const { default: pageCitations } = await import('data:text/javascript;base64,' + Buffer.from(citationCode).toString('base64'));
+function citations(source, fix = true) {
+  const processor = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
+  if (fix) processor.use(pageCitations);
+  return processor.runSync(processor.parse(source), source);
+}
+test('page navigation accepts compact, grouped, ranged and Chinese model citations', () => {
+  const tree = citations('Evidence [p35], [p. 10], [p2,p10] and [pp.3–p.5] supports **this [p 6]**. 最后[第 7 页]。');
+  assert.deepEqual(nodes(tree, 'link').map(node => [node.url, node.children[0].value]), [
+    ['#page=35','p.35'], ['#page=10','p.10'], ['#page=2','p.2'], ['#page=10','p.10'], ['#page=3','p.3–5'], ['#page=6','p.6'], ['#page=7','p.7'],
+  ]);
+});
+test('citation parsing leaves code, math, existing links, escaped and malformed references unchanged', () => {
+  for (const source of [String.raw`Literal \[p35]`, '`[p35]`', '```text\n[p35]\n```', '$[p35]$', '[p35](https://example.org)', '![p35](image.png)', 'Footnote [35] and [p0] [p4-2] [p35, bad] [p2/3]']) {
+    assert.deepEqual(citations(source), citations(source, false), source);
+  }
+});
+
+test('CJK emphasis and page citations compose in the same paragraph without leaving raw delimiters',()=>{
+  const source='结论是：**策略概率的重新分配，已经足以解释跨任务迁移。**作者比较模型。[p.2]\n\n其中有 **487 个（12.7%）**使用未出现的路线。[p6]';
+  const processor=unified().use(remarkParse).use(remarkGfm).use(remarkMath).use(cjkEmphasis).use(pageCitations);
+  const tree=processor.runSync(processor.parse(source),source);
+  assert.deepEqual(nodes(tree,'strong').map(node=>node.children[0].value),['策略概率的重新分配，已经足以解释跨任务迁移。','487 个（12.7%）']);
+  assert.deepEqual(nodes(tree,'link').map(node=>node.url),['#page=2','#page=6']);
+  assert.equal(nodes(tree,'text').some(node=>node.value.includes('**')),false);
+});

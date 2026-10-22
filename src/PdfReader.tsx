@@ -15,6 +15,10 @@ import {
 } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import {
+  ArrowLeft,
+  SlidersHorizontal,
+  Search,
+  ListTree,
   Download,
   ExternalLink,
   Loader2,
@@ -36,12 +40,22 @@ import {
   X,
   Check,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import Mark from "./Markdown";
 import AnnotationLayer from "./AnnotationLayer";
 import { selectedPdfText } from "./pdf-selection-text";
+import AgentSelectionBridge from "./AgentSelectionBridge";
+import { selectionBindingKey } from "./selection-agent-task";
+import { readSelectionExecution, saveSelectionExecution, type SelectionExecution } from "./selection-execution";
+import { resolvePdfDestination } from "./pdf-destination";
+import type { PdfReadingPosition } from "./reading-position";
+import PdfSearchBar from "./PdfSearchBar";
+import PdfOutline from "./PdfOutline";
+import PdfPageNumber from "./PdfPageNumber";
+import { bindPdfTextLayerItems, highlightPdfSearchMatch, indexPdfTextPage, searchPdfText, type PdfSearchMatch, type PdfSearchRect } from "./pdf-search";
 import {
   annotationColors,
+  annotationSegments,
+  annotationPageLabel,
   normalizedSelectionRects,
   type Annotation,
   type AnnotationDraft,
@@ -55,34 +69,53 @@ GlobalWorkerOptions.workerSrc = workerUrl;
 export type PdfSelection = {
   text: string;
   page: number;
+  pages?: number[];
   intent?: "ask" | "explain" | "translate";
   question?: string;
 };
 type Props = {
   url: string;
+  paperId?: string;
+  modelReady?: boolean;
   page: number;
   onPage?: (page: number) => void;
-  onAskSelection?: (selection: PdfSelection) => void;
+  active?: boolean;
+  navigation?: { page: number; nonce: number; fromOverview?: boolean; quote?: string };
+  onReturnToOverview?: () => void;
+  initialPosition?: PdfReadingPosition;
+  onPositionChange?: (position: PdfReadingPosition) => void;
+  onAskSelection?: (selection: PdfSelection) => Promise<boolean>;
   annotations?: Annotation[];
   onCreateAnnotation?: (draft: AnnotationDraft) => Promise<Annotation | void>;
-  onSelectAnnotation?: (id: string) => void;
+  onSelectAnnotation?: (id: string, page?: number) => void;
   onInlineAssist?: (payload: {
     text: string;
     page: number;
+    pages?: number[];
     language?: string;
     kind: "translation" | "explanation";
   }) => Promise<{ text: string; source?: string; createdAt?: string }>;
   language?: string;
-  annotationFocus?: { id: string; nonce: number };
+  annotationFocus?: { id: string; nonce: number; page?: number };
 };
 type SelectionMenu = {
   text: string;
+  tooLong?: boolean;
   page: number;
   left: number;
   top: number;
   rects: AnnotationRect[];
   segments: { page: number; text: string; rects: AnnotationRect[] }[];
 };
+function selectionAnchors(selection: SelectionMenu) {
+  const segments = (selection.segments.length ? selection.segments : [{page:selection.page,text:selection.text,rects:selection.rects}])
+    .map(segment => ({page:segment.page,quote:segment.text,rects:segment.rects}));
+  return {...segments[0], ...(segments.length > 1 ? {segments} : {})};
+}
+function selectionTooLong(selection: SelectionMenu) {
+  const segments = selectionAnchors(selection).segments || [selectionAnchors(selection)];
+  return selection.tooLong || segments.length > 20 || segments.reduce((total,segment)=>total+(segment.rects?.length || 0),0)>300 || segments.reduce((total,segment)=>total+(segment.quote?.length || 0),0)>12000;
+}
 type InlineResult = {
   selection: SelectionMenu;
   kind: "translation" | "explanation";
@@ -94,6 +127,7 @@ type InlineResult = {
   source?: string;
 };
 type PageSize = { width: number; height: number };
+type ReadingPosition = { page: number; fraction: number; left: number; zoom: number | null };
 type InkDraft = { page: number; stroke: InkStroke; color: AnnotationColor };
 function restoredInkDrafts(url: string): InkDraft[] {
   try {
@@ -145,6 +179,8 @@ function RenderedPage({
   onSelectAnnotation,
   focusedAnnotation,
   language,
+  searchMatch,
+  onSearchLocated,
 }: {
   document: PDFDocumentProxy;
   number: number;
@@ -152,7 +188,7 @@ function RenderedPage({
   width: number;
   height: number;
   active: boolean;
-  onNavigate: (page: number) => void;
+  onNavigate: (page: number, point?: {x?:number;y?:number}) => void;
   annotations: Annotation[];
   drawing: boolean;
   annotationColor: AnnotationColor;
@@ -161,6 +197,8 @@ function RenderedPage({
   onSelectAnnotation?: (id: string) => void;
   focusedAnnotation?: string;
   language: string;
+  searchMatch: PdfSearchMatch | null;
+  onSearchLocated: (match: PdfSearchMatch, rect: DOMRect) => void;
 }) {
   const t = (zh: string, en: string) => (language.startsWith("en") ? en : zh);
   const surface = useRef<HTMLDivElement>(null);
@@ -170,6 +208,16 @@ function RenderedPage({
   const [error, setError] = useState("");
   const [warning, setWarning] = useState("");
   const [retry, setRetry] = useState(0);
+  const [textRevision, setTextRevision] = useState(0);
+  const [searchRects, setSearchRects] = useState<PdfSearchRect[]>([]);
+  const searchLocated = useRef(onSearchLocated); searchLocated.current = onSearchLocated;
+  useLayoutEffect(() => {
+    const container = surface.current?.querySelector<HTMLElement>(".pdf-text-layer[data-rendered='true']");
+    if (!active || !searchMatch || !container) { setSearchRects([]); return; }
+    const result = highlightPdfSearchMatch(container, searchMatch);
+    setSearchRects(result.rects);
+    if (result.firstRect) searchLocated.current(searchMatch, result.firstRect);
+  }, [searchMatch, textRevision, active, scale]);
   useEffect(() => {
     const element = surface.current;
     if (!element) return;
@@ -231,7 +279,11 @@ function RenderedPage({
           viewport,
         });
         await textLayer.render();
-        if (!disposed) textContainer.dataset.rendered = "true";
+        if (!disposed) {
+          bindPdfTextLayerItems(textLayer.textDivs, content.items);
+          textContainer.dataset.rendered = "true";
+          setTextRevision(value => value + 1);
+        }
         if (!disposed && !content.items.length)
           setWarning(
             t("扫描页 · 无可选择文字", "Scanned page · No selectable text"),
@@ -277,18 +329,8 @@ function RenderedPage({
             link.onclick = (event) => {
               event.preventDefault();
               void (async () => {
-                const destination =
-                  typeof annotation.dest === "string"
-                    ? await document.getDestination(annotation.dest)
-                    : annotation.dest;
-                if (!Array.isArray(destination) || destination.length < 1)
-                  return;
-                const index =
-                  typeof destination[0] === "number"
-                    ? destination[0]
-                    : await document.getPageIndex(destination[0]);
-                if (!disposed && Number.isInteger(index))
-                  navigateRef.current(index + 1);
+                const destination = await resolvePdfDestination(document, annotation.dest);
+                if (!disposed && destination) navigateRef.current(destination.page, destination);
               })().catch(() => {});
             };
           } else {
@@ -347,6 +389,7 @@ function RenderedPage({
         ref={surface}
         style={{ width, height }}
       />
+      {active && searchMatch && <div className="pdf-search-highlights" aria-hidden="true">{searchRects.map((rect, index) => <span key={index} className="pdf-search-highlight" style={{left:`${rect.x * 100}%`, top:`${rect.y * 100}%`, width:`${rect.width * 100}%`, height:`${rect.height * 100}%`}} />)}</div>}
       {active && (
         <AnnotationLayer
           annotations={annotations}
@@ -393,8 +436,15 @@ function RenderedPage({
 /** Continuous, selectable PDF reading, bounded canvas memory, and citation jumps. */
 export default function PdfReader({
   url,
+  paperId,
+  modelReady = true,
   page,
   onPage,
+  active = true,
+  navigation,
+  onReturnToOverview,
+  initialPosition,
+  onPositionChange,
   onAskSelection,
   annotations = [],
   onCreateAnnotation,
@@ -403,6 +453,13 @@ export default function PdfReader({
   language = "zh-CN",
   annotationFocus,
 }: Props) {
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const initialPositionRef = useRef(initialPosition); initialPositionRef.current = initialPosition;
+  const initialPositionApplied = useRef(false);
+  const positionChanged = useRef(onPositionChange); positionChanged.current = onPositionChange;
+  const [navigationHistory, setNavigationHistory] = useState<ReadingPosition[]>([]);
+  const appliedNavigation = useRef<number | undefined>(undefined);
   const english = language.startsWith("en");
   const t = (zh: string, en: string) => (english ? en : zh);
   const [paperColors, setPaperColors] = useState<"theme" | "original">(() => {
@@ -420,6 +477,11 @@ export default function PdfReader({
   const [annotationBusy, setAnnotationBusy] = useState(false);
   const [annotationError, setAnnotationError] = useState("");
   const [annotationStatus, setAnnotationStatus] = useState("");
+  useEffect(() => {
+    if (!annotationStatus) return;
+    const timer = window.setTimeout(() => setAnnotationStatus(""), 5000);
+    return () => window.clearTimeout(timer);
+  }, [annotationStatus]);
   const [noteEditor, setNoteEditor] = useState<SelectionMenu | null>(null);
   const [noteBody, setNoteBody] = useState("");
   const [noteTags, setNoteTags] = useState("");
@@ -427,7 +489,73 @@ export default function PdfReader({
   const [selectionLanguage, setSelectionLanguage] = useState(language);
   useEffect(() => { setSelectionLanguage(language); }, [language]);
   const inlineRequest = useRef(0);
+  const askingSelection = useRef(false);
+  const [selectionAsking, setSelectionAsking] = useState(false);
+  const locatedAnnotation = useRef('');
+  // Retain the chosen column while a wider viewport temporarily clamps its
+  // scroll offset. A subsequent real pan replaces this reading intention.
+  const horizontalAnchor = useRef({ left: initialPosition?.left || 0, viewport: 0, content: 0 });
+  const restoreHorizontal = useCallback(() => {
+    const element = host.current;
+    if (!element) return;
+    element.scrollLeft = horizontalAnchor.current.left;
+    horizontalAnchor.current.viewport = element.clientWidth;
+    horizontalAnchor.current.content = element.scrollWidth;
+  }, []);
+  const setHorizontal = (left: number) => {
+    horizontalAnchor.current.left = Math.max(0, left);
+    restoreHorizontal();
+  };
+  const recordHorizontalScroll = () => {
+    const element = host.current, previous = horizontalAnchor.current;
+    if (!element || previous.viewport !== element.clientWidth || previous.content !== element.scrollWidth) return;
+    const maximum = Math.max(0, element.scrollWidth - element.clientWidth);
+    if (previous.left > maximum && element.scrollLeft >= maximum - 1) return;
+    previous.left = element.scrollLeft;
+  };
+  const [selectionExecution,setSelectionExecution] = useState<SelectionExecution>(readSelectionExecution);
+  const useSelectionAgent = !modelReady || selectionExecution === 'agent';
   const [drawing, setDrawing] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  const outlineButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => { setOutlineOpen(false); }, [url, active]);
+  const [searchMatch, setSearchMatch] = useState<PdfSearchMatch | null>(null);
+  const [citationMatch, setCitationMatch] = useState<PdfSearchMatch | null>(null);
+  const [citationStatus, setCitationStatus] = useState<"loading" | "matched" | "missing" | "ambiguous" | null>(null);
+  const citationRequest = useRef(0);
+  const processedCitation = useRef<{document:PDFDocumentProxy;nonce:number} | null>(null);
+  const searchButton = useRef<HTMLButtonElement>(null);
+  const searchOriginSaved = useRef(false);
+  const searchLocatedKey = useRef("");
+  useEffect(() => {
+    if (!active) { setSearchOpen(false); return; }
+    const find = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "f") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("textarea,input,[contenteditable='true']") && !target.closest(".pdf-search-bar")) return;
+      event.preventDefault(); setSearchOpen(true); setOutlineOpen(false); setToolsOpen(false);
+    };
+    window.document.addEventListener("keydown", find);
+    return () => window.document.removeEventListener("keydown", find);
+  }, [active]);
+  useEffect(() => { if (!searchOpen) { searchOriginSaved.current = false; searchLocatedKey.current = ""; } }, [searchOpen]);
+  const toolsHost = useRef<HTMLDivElement>(null);
+  const toolsButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!active) { setToolsOpen(false); return; }
+    if (!toolsOpen) return;
+    const outside = (event: PointerEvent) => {
+      if (!toolsHost.current?.contains(event.target as Node)) setToolsOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { setToolsOpen(false); toolsButton.current?.focus({ preventScroll: true }); }
+    };
+    window.document.addEventListener("pointerdown", outside);
+    window.document.addEventListener("keydown", escape);
+    return () => { window.document.removeEventListener("pointerdown", outside); window.document.removeEventListener("keydown", escape); };
+  }, [toolsOpen, active]);
   const [inkDrafts, setInkDrafts] = useState<InkDraft[]>(() =>
     restoredInkDrafts(url),
   );
@@ -449,11 +577,12 @@ export default function PdfReader({
   const reportedPage = useRef(0);
   const currentPage = useRef(1);
   const scrollFrame = useRef(0);
-  const anchor = useRef<{ page: number; fraction: number } | null>(null);
+  const anchor = useRef<{ page: number; fraction: number; left?: number } | null>(null);
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
   const [sizes, setSizes] = useState<PageSize[]>([]);
   const [width, setWidth] = useState(0);
-  const [zoom, setZoom] = useState<number | null>(null);
+  const [zoom, setZoom] = useState<number | null>(initialPosition?.zoom ?? null);
+  const zoomRef = useRef(zoom); zoomRef.current = zoom;
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
   const [visible, setVisible] = useState({ first: 1, last: 3 });
@@ -489,6 +618,7 @@ export default function PdfReader({
     const element = host.current;
     if (!element) return;
     const update = () => {
+      if (!activeRef.current) return;
       const available =
         (window.visualViewport?.height || window.innerHeight) -
         Math.max(0, element.getBoundingClientRect().top) -
@@ -505,7 +635,7 @@ export default function PdfReader({
       window.visualViewport?.removeEventListener("resize", update);
       observer.disconnect();
     };
-  }, []);
+  }, [active, searchOpen]);
 
   useEffect(() => {
     if (!onAskSelection && !onCreateAnnotation && !onInlineAssist) return;
@@ -513,6 +643,7 @@ export default function PdfReader({
     if (!element) return;
     let frame = 0;
     const inspect = () => {
+      if (!activeRef.current) return;
       const selected = window.getSelection();
       if (!selected || selected.isCollapsed || !selected.rangeCount) {
         if (
@@ -544,7 +675,7 @@ export default function PdfReader({
         setSelectionMenu(null);
         return;
       }
-      const text = selectedPdfText(range, element).slice(0, 12000);
+      const rawText = selectedPdfText(range, element), text = rawText.slice(0, 12000);
       if (text === dismissedSelection.current) {
         setSelectionMenu(null);
         return;
@@ -608,6 +739,7 @@ export default function PdfReader({
         });
       setSelectionMenu({
         text,
+        tooLong: rawText.length > 12000,
         page: sourcePage,
         left,
         top,
@@ -673,6 +805,7 @@ export default function PdfReader({
     const element = host.current;
     if (!element) return;
     const update = () => {
+      if (!activeRef.current || element.clientWidth === 0) return;
       rememberPosition();
       setWidth(Math.max(1, element.clientWidth - 32));
     };
@@ -695,7 +828,10 @@ export default function PdfReader({
     setDocument(null);
     setSizes([]);
     setError("");
-    setZoom(null);
+    setZoom(initialPositionRef.current?.zoom ?? null);
+    horizontalAnchor.current = {left: initialPositionRef.current?.left || 0, viewport: 0, content: 0};
+    initialPositionApplied.current = false;
+    appliedNavigation.current = undefined;
     reportedPage.current = 0;
     anchor.current = null;
     const task = getDocument({
@@ -748,7 +884,7 @@ export default function PdfReader({
 
   const updateVisiblePages = useCallback(() => {
     const element = host.current;
-    if (!element || !document) return;
+    if (!activeRef.current || !element || !document) return;
     const top = element.scrollTop;
     const bottom = top + element.clientHeight;
     const margin = Math.max(500, element.clientHeight);
@@ -790,28 +926,117 @@ export default function PdfReader({
       reportedPage.current = nearest;
       onPageRef.current?.(nearest);
     }
+    const sheet = element.querySelector<HTMLElement>(`[data-pdf-page="${nearest}"]`);
+    if (initialPositionApplied.current && sheet?.offsetHeight) positionChanged.current?.({page:nearest,fraction:(element.scrollTop-sheet.offsetTop)/sheet.offsetHeight,left:horizontalAnchor.current.left,zoom:zoomRef.current});
   }, [document]);
+
+  useLayoutEffect(() => () => {
+    const element = host.current;
+    const sheet = element?.querySelector<HTMLElement>(`[data-pdf-page="${currentPage.current}"]`);
+    if (activeRef.current && initialPositionApplied.current && element && sheet?.offsetHeight)
+      positionChanged.current?.({page:currentPage.current,fraction:(element.scrollTop-sheet.offsetTop)/sheet.offsetHeight,left:horizontalAnchor.current.left,zoom:zoomRef.current});
+  }, []);
 
   useLayoutEffect(() => {
     const element = host.current;
-    if (!element || !document || !width) return;
+    if (!active || !element || !document || !width) return;
     const position = anchor.current;
     if (position) {
       const sheet = element.querySelector<HTMLElement>(
         `[data-pdf-page="${position.page}"]`,
       );
-      if (sheet)
-        element.scrollTop =
-          sheet.offsetTop + position.fraction * sheet.offsetHeight;
+      if (sheet) {
+        element.scrollTop = sheet.offsetTop + position.fraction * sheet.offsetHeight;
+        if (position.left !== undefined) horizontalAnchor.current.left = position.left;
+      }
       anchor.current = null;
     }
+    restoreHorizontal();
     // Initial/external navigation is handled by the next layout effect before
     // any scroll feedback is emitted, preventing a citation jump from bouncing.
-  }, [document, width, scale]);
+  }, [document, width, scale, active]);
+
+  const capturePosition = (): ReadingPosition | undefined => {
+    const element = host.current;
+    const sheet = element?.querySelector<HTMLElement>(`[data-pdf-page="${currentPage.current}"]`);
+    if (!element || !sheet || !sheet.offsetHeight) return;
+    return { page: currentPage.current, fraction: (element.scrollTop - sheet.offsetTop) / sheet.offsetHeight, left: horizontalAnchor.current.left, zoom };
+  };
+  const rememberJump = () => {
+    const position = capturePosition();
+    if (position) setNavigationHistory(history => [...history, position].slice(-30));
+  };
+  useLayoutEffect(() => {
+    if (!active || initialPositionApplied.current || !document || !width || !host.current) return;
+    // A citation clicked while the PDF loads is the reader's latest intent.
+    // Restoring the old page here would enqueue onPage(oldPage), which can
+    // overwrite the citation on the following controlled render.
+    if (navigation && appliedNavigation.current !== navigation.nonce) {
+      initialPositionApplied.current = true;
+      anchor.current = null;
+      return;
+    }
+    const position = initialPositionRef.current;
+    if (position && zoom !== position.zoom) { setZoom(position.zoom); return; }
+    initialPositionApplied.current = true;
+    if (!position) return;
+    const next = Math.max(1, Math.min(document.numPages, position.page));
+    const sheet = host.current.querySelector<HTMLElement>(`[data-pdf-page="${next}"]`);
+    if (!sheet) return;
+    anchor.current = null;
+    host.current.scrollTop = sheet.offsetTop + position.fraction * sheet.offsetHeight;
+    setHorizontal(position.left);
+    reportedPage.current = next; currentPage.current = next; setVisiblePage(next);
+    onPageRef.current?.(next);
+  }, [active, document, width, zoom, navigation?.nonce]);
+  useLayoutEffect(() => {
+    if (!active || !navigation || appliedNavigation.current === navigation.nonce || !document || !width || !host.current) return;
+    const next = Math.max(1, Math.min(document.numPages, navigation.page));
+    const sheet = host.current.querySelector<HTMLElement>(`[data-pdf-page="${next}"]`);
+    if (!sheet) return;
+    if (navigation.fromOverview) setNavigationHistory([]);
+    else if (reportedPage.current) rememberJump();
+    appliedNavigation.current = navigation.nonce;
+    anchor.current = null;
+    host.current.scrollTop = Math.max(0, sheet.offsetTop - 16);
+    reportedPage.current = next;
+    currentPage.current = next;
+    setVisiblePage(next);
+    updateVisiblePages();
+  }, [navigation?.nonce, active, document, width]);
+
+  useEffect(() => {
+    if (!active || !document || !navigation) return;
+    if (processedCitation.current?.document === document && processedCitation.current.nonce === navigation.nonce) return;
+    processedCitation.current = {document,nonce:navigation.nonce};
+    const request = ++citationRequest.current;
+    setCitationMatch(null); setCitationStatus(null);
+    const quote = navigation?.quote?.trim();
+    if (!quote || quote.length > 500) return;
+    let disposed = false, finished = false;
+    setSearchOpen(false); setSearchMatch(null); setCitationStatus("loading");
+    const pageNumber = navigation.page;
+    void (async () => {
+      if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > document.numPages) throw new Error("Invalid source page");
+      const source = await document.getPage(pageNumber);
+      const content = await source.getTextContent();
+      if (disposed || request !== citationRequest.current) return;
+      finished = true;
+      const page = indexPdfTextPage(content.items, pageNumber);
+      const {matches} = searchPdfText({pages:[page],pageCount:1,indexed:1,failedPages:[]},quote,2);
+      if (matches.length !== 1) { setCitationStatus(matches.length ? "ambiguous" : "missing"); return; }
+      searchLocatedKey.current = "";
+      setCitationMatch(matches[0]); setCitationStatus("matched");
+    })().catch(() => { if (!disposed && request === citationRequest.current) { finished = true; setCitationStatus("missing"); } });
+    return () => {
+      disposed = true;
+      if (!finished && request === citationRequest.current) processedCitation.current = null;
+    };
+  }, [navigation?.nonce, document, active]);
 
   useLayoutEffect(() => {
     const element = host.current;
-    if (!element || !document || !width) return;
+    if (!active || !element || !document || !width) return;
     const safePage = Math.max(
       1,
       Math.min(Number.isFinite(page) ? Math.trunc(page) : 1, document.numPages),
@@ -827,28 +1052,40 @@ export default function PdfReader({
       if (safePage !== page) onPageRef.current?.(safePage);
     }
     updateVisiblePages();
-  }, [document, page, width, scale, updateVisiblePages]);
+  }, [document, page, width, scale, active, updateVisiblePages]);
 
   useEffect(() => {
-    if (!annotationFocus || !document || !host.current) return;
+    if (!active || !annotationFocus || !document || !width || !host.current) return;
+    const requestKey = JSON.stringify([url,annotationFocus.id,annotationFocus.nonce,annotationFocus.page]);
+    if (locatedAnnotation.current === requestKey) return;
     const annotation = annotations.find(
       (item) => item.id === annotationFocus.id,
     );
     if (!annotation) return;
-    const sheet = host.current.querySelector<HTMLElement>(
-      `[data-pdf-page="${annotation.page}"]`,
-    );
+    const segment = annotationSegments(annotation).find(item => item.page === annotationFocus.page) || annotationSegments(annotation)[0];
+    const sheet = host.current.querySelector<HTMLElement>(`[data-pdf-page="${segment.page}"]`);
     if (!sheet) return;
+    locatedAnnotation.current = requestKey;
     const y =
-      annotation.rects?.[0]?.y ?? annotation.strokes?.[0]?.points[0]?.y ?? 0;
+      segment.rects?.[0]?.y ?? annotation.strokes?.[0]?.points[0]?.y ?? 0;
     host.current.scrollTop = Math.max(
       0,
       sheet.offsetTop +
         y * sheet.offsetHeight -
         Math.min(120, host.current.clientHeight * 0.22),
     );
+    const rects = segment.rects || [];
+    const points = annotation.strokes?.flatMap(stroke => stroke.points) || [];
+    if (rects.length || points.length) {
+      const left = sheet.offsetLeft + Math.min(...(rects.length ? rects.map(rect => rect.x) : points.map(point => point.x))) * sheet.offsetWidth;
+      const right = sheet.offsetLeft + Math.max(...(rects.length ? rects.map(rect => rect.x + rect.width) : points.map(point => point.x))) * sheet.offsetWidth;
+      const viewport = host.current, margin = 24;
+      if (left < viewport.scrollLeft + margin || right > viewport.scrollLeft + viewport.clientWidth - margin)
+        setHorizontal(Math.max(0, left - margin));
+      else setHorizontal(viewport.scrollLeft);
+    }
     updateVisiblePages();
-  }, [annotationFocus?.id, annotationFocus?.nonce, document]);
+  }, [annotationFocus?.id, annotationFocus?.nonce, annotationFocus?.page, document, width, active]);
 
   useEffect(() => {
     if (!inlineResult && !noteEditor) return;
@@ -880,11 +1117,14 @@ export default function PdfReader({
   useEffect(() => () => cancelAnimationFrame(scrollFrame.current), []);
   const changeZoom = (next: number | null) => {
     rememberPosition();
+    horizontalAnchor.current.left = next === null ? 0 : horizontalAnchor.current.left * next / scale;
     setZoom(next);
   };
 
-  const navigateToPage = (number: number) => {
-    if (!document || !host.current) return;
+  const navigateToPage = (number: number, point?: {x?:number;y?:number}) => {
+    if (!active || !document || !host.current) return;
+    citationRequest.current++;
+    setCitationMatch(null); setCitationStatus(null);
     const next = Math.max(
       1,
       Math.min(document.numPages, Math.trunc(number) || 1),
@@ -892,29 +1132,75 @@ export default function PdfReader({
     const sheet = host.current.querySelector<HTMLElement>(
       `[data-pdf-page="${next}"]`,
     );
+    if (sheet) {
+      const top = Math.max(0, sheet.offsetTop + (point?.y || 0) * sheet.offsetHeight - 16);
+      const left = point?.x === undefined ? host.current.scrollLeft : Math.max(0, sheet.offsetLeft + point.x * sheet.offsetWidth - 24);
+      if (Math.abs(host.current.scrollTop - top) > 2 || Math.abs(host.current.scrollLeft - left) > 2) rememberJump();
+      host.current.scrollTop = top;
+      if (point?.x !== undefined) setHorizontal(left);
+    }
+    updateVisiblePages();
+  };
+  const showSearchResult = (match: PdfSearchMatch | null) => {
+    setSearchMatch(match);
+    if (!match || !host.current || !activeRef.current) return;
+    citationRequest.current++;
+    setCitationMatch(null); setCitationStatus(null);
+    if (!searchOriginSaved.current) { rememberJump(); searchOriginSaved.current = true; }
+    searchLocatedKey.current = "";
+    const sheet = host.current.querySelector<HTMLElement>(`[data-pdf-page="${match.page}"]`);
     if (sheet) host.current.scrollTop = Math.max(0, sheet.offsetTop - 16);
+    updateVisiblePages();
+  };
+  const locateSearchText = (match: PdfSearchMatch, rect: DOMRect) => {
+    const element = host.current;
+    if (!element || searchLocatedKey.current === match.key) return;
+    searchLocatedKey.current = match.key;
+    const bounds = element.getBoundingClientRect();
+    element.scrollTop += rect.top - bounds.top - Math.min(100, element.clientHeight * .22);
+    if (rect.left < bounds.left + 16 || rect.right > bounds.right - 16)
+      setHorizontal(element.scrollLeft + rect.left - bounds.left - 24);
+    else setHorizontal(element.scrollLeft);
+    updateVisiblePages();
+  };
+  const returnToReading = () => {
+    citationRequest.current++;
+    setCitationMatch(null); setCitationStatus(null);
+    const position = navigationHistory.at(-1);
+    if (!position) { onReturnToOverview?.(); return; }
+    setNavigationHistory(history => history.slice(0, -1));
+    const sheet = host.current?.querySelector<HTMLElement>(`[data-pdf-page="${position.page}"]`);
+    if (!host.current || !sheet) return;
+    anchor.current = position;
+    setZoom(position.zoom);
+    host.current.scrollTop = sheet.offsetTop + position.fraction * sheet.offsetHeight;
+    setHorizontal(position.left);
     updateVisiblePages();
   };
   const dismissSelection = (selection: SelectionMenu) => {
     dismissedSelection.current = selection.text;
     setSelectionMenu(null);
   };
-  const askAboutSelection = () => {
-    if (!selectionMenu) return;
-    dismissSelection(selectionMenu);
-    selectionAction.current?.({
-      text: selectionMenu.text,
-      page: selectionMenu.page,
-      intent: "ask",
-      question: selectionQuestion.trim() || undefined,
-    });
+  const askAboutSelection = async () => {
+    if (!selectionMenu || selectionTooLong(selectionMenu) || askingSelection.current) return;
+    const selection = selectionMenu, request = ++inlineRequest.current;
+    askingSelection.current = true; setSelectionAsking(true); setAnnotationError('');
+    try {
+      const accepted = await selectionAction.current?.({text: selection.text, page: selection.page,
+        pages: [...new Set(selection.segments.map(segment => segment.page))].sort((a,b)=>a-b),
+        intent: "ask", question: selectionQuestion.trim() || undefined });
+      if (request !== inlineRequest.current) return;
+      if (accepted) dismissSelection(selection);
+      else setAnnotationError(t('未能创建提问会话，选文与问题已保留，请重试。','Could not create a question session. Your selection and question are preserved; try again.'));
+    } catch (reason) { if(request === inlineRequest.current) setAnnotationError(reason instanceof Error ? reason.message : t('创建会话失败，请重试。','Could not create a session. Try again.')); }
+    finally { askingSelection.current = false; setSelectionAsking(false); }
   };
   const saveAnnotation = async (
     kind: "highlight" | "underline" | "note",
     selection = selectionMenu,
   ) => {
     if (!selection || !onCreateAnnotation || saveBusy.current) return;
-    if (selection.segments.some((segment) => segment.rects.length > 300)) {
+    if (selectionTooLong(selection)) {
       setAnnotationError(
         t(
           "选区过长，请缩短选区后保存。",
@@ -928,21 +1214,9 @@ export default function PdfReader({
     setAnnotationError("");
     setAnnotationStatus("");
     try {
-      const pendingSegments = selection.segments.length
-        ? [...selection.segments]
-        : [
-            {
-              page: selection.page,
-              text: selection.text,
-              rects: selection.rects,
-            },
-          ];
-      for (const segment of pendingSegments) {
-        await onCreateAnnotation({
+      await onCreateAnnotation({
           kind,
-          page: segment.page,
-          quote: segment.text,
-          rects: segment.rects,
+          ...selectionAnchors(selection),
           color: annotationColor,
           ...(kind === "note"
             ? {
@@ -953,16 +1227,12 @@ export default function PdfReader({
                   .filter(Boolean),
               }
             : {}),
-        });
-        selection.segments = selection.segments.filter(
-          (item) => item !== segment,
-        );
-      }
+      });
       dismissSelection(selection);
       setNoteEditor(null);
       setNoteBody("");
       setNoteTags("");
-      setAnnotationStatus(t("已保存到笔记", "Saved to notes"));
+      setAnnotationStatus(selection.segments.length > 1 ? t(`已将 ${selection.segments.length} 页选文保存为一条笔记`, `Saved the ${selection.segments.length}-page selection as one note`) : t("已保存到笔记", "Saved to notes"));
     } catch (reason) {
       setAnnotationError(
         reason instanceof Error
@@ -978,8 +1248,9 @@ export default function PdfReader({
     kind: "translation" | "explanation",
     selection = selectionMenu,
     resultLanguage = selectionLanguage,
+    execution: SelectionExecution = useSelectionAgent ? 'agent' : 'api',
   ) => {
-    if (!selection) return;
+    if (!selection || selectionTooLong(selection)) return;
     dismissSelection(selection);
     setNoteEditor(null);
     const request = ++inlineRequest.current;
@@ -987,10 +1258,11 @@ export default function PdfReader({
       selection,
       kind,
       language: resultLanguage,
-      loading: true,
+      loading: execution === 'api',
       text: "",
       error: "",
     });
+    if (execution === 'agent') return;
     try {
       if (!onInlineAssist)
         throw new Error(
@@ -1002,6 +1274,7 @@ export default function PdfReader({
       const result = await onInlineAssist({
         text: selection.text,
         page: selection.page,
+        pages: [...new Set(selection.segments.map(segment => segment.page))].sort((a,b)=>a-b),
         language: resultLanguage,
         kind,
       });
@@ -1032,7 +1305,7 @@ export default function PdfReader({
   };
   const saveInline = async () => {
     if (!inlineResult?.text || !onCreateAnnotation || saveBusy.current) return;
-    if (inlineResult.selection.rects.length > 300) {
+    if (selectionTooLong(inlineResult.selection)) {
       setAnnotationError(
         t(
           "选区过长，请缩短选区后保存。",
@@ -1048,9 +1321,7 @@ export default function PdfReader({
     try {
       await onCreateAnnotation({
         kind: result.kind,
-        page: result.selection.page,
-        quote: result.selection.text,
-        rects: result.selection.rects,
+        ...selectionAnchors(result.selection),
         body: result.text,
         color: annotationColor,
         language: result.language,
@@ -1204,45 +1475,22 @@ export default function PdfReader({
             className="icon-button"
             aria-label={t("上一页", "Previous page")}
             disabled={!document || visiblePage <= 1}
-            onClick={() => navigateToPage(visiblePage - 1)}
+            onClick={() => navigateToPage(currentPage.current - 1)}
           >
             <ChevronLeft size={16} />
           </button>
-          <input
-            type="number"
-            aria-label={t("PDF 页码", "PDF page number")}
-            min={1}
-            max={document?.numPages || 1}
-            value={visiblePage}
-            disabled={!document}
-            onChange={(event) => navigateToPage(Number(event.target.value))}
-          />
+          <PdfPageNumber page={visiblePage} total={document?.numPages || 1}
+            label={t("PDF 页码", "PDF page number")} disabled={!document} onNavigate={navigateToPage} />
           <span>/ {document?.numPages || "—"}</span>
           <button
             className="icon-button"
             aria-label={t("下一页", "Next page")}
             disabled={!document || visiblePage >= document.numPages}
-            onClick={() => navigateToPage(visiblePage + 1)}
+            onClick={() => navigateToPage(currentPage.current + 1)}
           >
             <ChevronRight size={16} />
           </button>
         </div>
-        {onAskSelection && (
-          <span
-            className="pdf-selection-hint"
-            title={t(
-              "选择文字以标注、解释、翻译或提问；左右方向键翻页",
-              "Select text to annotate, explain, translate or ask; arrow keys change pages",
-            )}
-          >
-            <span className="pdf-selection-hint-full">
-              {t("划词 · 标注 · 翻译", "Select · Annotate · Translate")}
-            </span>
-            <span className="pdf-selection-hint-compact">
-              {t("选择文字", "Select text")}
-            </span>
-          </span>
-        )}
         <div className="pdf-zoom-actions">
           <button
             className="icon-button"
@@ -1265,20 +1513,32 @@ export default function PdfReader({
           </button>
           <button
             className={`pdf-fit-button ${zoom === null ? "is-fit" : ""}`}
+            aria-label={t("适合宽度", "Fit width")}
+            title={t("适合宽度", "Fit width")}
             disabled={!document}
             onClick={() => changeZoom(null)}
           >
-            <Maximize2 size={13} /> {t("适合宽度", "Fit width")}
+            <Maximize2 size={15} /> <span>{t("适合宽度", "Fit width")}</span>
           </button>
         </div>
-        <span
-          className="pdf-continuous-indicator"
-          aria-label={t("当前 PDF 页码", "Current PDF page")}
-        >
-          {document
-            ? `${visiblePage} / ${document.numPages}`
-            : t("连续阅读", "Continuous reading")}
-        </span>
+        <button ref={outlineButton} type="button" className="pdf-outline-toggle" aria-label={t("PDF 目录", "PDF outline")} title={t("PDF 目录", "PDF outline")} aria-expanded={outlineOpen} aria-controls="pdf-outline-panel" onClick={() => { setOutlineOpen(value => !value); setSearchOpen(false); setToolsOpen(false); }}><ListTree size={17} /></button>
+        <button ref={searchButton} type="button" className="pdf-find-toggle" aria-label={t("查找 PDF 正文", "Find in PDF")} title={t("查找 PDF 正文（⌘/Ctrl F）", "Find in PDF (⌘/Ctrl F)")} aria-expanded={searchOpen} onClick={() => { setSearchOpen(value => !value); setToolsOpen(false); setOutlineOpen(false); }}><Search size={16} /></button>
+        {onCreateAnnotation && <button
+          className={`pdf-draw-button ${drawing ? "is-active" : ""}`}
+          aria-pressed={drawing}
+          aria-label={drawing ? t("结束手写", "Finish drawing") : t("手写", "Draw")}
+          title={drawing ? t("结束手写", "Finish drawing") : t("手写", "Draw")}
+          onClick={() => { setDrawing(value => !value); setSelectionMenu(null); window.getSelection()?.removeAllRanges(); }}
+        ><PenLine size={16} /></button>}
+        <div className="pdf-tools" ref={toolsHost}>
+          <button ref={toolsButton} className="pdf-tools-toggle" aria-expanded={toolsOpen} aria-label={t("阅读工具", "Reading tools")} title={t("阅读工具", "Reading tools")} onClick={() => { setToolsOpen(value => !value); setOutlineOpen(false); }}><SlidersHorizontal size={17} /></button>
+          {toolsOpen && <div className="pdf-tools-popover" role="region" aria-label={t("PDF 阅读设置", "PDF reading settings")}>
+            <label className="pdf-paper-colors"><span>{t("纸张", "Paper")}</span>
+              <select aria-label={t("PDF 纸张颜色", "PDF paper colors")} value={paperColors} onChange={event => setPaperColors(event.target.value as "theme" | "original")}>
+                <option value="theme">{t("跟随主题", "Follow theme")}</option><option value="original">{t("原始颜色", "Original colors")}</option>
+              </select>
+            </label>
+            <span className="pdf-theme-color-notice">{t("深色显示会调整图色，核对图表请选「原始颜色」。", "Dark display adjusts figure colors. Choose Original colors to verify charts.")}</span>
         <div className="pdf-source-actions">
           <a
             href={url}
@@ -1298,36 +1558,13 @@ export default function PdfReader({
             <Download size={14} />
           </a>
         </div>
+            <p className="pdf-tools-hint">{t("选择文字可高亮、笔记、翻译或提问。聚焦纸面后，用左右方向键翻页。", "Select text to highlight, annotate, translate or ask. Focus the page and use arrow keys to change pages.")}</p>
+          </div>}
+        </div>
       </div>
-      <div className="pdf-annotation-toolbar">
-        <label className="pdf-paper-colors">
-          <span>{t("纸张", "Paper")}</span>
-          <select
-            aria-label={t("PDF 纸张颜色", "PDF paper colors")}
-            value={paperColors}
-            onChange={(event) =>
-              setPaperColors(event.target.value as "theme" | "original")
-            }
-          >
-            <option value="theme">{t("跟随主题", "Follow theme")}</option>
-            <option value="original">{t("原始颜色", "Original colors")}</option>
-          </select>
-        </label>
+      {(drawing || inkDrafts.length > 0) && <div className="pdf-annotation-toolbar">
         {onCreateAnnotation && (
           <>
-            <button
-              type="button"
-              className={`pdf-ink-toggle ${drawing ? "is-active" : ""}`}
-              aria-pressed={drawing}
-              onClick={() => {
-                setDrawing((value) => !value);
-                setSelectionMenu(null);
-                window.getSelection()?.removeAllRanges();
-              }}
-            >
-              <PenLine size={15} />
-              {drawing ? t("结束手写", "Finish drawing") : t("手写", "Draw")}
-            </button>
             {drawing ? (
               <>
                 {colorPicker("ink")}
@@ -1379,23 +1616,11 @@ export default function PdfReader({
                 </button>
               </>
             )}
-            {(annotationStatus || annotationError) && (
-              <span
-                className={`pdf-annotation-status ${annotationError ? "is-error" : ""}`}
-                role={annotationError ? "alert" : "status"}
-              >
-                {annotationError || annotationStatus}
-              </span>
-            )}
           </>
         )}
-        <span className="pdf-theme-color-notice">
-          {t(
-            "深色显示会调整图色，核对图表请选「原始颜色」。",
-            "Dark display adjusts figure colors. Choose Original colors to verify charts.",
-          )}
-        </span>
-      </div>
+      </div>}
+      <PdfOutline document={document} language={language} open={active && outlineOpen} onClose={() => { setOutlineOpen(false); outlineButton.current?.focus({preventScroll:true}); }} onNavigate={navigateToPage} currentPage={visiblePage} onFind={() => { setOutlineOpen(false); setSearchOpen(true); }} />
+      <PdfSearchBar document={document} language={language} open={active && searchOpen} onClose={() => { setSearchOpen(false); searchButton.current?.focus({preventScroll:true}); }} onResult={showSearchResult} />
       <div
         className="pdf-canvas-viewport"
         ref={host}
@@ -1463,7 +1688,16 @@ export default function PdfReader({
           updateVisiblePages();
         }}
         aria-busy={!document && !error}
+        onCopy={event => {
+          const selection = window.getSelection();
+          if (!selection?.rangeCount || selection.isCollapsed) return;
+          const range = selection.getRangeAt(0);
+          if (!event.currentTarget.contains(range.commonAncestorContainer)) return;
+          const text = selectedPdfText(range, event.currentTarget);
+          if (text) { event.clipboardData.setData("text/plain", text); event.preventDefault(); }
+        }}
         onScroll={() => {
+          recordHorizontalScroll();
           cancelAnimationFrame(scrollFrame.current);
           scrollFrame.current = requestAnimationFrame(updateVisiblePages);
         }}
@@ -1499,11 +1733,11 @@ export default function PdfReader({
                 scale={scale}
                 width={size.width * scale}
                 height={size.height * scale}
-                active={index + 1 >= visible.first && index + 1 <= visible.last}
+                active={active && index + 1 >= visible.first && index + 1 <= visible.last}
                 onNavigate={navigateToPage}
-                annotations={annotations.filter(
-                  (annotation) => annotation.page === index + 1,
-                )}
+                searchMatch={searchMatch?.page === index + 1 ? searchMatch : citationMatch?.page === index + 1 ? citationMatch : null}
+                onSearchLocated={locateSearchText}
+                annotations={annotations.flatMap(annotation => annotationSegments(annotation).filter(segment => segment.page === index + 1).map(segment => ({...annotation,...segment})))}
                 drawing={drawing}
                 annotationColor={inkColor}
                 strokes={inkDrafts.filter((item) => item.page === index + 1)}
@@ -1513,7 +1747,7 @@ export default function PdfReader({
                     { page: index + 1, stroke, color: inkColor },
                   ])
                 }
-                onSelectAnnotation={onSelectAnnotation}
+                onSelectAnnotation={id => onSelectAnnotation?.(id, index + 1)}
                 focusedAnnotation={annotationFocus?.id}
                 language={language}
               />
@@ -1521,7 +1755,16 @@ export default function PdfReader({
           </div>
         )}
       </div>
-      {selectionMenu &&
+      {active && (annotationStatus || (annotationError && !noteEditor && !inlineResult && !selectionMenu)) && <div className={`pdf-annotation-feedback ${annotationError ? "is-error" : ""}`} role={annotationError ? "alert" : "status"}>
+        {annotationError ? <span>{annotationError}</span> : <><Check size={15}/><span>{annotationStatus}</span></>}
+        <button aria-label={t("关闭保存提示", "Dismiss save status")} onClick={() => { setAnnotationStatus(""); setAnnotationError(""); }}><X size={14}/></button>
+      </div>}
+      {active && citationStatus && <div className="pdf-citation-status" role="status">
+        {citationStatus === "loading" ? <><Loader2 size={13} className="spin"/>{t("正在核对引用原文…", "Locating the source passage…")}</> : citationStatus === "matched" ? t(`已定位原文 · p.${citationMatch?.page}`, `Source passage located · p.${citationMatch?.page}`) : citationStatus === "ambiguous" ? t("此页有多处相同文字，已打开源页。", "Several passages match. Opened the source page.") : t("引文未在此页精确匹配，已打开源页。", "No exact passage match. Opened the source page.")}
+        <button aria-label={t("关闭引用定位提示", "Dismiss citation status")} onClick={() => setCitationStatus(null)}><X size={13}/></button>
+      </div>}
+      {active && (navigationHistory.length > 0 || onReturnToOverview) && <button className="pdf-reading-return" onClick={returnToReading}><ArrowLeft size={15} /><span>{navigationHistory.length ? t("回到上次阅读位置", "Back to previous position") : t("返回摘要阅读位置", "Back to overview position")}</span></button>}
+      {active && selectionMenu &&
         !drawing &&
         !inlineResult &&
         !noteEditor &&
@@ -1542,7 +1785,7 @@ export default function PdfReader({
           >
             <div className="pdf-selection-question">
               <span className="pdf-selection-source">
-                p.{selectionMenu.page}
+                {annotationPageLabel(selectionAnchors(selectionMenu))}
               </span>
               {onAskSelection && (
                 <input
@@ -1551,6 +1794,7 @@ export default function PdfReader({
                     "Question about selected text",
                   )}
                   value={selectionQuestion}
+                  disabled={selectionAsking || !!selectionTooLong(selectionMenu)}
                   onChange={(event) => setSelectionQuestion(event.target.value)}
                   placeholder={t(
                     "对这段内容有什么疑问？",
@@ -1580,18 +1824,21 @@ export default function PdfReader({
                 <option value="zh-CN">中文</option><option value="en">English</option>
               </select>
             </label>
+            {paperId && <label className="selection-execution">{t('处理方式','Process with')}<select aria-label={t('选文处理方式','Selection processing method')} value={useSelectionAgent?'agent':'api'} onChange={event=>{const value=event.target.value as SelectionExecution;setSelectionExecution(value);saveSelectionExecution(value);}}><option value="api" disabled={!modelReady}>{t('模型 API','Model API')}</option><option value="agent">Codex / Claude</option></select></label>}
             <div className="pdf-selection-actions">
               {onAskSelection && (
                 <button
                   aria-label={t("询问助手", "Ask assistant")}
+                  disabled={selectionAsking || !!selectionTooLong(selectionMenu)}
                   onClick={askAboutSelection}
                 >
                   <MessageCircle size={15} />
-                  {t("提问", "Ask")}
+                  {selectionAsking ? t("创建中…", "Creating…") : t("提问", "Ask")}
                 </button>
               )}
               <button
                 aria-label={t("解释选中内容", "Explain selection")}
+                disabled={!!selectionTooLong(selectionMenu)}
                 onClick={() => void runInline("explanation")}
               >
                 <Sparkles size={15} />
@@ -1599,6 +1846,7 @@ export default function PdfReader({
               </button>
               <button
                 aria-label={t("翻译选中内容", "Translate selection")}
+                disabled={!!selectionTooLong(selectionMenu)}
                 onClick={() => void runInline("translation")}
               >
                 <Languages size={15} />
@@ -1610,7 +1858,7 @@ export default function PdfReader({
                 {colorPicker()}
                 <div className="pdf-selection-actions">
                   <button
-                    disabled={annotationBusy}
+                    disabled={annotationBusy || !!selectionTooLong(selectionMenu)}
                     aria-label={t("高亮选中内容", "Highlight selection")}
                     onClick={() => void saveAnnotation("highlight")}
                   >
@@ -1618,7 +1866,7 @@ export default function PdfReader({
                     {t("高亮", "Highlight")}
                   </button>
                   <button
-                    disabled={annotationBusy}
+                    disabled={annotationBusy || !!selectionTooLong(selectionMenu)}
                     aria-label={t("划线选中内容", "Underline selection")}
                     onClick={() => void saveAnnotation("underline")}
                   >
@@ -1627,6 +1875,7 @@ export default function PdfReader({
                   </button>
                   <button
                     aria-label={t("添加选区笔记", "Add selection note")}
+                    disabled={!!selectionTooLong(selectionMenu)}
                     onClick={() => {
                       dismissSelection(selectionMenu);
                       setNoteEditor(selectionMenu);
@@ -1641,6 +1890,7 @@ export default function PdfReader({
                 </div>
               </div>
             )}
+            {selectionTooLong(selectionMenu) && <p role="alert" className="pdf-popover-error">{t('选区过长。请缩短至 12,000 字、20 页以内，再进行提问、翻译或保存。','This selection is too long. Select at most 12,000 characters across 20 pages before asking, translating or saving.')}</p>}
             {annotationError && (
               <p role="alert" className="pdf-popover-error">
                 {annotationError}
@@ -1649,7 +1899,7 @@ export default function PdfReader({
           </div>,
           window.document.body,
         )}
-      {noteEditor &&
+      {active && noteEditor &&
         createPortal(
           <div
             className="pdf-note-editor"
@@ -1660,7 +1910,7 @@ export default function PdfReader({
             <header>
               <strong>
                 <StickyNote size={15} />
-                {t("笔记", "Note")} · p.{noteEditor.page}
+                {t("笔记", "Note")} · {annotationPageLabel(selectionAnchors(noteEditor))}
               </strong>
               <button
                 aria-label={t("关闭笔记编辑", "Close note editor")}
@@ -1705,7 +1955,7 @@ export default function PdfReader({
           </div>,
           window.document.body,
         )}
-      {inlineResult &&
+      {active && inlineResult &&
         createPortal(
           <div
             className="pdf-inline-assist"
@@ -1723,7 +1973,7 @@ export default function PdfReader({
                 {inlineResult.kind === "translation"
                   ? t("翻译", "Translation")
                   : t("解释", "Explanation")}{" "}
-                · p.{inlineResult.selection.page}
+                · {annotationPageLabel(selectionAnchors(inlineResult.selection))}
               </strong>
               <div>
                 <select
@@ -1754,6 +2004,7 @@ export default function PdfReader({
               </div>
             </header>
             <div className="pdf-inline-scroll">
+              {paperId && <label className="selection-execution">{t('处理方式','Process with')}<select aria-label={t('就地处理方式','Inline processing method')} value={useSelectionAgent?'agent':'api'} onChange={event=>{const value=event.target.value as SelectionExecution;setSelectionExecution(value);saveSelectionExecution(value);void runInline(inlineResult.kind,inlineResult.selection,inlineResult.language,value);}}><option value="api" disabled={!modelReady}>{t('模型 API','Model API')}</option><option value="agent">Codex / Claude</option></select></label>}
               <details>
                 <summary>{t("原文", "Original text")}</summary>
                 <blockquote>{inlineResult.selection.text}</blockquote>
@@ -1769,9 +2020,9 @@ export default function PdfReader({
                 </p>
               ) : (
                 <div className="pdf-inline-markdown">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  <Mark>
                     {inlineResult.text}
-                  </ReactMarkdown>
+                  </Mark>
                 </div>
               )}
               {annotationError && (
@@ -1779,9 +2030,15 @@ export default function PdfReader({
                   {annotationError}
                 </p>
               )}
+              {paperId && <AgentSelectionBridge
+                key={selectionBindingKey({paperId,sourceScope:'pdf',page:inlineResult.selection.page,pages:inlineResult.selection.segments.map(segment=>segment.page),text:inlineResult.selection.text,kind:inlineResult.kind,language:inlineResult.language})}
+                binding={{paperId,sourceScope:'pdf',page:inlineResult.selection.page,pages:inlineResult.selection.segments.map(segment=>segment.page),text:inlineResult.selection.text,kind:inlineResult.kind,language:inlineResult.language}}
+                primary={useSelectionAgent}
+                onResult={activity=>{inlineRequest.current++;setInlineResult(current=>current ? {...current,text:activity.result!.text,source:activity.source?.model || activity.source?.agent || t('订阅助手','Subscription agent'),loading:false,error:'',saved:false} : current);}}/>}
             </div>
             <footer>
-              <button
+              {inlineResult.source && <span className="inline-result-source" title={inlineResult.source}>{inlineResult.source}</span>}
+              {!useSelectionAgent && <button
                 disabled={inlineResult.loading}
                 onClick={() =>
                   void runInline(
@@ -1793,7 +2050,7 @@ export default function PdfReader({
               >
                 <RefreshCw size={14} />
                 {t("重试", "Retry")}
-              </button>
+              </button>}
               {onCreateAnnotation && (
                 <button
                   disabled={

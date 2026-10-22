@@ -9,6 +9,7 @@ import {
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import {
   ArrowUpRight,
+  Download,
   Loader2,
   RefreshCw,
   X,
@@ -30,6 +31,8 @@ type Props = {
   page: number;
   crop?: FigureCrop;
   caption?: string;
+  captionIsOriginal?: boolean;
+  captionLanguage?: string;
   onOpenPage?: (page: number) => void;
 };
 type SharedPdf = {
@@ -77,6 +80,8 @@ export default function PdfFigure({
   page,
   crop,
   caption,
+  captionIsOriginal,
+  captionLanguage,
   onOpenPage,
 }: Props) {
   const { t, locale } = useLocale();
@@ -240,7 +245,7 @@ export default function PdfFigure({
         )}
       </div>
       <figcaption>
-        <span>{caption || (crop ? t("论文原图") : t("论文页面预览"))}</span>
+        <span lang={captionLanguage}>{caption || (crop ? t("论文原图") : t("论文页面预览"))}{captionIsOriginal && <small className="muted-label"> · {t("原文图注", "Original caption")}</small>}</span>
         <button
           className="pdf-figure-citation"
           aria-label={t(`在论文中查看第 ${page} 页图表`, `View figure on page ${page} in the paper`)}
@@ -256,6 +261,9 @@ export default function PdfFigure({
           page={page}
           crop={crop}
           caption={caption}
+          captionIsOriginal={captionIsOriginal}
+          captionLanguage={captionLanguage}
+          onOpenPage={onOpenPage}
           onClose={() => setEnlarged(false)}
         />
       )}
@@ -269,14 +277,35 @@ function FigureLightbox({
   page,
   crop,
   caption,
+  captionIsOriginal,
+  captionLanguage,
+  onOpenPage,
   onClose,
-}: Omit<Props, "onOpenPage"> & { onClose: () => void }) {
+}: Props & { onClose: () => void }) {
   const { t, locale } = useLocale();
   const dialog = useRef<HTMLDialogElement>(null);
   const scrollArea = useRef<HTMLDivElement>(null);
   const canvasHost = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState(1);
   const [availableWidth, setAvailableWidth] = useState(0);
+  const [availableHeight, setAvailableHeight] = useState(0);
+  const pan = useRef<{x:number;y:number;left:number;top:number;pointerId:number} | undefined>(undefined);
+  const zoomCenter = useRef<{x:number;y:number} | undefined>(undefined);
+  const changeZoom = (next:number) => {
+    const area = scrollArea.current;
+    if (area) zoomCenter.current = { x:(area.scrollLeft + area.clientWidth/2)/area.scrollWidth, y:(area.scrollTop + area.clientHeight/2)/area.scrollHeight };
+    setZoom(next);
+  };
+  const downloadFigure = () => {
+    const canvas = canvasHost.current?.querySelector("canvas[data-rendered='true']");
+    if (!(canvas instanceof HTMLCanvasElement)) return;
+    canvas.toBlob(blob => {
+      if (!blob) return;
+      const href = URL.createObjectURL(blob), link = document.createElement('a');
+      link.href = href; link.download = `figure-page-${page}.png`; link.click();
+      setTimeout(() => URL.revokeObjectURL(href), 1000);
+    }, 'image/png');
+  };
   const [status, setStatus] = useState<"loading" | "ready" | "error">(
     "loading",
   );
@@ -294,9 +323,10 @@ function FigureLightbox({
         ? document.activeElement
         : null;
     element.showModal();
-    const observer = new ResizeObserver(() =>
-      setAvailableWidth(Math.max(1, area.clientWidth - 32)),
-    );
+    const observer = new ResizeObserver(() => {
+      setAvailableWidth(Math.max(1, area.clientWidth - 32));
+      setAvailableHeight(Math.max(1, area.clientHeight - 32));
+    });
     observer.observe(area);
     return () => {
       observer.disconnect();
@@ -306,7 +336,7 @@ function FigureLightbox({
   }, []);
   useEffect(() => {
     const element = canvasHost.current;
-    if (!element || !availableWidth) return;
+    if (!element || !availableWidth || !availableHeight) return;
     const shared = acquire(url);
     let disposed = false;
     let task: RenderTask | undefined;
@@ -319,8 +349,9 @@ function FigureLightbox({
       );
       if (disposed) return;
       const natural = pdfPage.getViewport({ scale: 1 });
-      const displayWidth = availableWidth * zoom;
-      const scale = displayWidth / (natural.width * cropWidth);
+      const fittedScale = Math.min(availableWidth / (natural.width * cropWidth), availableHeight / (natural.height * cropHeight));
+      const scale = fittedScale * zoom;
+      const displayWidth = natural.width * cropWidth * scale;
       const viewport = pdfPage.getViewport({ scale });
       const displayHeight = viewport.height * cropHeight;
       const density = Math.min(
@@ -337,6 +368,14 @@ function FigureLightbox({
       canvas.setAttribute("aria-label", caption || t(`第 ${page} 页图表放大预览`, `Enlarged figure on page ${page}`));
       canvas.dataset.figurePage = String(page);
       element.replaceChildren(canvas);
+      const area = scrollArea.current;
+      if (area && zoom === 1) {
+        area.scrollLeft = 0; area.scrollTop = 0; zoomCenter.current = undefined;
+      } else if (area && zoomCenter.current) {
+        area.scrollLeft = zoomCenter.current.x * area.scrollWidth - area.clientWidth/2;
+        area.scrollTop = zoomCenter.current.y * area.scrollHeight - area.clientHeight/2;
+        zoomCenter.current = undefined;
+      }
       task = pdfPage.render({
         canvas,
         viewport,
@@ -376,6 +415,7 @@ function FigureLightbox({
     cropWidth,
     cropHeight,
     availableWidth,
+    availableHeight,
     zoom,
     retry,
     caption,
@@ -396,25 +436,26 @@ function FigureLightbox({
     >
       <div className="pdf-figure-lightbox-shell">
         <header className="pdf-figure-lightbox-toolbar">
-          <span>{t("论文原图 · p.")}{page}</span>
+          {onOpenPage ? <button className="pdf-figure-source-link" onClick={() => { onClose(); onOpenPage(page); }}><span>{t("图表来自", "Figure from")} p.{page}</span><ArrowUpRight size={14}/></button> : <span>{t("论文原图 · p.")}{page}</span>}
           <div>
             <button
               aria-label={t("缩小图表")}
               disabled={zoom <= 1}
-              onClick={() => setZoom((z) => Math.max(1, z - 0.25))}
+              onClick={() => changeZoom(Math.max(1, zoom - 0.25))}
             >
               <ZoomOut size={18} />
             </button>
-            <button aria-label={t("图表适应窗口")} onClick={() => setZoom(1)}>
+            <button aria-label={t("图表适应窗口")} onClick={() => changeZoom(1)}>
               {Math.round(zoom * 100)}%
             </button>
             <button
               aria-label={t("放大图表")}
               disabled={zoom >= 3}
-              onClick={() => setZoom((z) => Math.min(3, z + 0.25))}
+              onClick={() => changeZoom(Math.min(3, zoom + 0.25))}
             >
               <ZoomIn size={18} />
             </button>
+            <button aria-label={t("下载原图裁切", "Download figure crop")} title={t("下载原图裁切", "Download figure crop")} disabled={status !== "ready"} onClick={downloadFigure}><Download size={18}/></button>
             <button aria-label={t("关闭图表")} onClick={onClose} autoFocus>
               <X size={20} />
             </button>
@@ -425,6 +466,23 @@ function FigureLightbox({
           ref={scrollArea}
           tabIndex={0}
           aria-label={t("可滚动的图表预览")}
+          data-zoomed={zoom > 1}
+          title={zoom > 1 ? t("拖动查看，方向键平移", "Drag to pan, or use arrow keys") : undefined}
+          onPointerDown={event => {
+            if (event.pointerType !== "mouse" || event.button !== 0 || zoom <= 1) return;
+            const area = event.currentTarget;
+            pan.current = {x:event.clientX,y:event.clientY,left:area.scrollLeft,top:area.scrollTop,pointerId:event.pointerId};
+            area.setPointerCapture(event.pointerId); area.dataset.panning = "true"; event.preventDefault();
+          }}
+          onPointerMove={event => {
+            if (!pan.current || pan.current.pointerId !== event.pointerId) return;
+            event.currentTarget.scrollLeft = pan.current.left + pan.current.x - event.clientX;
+            event.currentTarget.scrollTop = pan.current.top + pan.current.y - event.clientY;
+          }}
+          onPointerUp={event => {
+            if (pan.current?.pointerId === event.pointerId) { pan.current = undefined; event.currentTarget.releasePointerCapture(event.pointerId); delete event.currentTarget.dataset.panning; }
+          }}
+          onLostPointerCapture={event => { pan.current = undefined; delete event.currentTarget.dataset.panning; }}
         >
           <div className="pdf-figure-lightbox-canvas" ref={canvasHost} />
         </div>
@@ -439,7 +497,7 @@ function FigureLightbox({
             <button onClick={() => setRetry((n) => n + 1)}>{t("重试")}</button>
           </div>
         )}
-        {caption && <footer>{caption}</footer>}
+        {caption && <footer lang={captionLanguage}>{caption}{captionIsOriginal && <small className="muted-label"> · {t("原文图注", "Original caption")}</small>}</footer>}
       </div>
     </dialog>
   );

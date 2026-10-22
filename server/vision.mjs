@@ -110,7 +110,7 @@ export function visualEvidenceRecord(input, markdown, language, model) {
   };
 }
 
-function currentVisualEvidence(paper) {
+export function currentVisualEvidence(paper) {
   const seen = new Set();
   // Records are appended when inference completes. Choose each figure's latest
   // record before checking its source; a stale latest crop must not resurrect an

@@ -317,7 +317,9 @@ test.describe("Repeatable UI acceptance", () => {
     await page.getByRole("button", { name: "生成解读", exact: true }).click();
     expect((await generation).postDataJSON()).toMatchObject({ style: "deep", focus: "Check uncertainty and limitations.", adversarial: true, language: "zh-CN" });
     await expect(page.getByRole("heading", { name: "Reviewed report", exact: true })).toBeVisible();
-    await expect(page.locator(".reading-provenance")).toContainText("深入研读");
+    await page.locator(".reading-version-details > summary").click();
+    await expect(page.locator(".reading-version-detail-body")).toContainText("深入研读");
+    await page.locator(".reading-version-details > summary").click();
     await page.getByText("复核过程", { exact: false }).click();
     await expect(
       page.getByText("Initial evidence-based draft.", { exact: true }),
@@ -488,6 +490,7 @@ test.describe("Repeatable UI acceptance", () => {
       "10",
     );
     await page.getByLabel("PDF 页码", { exact: true }).fill("20");
+    await page.getByLabel("PDF 页码", { exact: true }).press("Enter");
     await expect(
       page.locator(
         '.pdf-reader canvas[data-page-number="20"][data-rendered="true"]',
@@ -503,6 +506,8 @@ test.describe("Repeatable UI acceptance", () => {
   test("reader selection asks about an exact quote, translates and keeps native navigation", async ({
     page,
   }, info) => {
+    await page.route('**/api/settings',route=>route.fulfill({json:{provider:'openai',baseUrl:'https://example.org/v1',model:'fixture-model',modelConfigured:true,apiKeyConfigured:false}}));
+    await page.reload();
     const pdf = await researchPdf(page, "selection interaction", true);
     await page.route("**/test-selection.pdf", (route) =>
       route.fulfill({ contentType: "application/pdf", body: pdf }),
@@ -597,7 +602,7 @@ test.describe("Repeatable UI acceptance", () => {
     );
     await expect(menu).toHaveCount(0);
     expect(sent).toBe(0);
-    expect(startedSessions).toEqual([{ paperId: "ui-paper", kind: "question", metadata: { quote: selected, page: 1 } }]);
+    expect(startedSessions).toEqual([{ paperId: "ui-paper", kind: "question", metadata: { quote: selected, page: 1, pages: [1], sourceScope: 'pdf' } }]);
     await page
       .context()
       .grantPermissions(["clipboard-read", "clipboard-write"]);
@@ -862,6 +867,7 @@ test("real backend: PDF upload, extractive report, question and persisted favori
   const favorite = page.getByRole("button", { name: "收藏论文", exact: true });
   if (await favorite.isVisible()) await favorite.click();
   await page.reload();
+  await expect(page.getByRole("tab", { name: "摘要", exact: true })).toBeVisible();
   await expect(
     page.getByRole("button", { name: "取消收藏", exact: true }),
   ).toBeVisible();
@@ -900,7 +906,7 @@ test("real backend: PDF upload, extractive report, question and persisted favori
     }),
   ).toHaveCount(0);
   await page.reload();
-  await page.getByTitle("切换助手", { exact: true }).click();
+  await expect(page.getByRole("button", { name: "对话历史", exact: true })).toBeVisible();
   await expect(
     page.getByText("Local extractive mode · no model was called", {
       exact: true,

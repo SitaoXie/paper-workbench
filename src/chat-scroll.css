@@ -1,0 +1,6 @@
+.conversation-frame { position:relative; display:flex; flex:1 1 0; flex-direction:column; min-height:0; min-width:0; }
+.conversation-frame > .conversation { overflow-anchor:none; scroll-behavior:auto; }
+.chat-latest { position:absolute; z-index:2; bottom:12px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:6px; min-height:36px; max-width:calc(100% - 32px); padding:7px 12px; border:1px solid var(--line); border-radius:24px; background:var(--panel); box-shadow:0 2px 12px #25191d18; color:var(--secondary); font-size:12px; white-space:nowrap; }
+.chat-latest.has-unread { color:var(--accent); border-color:var(--accent); }
+.chat-latest:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+@media (max-width:999px) { .chat-latest { min-height:44px; bottom:8px; } }

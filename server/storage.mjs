@@ -4,6 +4,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { readingState } from "./reading.mjs";
 import { visualEvidenceMatches } from "./vision.mjs";
 import { usableInteractiveTranslation, INTERACTIVE_TRANSLATION_INCOMPLETE } from "./interactive.mjs";
+import { captionSources, usableFigureCaptions, CAPTION_TRANSLATION_INCOMPLETE } from "./captions.mjs";
 
 export const defaultSettings = {
   provider: "openai",
@@ -174,16 +175,32 @@ export function contentHash(text) {
 
 /** Filter invalid legacy display blocks without mutating or discarding stored history. */
 export function publicReadingTranslation(translation, original, { language, pageCount, figures = [] } = {}) {
-  if (!translation || !original?.interactive) return translation;
+  if (!translation || !original) return translation;
   const result = { ...translation };
-  if (usableInteractiveTranslation(translation.interactive, original.interactive, {
-    language, pageCount, figures: original.figures || figures,
-  })) {
-    delete result.interactiveTranslationError;
+  const boundFigures = original.figures || figures;
+  if (original.interactive) {
+    if (usableInteractiveTranslation(translation.interactive, original.interactive, {
+      language, pageCount, figures: boundFigures,
+    })) {
+      delete result.interactiveTranslationError;
+    } else {
+      delete result.interactive;
+      result.interactiveTranslationError = typeof translation.interactiveTranslationError === "string"
+        ? translation.interactiveTranslationError.slice(0, 1000) : INTERACTIVE_TRANSLATION_INCOMPLETE;
+    }
+  }
+  if (captionSources(boundFigures).length) {
+    if (usableFigureCaptions(translation, boundFigures, { language })) delete result.captionTranslationError;
+    else {
+      delete result.figureCaptions;
+      delete result.figureCaptionsSourceHash;
+      result.captionTranslationError = typeof translation.captionTranslationError === "string"
+        ? translation.captionTranslationError.slice(0, 1000) : CAPTION_TRANSLATION_INCOMPLETE;
+    }
   } else {
-    delete result.interactive;
-    result.interactiveTranslationError = typeof translation.interactiveTranslationError === "string"
-      ? translation.interactiveTranslationError.slice(0, 1000) : INTERACTIVE_TRANSLATION_INCOMPLETE;
+    delete result.figureCaptions;
+    delete result.figureCaptionsSourceHash;
+    delete result.captionTranslationError;
   }
   return result;
 }

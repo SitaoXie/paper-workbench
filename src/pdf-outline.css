@@ -1,0 +1,18 @@
+.pdf-outline-panel{position:absolute;inset-inline-start:10px;z-index:24;display:flex;flex-direction:column;inline-size:min(380px,calc(100% - 20px));min-width:0;overflow:hidden;background:var(--panel,#fff);color:var(--text,#292725);border:1px solid var(--line,#dedbd6);border-radius:12px;box-shadow:0 10px 34px #0002;font-size:13px;text-align:start}
+.pdf-outline-panel>header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border-bottom:1px solid var(--line,#dedbd6);flex-shrink:0}
+.pdf-outline-panel h2{display:flex;align-items:center;gap:7px;font-size:14px;font-weight:600;line-height:1.4;font-family:inherit;margin:0}
+.pdf-outline-panel button{font:inherit;color:inherit;cursor:pointer;border:0;background:transparent;border-radius:6px}
+.pdf-outline-panel button:focus-visible{outline:2px solid var(--accent,#85514a);outline-offset:-2px}
+.pdf-outline-close,.pdf-outline-expand{display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.pdf-outline-close{width:32px;height:32px;padding:0}.pdf-outline-close:hover,.pdf-outline-expand:hover{background:var(--hover,#f3f1ed)}
+.pdf-outline-scroll{min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:5px 6px}
+.pdf-outline-list{list-style:none;margin:0;padding:0}.pdf-outline-list li{margin:0;padding:0}
+.pdf-outline-row{display:flex;align-items:flex-start;min-width:0;border-radius:7px;gap:2px}
+.pdf-outline-expand,.pdf-outline-indent{width:25px;height:36px;margin-top:2px;flex-shrink:0;padding:0}
+.pdf-outline-link{flex:1;min-width:0;text-align:start;padding:8px 7px;line-height:1.45;display:block}
+.pdf-outline-title{display:block;white-space:normal;overflow-wrap:anywhere;word-break:normal}.pdf-outline-link small{display:block;color:var(--muted,#79746e);font-size:11px;line-height:1.5;margin-top:3px}
+.pdf-outline-link:hover:not(:disabled){background:var(--hover,#f3f1ed)}.pdf-outline-link:disabled{cursor:default;opacity:.65}
+.pdf-outline-list li.is-current>.pdf-outline-row{background:var(--tint,#f5ebe7)}.pdf-outline-list li.is-current>.pdf-outline-row .pdf-outline-title{font-weight:600}.pdf-outline-current{color:var(--accent,#85514a)}
+.pdf-outline-message{padding:10px 9px;line-height:1.6;color:var(--muted,#79746e)}.pdf-outline-message[role=status]{display:flex;align-items:center;gap:8px}.pdf-outline-message p{margin:0 0 10px}.pdf-outline-message button{display:inline-flex;align-items:center;gap:6px;background:var(--hover,#f3f1ed);padding:7px 10px;color:var(--text,#292725)}
+.pdf-outline-panel>footer{padding:8px 12px;font-size:10px;line-height:1.5;color:var(--muted,#79746e);border-top:1px solid var(--line,#dedbd6);flex-shrink:0}
+@media(max-width:600px){.pdf-outline-panel{inset-inline-start:6px;inline-size:calc(100% - 12px)}.pdf-outline-close{width:38px;height:38px}.pdf-outline-expand,.pdf-outline-indent{width:28px;height:40px}.pdf-outline-link{padding-block:10px;font-size:13px}}
