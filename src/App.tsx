@@ -229,6 +229,9 @@ export default function App() {
   const pendingChats = useRef(new Set<string>());
   const chatScroll = useChatScroll(chatContext.current.key, chat, chatting);
   const navigationRevision = useRef(0);
+  // A history lookup can be superseded while the displayed paper stays mounted.
+  // Keep that intent separate from its still-valid detail/conversation load.
+  const navigationIntent = useRef(0);
   const initialized = useRef(false);
   const initialNavigation = useRef((() => {
     const route=workspaceLocation(location.href),params=new URLSearchParams(location.search);
@@ -423,6 +426,7 @@ export default function App() {
     if (initialized.current) return;
     initialized.current = true;
     const revision = navigationRevision.current;
+    const intent = navigationIntent.current;
     api<{ papers: Paper[] }>("/papers")
       .then((r) => setPapers(r.papers))
       .catch((e) => setError(e.message));
@@ -432,8 +436,8 @@ export default function App() {
     const { paperId: id, page, tab:initialTab,restoration } = initialNavigation.current;
     if (id)
       api<{ paper: Paper }>(`/papers/${encodeURIComponent(id)}`)
-        .then((r) => { if (navigationRevision.current === revision) openPaper(r.paper, { page,tab:initialTab,historyMode:'replace',restoration }); })
-        .catch((e) => { if (navigationRevision.current === revision) setError(e.message); });
+        .then((r) => { if (navigationRevision.current === revision && navigationIntent.current === intent) openPaper(r.paper, { page,tab:initialTab,historyMode:'replace',restoration }); })
+        .catch((e) => { if (navigationRevision.current === revision && navigationIntent.current === intent) setError(e.message); });
     else {const entryId=crypto.randomUUID();historyEntry.current=entryId;history.replaceState(workspaceHistoryState({version:1,view,entryId}),'',location.href);}
   }, []);
   useEffect(() => {
@@ -920,6 +924,7 @@ export default function App() {
     if(!historyCacheTimer.current)historyCacheTimer.current=setTimeout(()=>{historyCacheTimer.current=undefined;saveWorkspaceHistoryPositions(historyPositions.current);},200);
   }
   function recordWorkspaceNavigation(url:string,next:WorkspaceHistory,replace=false){
+    navigationIntent.current++;
     if(!replace){rememberOverview(true);saveWorkspaceHistory();}
     clearTimeout(historyRestoreTimer.current);historySuppressed.current=false;
     const entryId=replace?(readWorkspaceHistory(history.state)?.entryId||crypto.randomUUID()):crypto.randomUUID();historyEntry.current=entryId;
@@ -928,6 +933,7 @@ export default function App() {
   }
   const historyNavigation=useRef<(event:PopStateEvent)=>void>(()=>{});
   historyNavigation.current=event=>{
+    const intent=++navigationIntent.current;
     historySuppressed.current=true;clearTimeout(historyRestoreTimer.current);
     // Popstate fires before React hides the departing reader. Capture the last
     // pixel synchronously, including a scroll whose RAF has not run yet.
@@ -966,12 +972,12 @@ export default function App() {
       }
       return;
     }
-    const revision=++navigationRevision.current;
+    const revision=navigationRevision.current;
     const cached=papers.find(item=>item.id===targetId);
     if(cached){void openPaper(cached,{page:route.page,tab:destination?.tab||route.tab,historyMode:'none',restoration:destination});return;}
     void api<{paper:Paper}>(`/papers/${encodeURIComponent(targetId)}`).then(result=>{
-      if(navigationRevision.current===revision)void openPaper(result.paper,{page:route.page,tab:destination?.tab||route.tab,historyMode:'none',restoration:destination});
-    }).catch(reason=>{if(navigationRevision.current===revision){navigate('library','none');setError((reason as Error).message);}});
+      if(navigationIntent.current===intent&&navigationRevision.current===revision)void openPaper(result.paper,{page:route.page,tab:destination?.tab||route.tab,historyMode:'none',restoration:destination});
+    }).catch(reason=>{if(navigationIntent.current===intent&&navigationRevision.current===revision){navigate('library','none');setError((reason as Error).message);}});
   };
   const historyExit=useRef(()=>{});
   historyExit.current=()=>{

@@ -4,6 +4,7 @@ import { mathFromMarkdown } from "mdast-util-math";
 import { math } from "micromark-extension-math";
 import { ApiError } from "./network.mjs";
 import { hasUsableResultText } from "./translation-language.mjs";
+import { proseCitations } from "../shared/prose-citations.mjs";
 
 const FAILURE = "The translation changed or lost a source citation or figure marker. No translated article was saved. Retry the translation or import a corrected translation from your agent.";
 const parse = value => fromMarkdown(value, { extensions: [math()], mdastExtensions: [mathFromMarkdown()] });
@@ -62,14 +63,9 @@ function plainPageBindings(markdown) {
   const bindings = [];
   function visit(node) {
     if (["code", "inlineCode", "math", "inlineMath", "html", "link", "linkReference", "image", "imageReference"].includes(node.type)) return;
-    if (node.type === "text" && markdown.slice(offset(node, "start"), offset(node, "end")) === node.value) {
-      for (const match of node.value.matchAll(/\[((?:pp?\.?\s*\d)[^\]\n]{0,100}|第\s*\d{1,4}\s*页)\]/gi)) {
-        const parts = match[1].replace(/^第\s*(\d+)\s*页$/, "p.$1").split(/\s*[,;，、]\s*/);
-        if (parts.length > 12) continue;
-        const pages = parts.map(part => /^(?:pp?\.?\s*)?(\d{1,4})(?:\s*[-–—]\s*(?:pp?\.?\s*)?(\d{1,4}))?$/i.exec(part));
-        if (pages.some(page => !page || Number(page[1]) < 1 || (page[2] && Number(page[2]) < Number(page[1])))) continue;
-        for (const page of pages) bindings.push(JSON.stringify([Number(page[1]), Number(page[2] || page[1])]));
-      }
+    if (node.type === "text") {
+      for (const citation of proseCitations(markdown.slice(offset(node, "start"), offset(node, "end")), node.value))
+        for (const { page, lastPage } of citation.pages || []) bindings.push(JSON.stringify([page, lastPage || page]));
     }
     for (const child of node.children || []) visit(child);
   }

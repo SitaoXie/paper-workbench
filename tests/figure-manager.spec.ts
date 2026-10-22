@@ -53,3 +53,61 @@ test('manual drawing retains the selected table caption while new crop preserves
  await dialog.getByRole('button',{name:'Manual crop',exact:true}).click();await expect(caption).toHaveValue(text);await expect(label).toHaveValue(title);await expect(candidates).toHaveValue(key!);await setCrop(page);await caption.fill(text+' Checked source.');
  await dialog.getByRole('button',{name:'New crop',exact:true}).click();await expect(caption).toHaveValue('');await dialog.getByText('Unsaved drafts',{exact:true}).click();await dialog.getByRole('button',{name:new RegExp('^'+title)}).click();await expect(caption).toHaveValue(text+' Checked source.');await expect(dialog.getByLabel('Crop left percent',{exact:true})).toHaveValue('10');
 });
+
+async function reopenManager(page:Page){
+ await page.getByRole('button',{name:'Reading tools',exact:true}).click();await page.getByRole('button',{name:'Review figure crops',exact:true}).click();const dialog=page.getByRole('dialog',{name:'Review paper figures',exact:true});await expect(dialog.getByRole('img',{name:'Original PDF page 1',exact:true})).toBeVisible();return dialog;
+}
+async function delaySaveResponse(page:Page,paperId:string,method:'POST'|'PATCH'){
+ let release!:()=>void,committed!:(value:any)=>void;const gate=new Promise<void>(resolve=>{release=resolve;}),stored=new Promise<any>(resolve=>{committed=resolve;});
+ await page.route(`**/api/papers/${paperId}/figures**`,async route=>{if(route.request().method()!==method){await route.continue();return;}const response=await route.fetch();const result=await response.json();expect(response.ok(),JSON.stringify(result)).toBeTruthy();committed(result);await gate;await route.fulfill({response});});
+ return {release,stored};
+}
+for(const mode of ['existing','new','storage-blocked'] as const)test(`late figure save preserves reopened edits and avoids duplicate creation (${mode})`,async({page,request},info)=>{
+ const paper=await source(page,request,`late ${mode} ${info.project.name}`);let initial=await(await request.get(`/api/papers/${paper.id}/figures`)).json();let id:string|undefined;
+ if(mode==='existing'){
+  const response=await request.post(`/api/papers/${paper.id}/figures`,{data:{pdfRevision:initial.pdfRevision,expectedFiguresRevision:initial.figuresRevision,figure:{page:1,caption:'Original caption',label:'Race target',crop:{x:.1,y:.15,width:.75,height:.3}},source:{method:'manual',reviewed:true}}});expect(response.ok()).toBeTruthy();id=(await response.json()).figure.id;
+ }
+ if(mode==='storage-blocked')await page.addInitScript(()=>{const original=Storage.prototype.setItem;Storage.prototype.setItem=function(key,value){if(this===sessionStorage&&key.startsWith('pw-figure-drafts:'))throw new DOMException('Storage full','QuotaExceededError');return original.call(this,key,value);};});
+ let dialog=await openManager(page,paper.id);
+ if(id){await dialog.getByText(/Saved figures \(/).click();await dialog.getByRole('button',{name:/^Race target/}).click();}else await setCrop(page);
+ await dialog.getByLabel('Source caption',{exact:true}).fill('Submitted caption A');await dialog.getByLabel('I checked the full crop and source caption',{exact:true}).check();
+ const delayed=await delaySaveResponse(page,paper.id,id?'PATCH':'POST');
+ try{
+  await dialog.getByRole('button',{name:id?'Save changes':'Save figure',exact:true}).click();const saved=await delayed.stored;id=saved.figure.id;
+  await dialog.getByRole('button',{name:'Close figure review',exact:true}).click();dialog=await reopenManager(page);
+  await dialog.getByLabel('Source caption',{exact:true}).fill('Newer caption B');await dialog.getByLabel('Crop left percent',{exact:true}).fill('12');
+  await expect(dialog).toContainText('The previous save is still finishing.');await expect(dialog.getByRole('button',{name:mode==='existing'?'Save changes':'Save figure',exact:true})).toBeDisabled();await expect(dialog.getByRole('button',{name:'Load latest figures',exact:true})).toBeDisabled();
+  const settled=page.waitForResponse(response=>response.url().endsWith(`/figures${mode==='existing'?'/'+id:''}`)&&response.request().method()===(mode==='existing'?'PATCH':'POST'));
+  delayed.release();await settled;
+  await expect(dialog.getByRole('button',{name:'Save changes',exact:true})).toBeVisible();
+  await dialog.getByRole('button',{name:'Close figure review',exact:true}).click();dialog=await reopenManager(page);
+  await expect(dialog.getByLabel('Source caption',{exact:true})).toHaveValue('Newer caption B');await expect(dialog.getByLabel('Crop left percent',{exact:true})).toHaveValue('12');
+  await expect(dialog.getByRole('button',{name:'Load latest figures',exact:true})).toHaveCount(0);
+  await dialog.getByLabel('I checked the full crop and source caption',{exact:true}).check();await dialog.getByRole('button',{name:'Save changes',exact:true}).click();await expect(dialog.getByRole('status')).toContainText('Saved.');
+  const final=await(await request.get(`/api/papers/${paper.id}/figures`)).json();expect(final.figures).toHaveLength(saved.figures.length);expect(final.figures.find((f:any)=>f.id===id).caption).toBe('Newer caption B');expect(final.figures.find((f:any)=>f.id===id).crop.x).toBe(.12);
+ }finally{delayed.release();}
+});
+
+test('a save completed while closed reopens as a clean saved figure',async({page,request},info)=>{
+ const paper=await source(page,request,`closed completion ${info.project.name}`);let dialog=await openManager(page,paper.id);await setCrop(page);await dialog.getByLabel('Source caption',{exact:true}).fill('Completed while closed');await dialog.getByLabel('I checked the full crop and source caption',{exact:true}).check();const delayed=await delaySaveResponse(page,paper.id,'POST');
+ try{await dialog.getByRole('button',{name:'Save figure',exact:true}).click();const saved=await delayed.stored;await dialog.getByRole('button',{name:'Close figure review',exact:true}).click();delayed.release();await expect.poll(()=>page.evaluate(({id,revision})=>JSON.parse(sessionStorage.getItem(`pw-figure-drafts:${id}:${revision}`)||'{}').selected,{id:paper.id,revision:saved.pdfRevision})).toBe(`figure-${saved.figure.id}`);dialog=await reopenManager(page);await expect(dialog.getByLabel('Source caption',{exact:true})).toHaveValue('Completed while closed');await expect(dialog.getByRole('button',{name:'Save changes',exact:true})).toBeDisabled();await expect(dialog.getByText('Unsaved drafts',{exact:true})).toHaveCount(0);}finally{delayed.release();}
+});
+
+test('late save leaves another selected draft untouched',async({page,request},info)=>{
+ const paper=await source(page,request,`unrelated completion ${info.project.name}`);let dialog=await openManager(page,paper.id);await setCrop(page);await dialog.getByLabel('Source caption',{exact:true}).fill('Pending original');await dialog.getByLabel('I checked the full crop and source caption',{exact:true}).check();const delayed=await delaySaveResponse(page,paper.id,'POST');
+ try{await dialog.getByRole('button',{name:'Save figure',exact:true}).click();await delayed.stored;await dialog.getByRole('button',{name:'Close figure review',exact:true}).click();dialog=await reopenManager(page);await dialog.getByRole('button',{name:'New crop',exact:true}).click();await dialog.getByLabel('Source caption',{exact:true}).fill('Independent selected draft');const response=page.waitForResponse(r=>r.url().endsWith('/figures')&&r.request().method()==='POST');delayed.release();await response;await expect(dialog.getByLabel('Source caption',{exact:true})).toHaveValue('Independent selected draft');await dialog.getByRole('button',{name:'Close figure review',exact:true}).click();dialog=await reopenManager(page);await expect(dialog.getByLabel('Source caption',{exact:true})).toHaveValue('Independent selected draft');await expect(dialog.getByRole('button',{name:'Save figure',exact:true})).toBeVisible();await expect(dialog.getByText('Unsaved drafts',{exact:true})).toHaveCount(0);}finally{delayed.release();}
+});
+
+for(const mode of ['new','existing'] as const)test(`reopened editor discards a collection captured before a completed save (${mode})`,async({page,request},info)=>{
+ const paper=await source(page,request,`old collection ${mode} ${info.project.name}`);let id:string|undefined;
+ if(mode==='existing'){const collection=await(await request.get(`/api/papers/${paper.id}/figures`)).json();const response=await request.post(`/api/papers/${paper.id}/figures`,{data:{pdfRevision:collection.pdfRevision,expectedFiguresRevision:collection.figuresRevision,figure:{page:1,caption:'Before the save',label:'Old collection target',crop:{x:.1,y:.15,width:.75,height:.3}},source:{method:'manual',reviewed:true}}});expect(response.ok()).toBeTruthy();id=(await response.json()).figure.id;}
+ let dialog=await openManager(page,paper.id);if(id){await dialog.getByText(/Saved figures \(/).click();await dialog.getByRole('button',{name:/^Old collection target/}).click();}else await setCrop(page);
+ await dialog.getByLabel('Source caption',{exact:true}).fill('Acknowledged caption and crop');await dialog.getByLabel('I checked the full crop and source caption',{exact:true}).check();
+ let releaseSave!:()=>void,releaseGet!:()=>void,sawSave!:()=>void,sawGet!:()=>void;const saveGate=new Promise<void>(resolve=>{releaseSave=resolve;}),getGate=new Promise<void>(resolve=>{releaseGet=resolve;}),saveStarted=new Promise<void>(resolve=>{sawSave=resolve;}),getCaptured=new Promise<void>(resolve=>{sawGet=resolve;});let holdGet=false;
+ await page.route(`**/api/papers/${paper.id}/figures**`,async route=>{if(route.request().method()===(id?'PATCH':'POST')){sawSave();await saveGate;await route.continue();}else if(route.request().method()==='GET'&&holdGet){holdGet=false;const response=await route.fetch();sawGet();await getGate;await route.fulfill({response});}else await route.continue();});
+ try{await dialog.getByRole('button',{name:id?'Save changes':'Save figure',exact:true}).click();await saveStarted;await dialog.getByRole('button',{name:'Close figure review',exact:true}).click();holdGet=true;await page.getByRole('button',{name:'Reading tools',exact:true}).click();await page.getByRole('button',{name:'Review figure crops',exact:true}).click();await getCaptured;
+  const savedResponse=page.waitForResponse(response=>response.request().method()===(id?'PATCH':'POST')&&response.url().includes(`/papers/${paper.id}/figures`));releaseSave();const saved=await(await savedResponse).json();await expect.poll(()=>page.evaluate(({paperId,revision,key})=>JSON.parse(sessionStorage.getItem(`pw-figure-drafts:${paperId}:${revision}`)||'{}').drafts?.[key]?.dirty,{paperId:paper.id,revision:saved.pdfRevision,key:`figure-${saved.figure.id}`})).toBe(false);releaseGet();
+  await expect(dialog.getByLabel('Source caption',{exact:true})).toHaveValue('Acknowledged caption and crop');await expect(dialog.getByLabel('Crop left percent',{exact:true})).toHaveValue('10');await expect(dialog.getByRole('button',{name:'Save changes',exact:true})).toBeDisabled();await expect(dialog.getByRole('button',{name:'Load latest figures',exact:true})).toHaveCount(0);
+  await dialog.getByRole('button',{name:'Close figure review',exact:true}).click();dialog=await reopenManager(page);await expect(dialog.getByLabel('Source caption',{exact:true})).toHaveValue('Acknowledged caption and crop');await expect(dialog.getByText('Unsaved drafts',{exact:true})).toHaveCount(0);
+ }finally{releaseSave();releaseGet();}
+});

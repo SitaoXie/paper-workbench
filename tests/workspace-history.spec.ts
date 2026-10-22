@@ -169,3 +169,50 @@ test('a delayed initial detail cannot undo an explicitly saved version choice',a
   await expect(page.getByRole('heading',{name:'Older a section 1',exact:true})).toBeVisible();
   expect(f.writes).toHaveLength(1);
 });
+
+for(const outcome of ['success','failure'] as const){
+  test(`Forward preserves the displayed paper and conversation after an uncached Back lookup returns ${outcome}`,async({page})=>{
+    const papers=['a','b'].map(id=>({id:'uncached-'+id,title:'Uncached paper '+id,authors:[],source:'web',url:'https://example.org/'+id,createdAt:'2026-10-22T00:00:00Z',abstract:'Original source evidence.',text:'Original source evidence.',tags:[]}));
+    let holdList=false,holdBack=false;let pendingBack:Route|undefined;const pendingLists:Route[]=[],chatReads:string[]=[];
+    await page.route('**/api/**',async route=>{
+      const url=new URL(route.request().url()),path=url.pathname.slice(4);let json:any={};
+      if(path==='/settings')json={provider:'openai',model:'',modelConfigured:false,apiKeyConfigured:false};
+      else if(path==='/papers'){if(holdList){pendingLists.push(route);return;}json={papers};}
+      else if(path==='/papers/uncached-b'){if(holdBack){pendingBack=route;return;}json={paper:papers[1]};}
+      else if(path==='/papers/uncached-a'||path==='/import')json={paper:papers[0]};
+      else if(path==='/chats'){const id=url.searchParams.get('paperId')!;chatReads.push(id);json={conversationId:'saved-'+id,messages:[{role:'assistant',content:`Saved answer for ${id}.`}]};}
+      else if(path==='/conversations')json={conversations:[]};else if(path.endsWith('/annotations'))json={annotations:[]};else if(path.endsWith('/activities'))json={activities:[]};
+      await route.fulfill({json});
+    });
+    await page.goto('/en/?paper=uncached-b');await expect(page.locator('.paper-summary h1')).toHaveText('Uncached paper b');
+    // Use the normal import dialog to create adjacent B -> A history entries.
+    const menu=page.getByRole('button',{name:/^(Open|Expand) navigation$/});if(await menu.isVisible())await menu.click();
+    await page.getByTitle('Import paper',{exact:true}).click();
+    const dialog=page.getByRole('dialog');await dialog.getByLabel('Paper URL',{exact:true}).fill('https://example.org/a');
+    await dialog.getByRole('button',{name:'Import paper',exact:true}).click();await expect(page.locator('.paper-summary h1')).toHaveText('Uncached paper a');
+    // Reload leaves the library uncached while the explicitly requested A loads.
+    holdList=true;holdBack=true;await page.reload();await expect(page.locator('.paper-summary h1')).toHaveText('Uncached paper a');
+    await expect.poll(()=>pendingLists.length).toBe(1);
+    if(!await page.locator('.composer textarea').isVisible())await page.getByRole('button',{name:'Open floating assistant',exact:true}).click();
+    await expect(page.locator('.messages')).toContainText('Saved answer for uncached-a.');
+    await page.locator('.composer textarea').fill('This unsent question belongs to A.');
+    await page.goBack();await expect(page).toHaveURL(/paper=uncached-b/);await expect.poll(()=>!!pendingBack).toBe(true);
+    await page.goForward();await expect(page).toHaveURL(/paper=uncached-a/);await expect(page.locator('.paper-summary h1')).toHaveText('Uncached paper a');
+    const readsBefore=chatReads.length;holdBack=false;
+    const response=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/papers/uncached-b');
+    await pendingBack!.fulfill(outcome==='success'?{json:{paper:papers[1]}}:{status:503,json:{error:'The old B request failed.'}});
+    await (await response).finished();
+    // Let the completed response's JSON and React updates commit before asserting
+    // that it neither opens B nor navigates to Library on the failure path.
+    await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+    await expect(page.locator('.paper-summary h1')).toHaveText('Uncached paper a');await expect(page).toHaveURL(/paper=uncached-a/);
+    await expect(page.locator('.messages')).toContainText('Saved answer for uncached-a.');
+    await expect(page.locator('.composer textarea')).toHaveValue('This unsent question belongs to A.');
+    expect(chatReads.slice(readsBefore)).not.toContain('uncached-b');
+    await page.getByRole('button',{name:'Prepare subscription task',exact:true}).click();
+    const task=page.getByRole('region',{name:'Subscription question task',exact:true});await expect(task).toBeVisible();
+    const show=task.getByRole('button',{name:'Show task text',exact:true});if(await show.isVisible())await show.click();
+    await expect(task.getByRole('textbox',{name:'Subscription question task text',exact:true})).toHaveValue(/uncached-a/);
+    await expect(task.getByRole('textbox',{name:'Subscription question task text',exact:true})).toHaveValue(/saved-uncached-a/);
+  });
+}

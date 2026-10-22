@@ -8,7 +8,7 @@ import {useLocale} from './i18n';
 import {ApiRequestError} from './selection-errors';
 import {inspectFigureCandidates} from './figure-candidates';
 import type {CropRect,FigureCandidate} from './figure-geometry';
-import {readFigureDrafts,saveFigureDrafts,type FigureDraft,type FigureDrafts} from './figure-drafts';
+import {readFigureDrafts,saveFigureDrafts,completeFigureDraftSave,reconcileFigureDraftSave,subscribeFigureDraftSaves,beginFigureDraftSave,isFigureDraftSaving,subscribeFigureDraftActivity,figureDraftSaveGeneration,type FigureDraft,type FigureDrafts} from './figure-drafts';
 import FigureCropEditor from './FigureCropEditor';
 import './figure-manager.css';
 GlobalWorkerOptions.workerSrc=workerUrl;
@@ -23,9 +23,11 @@ export default function FigureManager({paper,initialPage=1,onClose,onSaved}:{pap
   const [width,setWidth]=useState(700),[ratio,setRatio]=useState(1.414),[rendered,setRendered]=useState(0),[loading,setLoading]=useState(true),[error,setError]=useState(''),[saving,setSaving]=useState(false),[notice,setNotice]=useState('');
   const [sourceNavigation,setSourceNavigation]=useState(0),sourceNavigationPending=useRef(true);
   const [editing,setEditing]=useState(false),[draftStored,setDraftStored]=useState(true);
+  const [,setSaveActivity]=useState(0);
   const [scan,setScan]=useState<{page:number;total:number}>(),[scanned,setScanned]=useState<Set<number>>(new Set()),[pageInput,setPageInput]=useState(String(initialPage)),[conflict,setConflict]=useState(false);
   const scanController=useRef<AbortController|undefined>(undefined),mounted=useRef(true),saveLock=useRef(false);
   const selected=state.selected?state.drafts[state.selected]:undefined, draft=selected||manual(initialPage),page=draft.page;
+  const awaitingSave=!!collection&&isFigureDraftSaving(paper.id,collection.pdfRevision,draft.key);
   const sourceUrl=paper.localPdfUrl||'';
   const revisionConflict=conflict||!!(draft.dirty&&draft.baseFiguresRevision&&collection&&draft.baseFiguresRevision!==collection.figuresRevision);
   const savedDraft=(figure:ManagedFigure,revision:string):FigureDraft=>({key:`figure-${figure.id}`,figureId:figure.id,page:figure.page,label:figure.label||'',caption:figure.caption,crop:figure.crop,method:'manual',reviewed:false,dirty:false,baseFiguresRevision:revision});
@@ -42,7 +44,10 @@ export default function FigureManager({paper,initialPage=1,onClose,onSaved}:{pap
   useEffect(()=>{
     let disposed=false;let task:ReturnType<typeof getDocument>|undefined;
     (async()=>{try{
-      const response=await api<Collection>(`/papers/${paper.id}/figures`);if(disposed)return;
+      let response:Collection;
+      // A response captured before a completed save cannot refresh clean drafts.
+      // Retry before hydration so it cannot erase a newly assigned figure ID.
+      while(true){const generation=figureDraftSaveGeneration();response=await api<Collection>(`/papers/${paper.id}/figures`);if(disposed)return;if(generation===figureDraftSaveGeneration())break;}
       setCollection(response);const saved=readFigureDrafts(paper.id,response.pdfRevision);const first=manual(initialPage);
       for(const [key,d] of Object.entries(saved.drafts)){if(d.figureId&&!d.dirty){const current=response.figures.find(f=>f.id===d.figureId);if(current)saved.drafts[key]=savedDraft(current,response.figuresRevision);else delete saved.drafts[key];}}
       setState(saved.selected&&saved.drafts[saved.selected]?saved:{selected:first.key,drafts:{...saved.drafts,[first.key]:{...(saved.drafts[first.key]||first),baseFiguresRevision:response.figuresRevision}}});
@@ -52,6 +57,18 @@ export default function FigureManager({paper,initialPage=1,onClose,onSaved}:{pap
     return()=>{disposed=true;void task?.destroy().catch(()=>{});};
   },[paper.id,sourceUrl]);
   useEffect(()=>{if(collection)setDraftStored(saveFigureDrafts(paper.id,collection.pdfRevision,state));},[state,collection?.pdfRevision,paper.id]);
+  useEffect(()=>{if(collection)return subscribeFigureDraftActivity(paper.id,collection.pdfRevision,()=>setSaveActivity(value=>value+1));},[paper.id,collection?.pdfRevision]);
+  useEffect(()=>{
+    if(!collection)return;const pdfRevision=collection.pdfRevision;let disposed=false,refresh=0;
+    const unsubscribe=subscribeFigureDraftSaves(paper.id,pdfRevision,({submitted,saved})=>{
+      setState(current=>reconcileFigureDraftSave(current,submitted,saved));
+      // The server collection may have moved on since this acknowledgement was issued.
+      // Read its latest revision instead of applying an old modal's paper snapshot.
+      const request=++refresh;
+      queueMicrotask(()=>{if(disposed||request!==refresh)return;void api<Collection>(`/papers/${paper.id}/figures`).then(latest=>{if(!disposed&&request===refresh&&latest.pdfRevision===pdfRevision)setCollection(latest);}).catch(()=>{/* Existing conflict recovery remains available. */});});
+    });
+    return ()=>{disposed=true;unsubscribe();};
+  },[paper.id,collection?.pdfRevision]);
   useEffect(()=>{const element=stage.current;if(!element)return;const observer=new ResizeObserver(()=>setWidth(Math.max(160,Math.min(1100,element.clientWidth-32))));observer.observe(element);return()=>observer.disconnect();},[pdf]);
   useEffect(()=>{
     if(!pdf)return;let disposed=false,task:RenderTask|undefined;setRendered(0);
@@ -80,13 +97,13 @@ export default function FigureManager({paper,initialPage=1,onClose,onSaved}:{pap
   function editFigure(figure:ManagedFigure) {select(savedDraft(figure,collection!.figuresRevision));}
   async function save() {
     if(saveLock.current||!collection||!draft.crop||!draft.reviewed||!draft.caption.trim()||!rendered||revisionConflict)return;
-    const submitted={...draft},base=collection;saveLock.current=true;setSaving(true);setError('');setNotice('');
+    const submitted={...draft},base=collection,finishRequest=beginFigureDraftSave(paper.id,base.pdfRevision,draft.key);if(!finishRequest)return;saveLock.current=true;setSaving(true);setError('');setNotice('');
     try{const result=await api<Collection&{paper:Paper;figure:ManagedFigure}>(`/papers/${paper.id}/figures${draft.figureId?`/${encodeURIComponent(draft.figureId)}`:''}`,{method:draft.figureId?'PATCH':'POST',body:JSON.stringify({pdfRevision:base.pdfRevision,expectedFiguresRevision:draft.baseFiguresRevision||base.figuresRevision,figure:{page:draft.page,crop:draft.crop,caption:draft.caption.trim(),label:draft.label.trim()},source:{method:draft.method,reviewed:true}})});
-      const next:FigureDraft={...submitted,key:`figure-${result.figure.id}`,figureId:result.figure.id,dirty:false,reviewed:false,baseFiguresRevision:result.figuresRevision};const finish=(old:FigureDrafts)=>{const drafts={...old.drafts};delete drafts[submitted.key];return {selected:next.key,drafts:{...drafts,[next.key]:next}};};saveFigureDrafts(paper.id,base.pdfRevision,finish(stateRef.current));onSaved(result.paper);if(!mounted.current)return;setCollection(result);setConflict(false);setState(finish);setNotice(t('已保存。后续生成的解读可使用此图；已有版本保持原来的图片。','Saved. Future readings can use this figure; existing versions retain their original images.'));
+      const next:FigureDraft={...submitted,key:`figure-${result.figure.id}`,figureId:result.figure.id,caption:result.figure.caption,label:result.figure.label||'',crop:result.figure.crop,dirty:false,reviewed:false,baseFiguresRevision:result.figuresRevision};completeFigureDraftSave(paper.id,base.pdfRevision,submitted,next);if(!mounted.current)return;onSaved(result.paper);setCollection(result);setConflict(false);setState(current=>reconcileFigureDraftSave(current,submitted,next));setNotice(t('已保存。后续生成的解读可使用此图；已有版本保持原来的图片。','Saved. Future readings can use this figure; existing versions retain their original images.'));
     }catch(reason){if(mounted.current){setError(reason instanceof Error?reason.message:t('保存失败，草稿已保留。','Save failed. Your draft is preserved.'));if(reason instanceof ApiRequestError&&reason.status===409){setConflict(true);update({reviewed:false});}}}
-    finally{saveLock.current=false;if(mounted.current)setSaving(false);}
+    finally{finishRequest();saveLock.current=false;if(mounted.current)setSaving(false);}
   }
-  async function refreshConflict() {try{const next=await api<Collection>(`/papers/${paper.id}/figures`);if(!mounted.current)return;if(next.pdfRevision!==collection?.pdfRevision){setError(t('原 PDF 已变更。请关闭并重新打开核对工具；旧草稿仍绑定旧文件。','The source PDF changed. Close and reopen this tool; old drafts remain bound to the old file.'));return;}setCollection(next);setConflict(false);update({reviewed:false,baseFiguresRevision:next.figuresRevision});setError('');setNotice(t('已加载最新图表。请重新核对当前草稿后保存。','Loaded the latest figures. Review this draft again before saving.'));}catch(reason){if(mounted.current)setError((reason as Error).message);}}
+  async function refreshConflict() {if(collection&&isFigureDraftSaving(paper.id,collection.pdfRevision,draft.key))return;try{const next=await api<Collection>(`/papers/${paper.id}/figures`);if(!mounted.current)return;if(next.pdfRevision!==collection?.pdfRevision){setError(t('原 PDF 已变更。请关闭并重新打开核对工具；旧草稿仍绑定旧文件。','The source PDF changed. Close and reopen this tool; old drafts remain bound to the old file.'));return;}setCollection(next);setConflict(false);update({reviewed:false,baseFiguresRevision:next.figuresRevision});setError('');setNotice(t('已加载最新图表。请重新核对当前草稿后保存。','Loaded the latest figures. Review this draft again before saving.'));}catch(reason){if(mounted.current)setError((reason as Error).message);}}
   function coordinate(key:keyof CropRect,value:number) {if(!Number.isFinite(value))return;const crop={...(draft.crop||{x:.1,y:.1,width:.8,height:.4}),[key]:Math.max(key==='width'||key==='height'?.5:0,Math.min(100,value))/100};crop.width=Math.min(crop.width,1-crop.x);crop.height=Math.min(crop.height,1-crop.y);if(crop.width>=.005&&crop.height>=.005)update({crop,method:'manual'});}
   const warning=candidates.find(c=>c.key===draft.candidateKey)?.warning;
   return createPortal(<div className="figure-manager-backdrop"><div className="figure-manager" ref={dialog} role="dialog" aria-modal="true" aria-labelledby="figure-manager-title">
@@ -105,7 +122,7 @@ export default function FigureManager({paper,initialPage=1,onClose,onSaved}:{pap
       {draft.crop&&draft.crop.width*draft.crop.height>=.9&&<p className="figure-review-hint">{t('当前裁切接近整页，请确认这确实是完整图表，而不是正文页面。','This crop is nearly a full page. Confirm it is a complete figure, not a page of body text.')}</p>}
       <details className="figure-existing"><summary>{t(`已保存图表 (${collection?.figures.length||0})`,`Saved figures (${collection?.figures.length||0})`)}</summary>{collection?.figures.map(f=><button key={f.id} disabled={saving} onClick={()=>editFigure(f)}><span>{f.label||f.id}</span><small>{t(`第 ${f.page} 页`,`p.${f.page}`)} · {f.source?.reviewed?t('已核对','Reviewed'):t('待核对','Needs review')}</small></button>)}</details>
       {Object.values(state.drafts).filter(d=>d.dirty&&d.key!==draft.key).length>0&&<details className="figure-existing"><summary>{t('未保存草稿','Unsaved drafts')}</summary>{Object.values(state.drafts).filter(d=>d.dirty&&d.key!==draft.key).map(d=><button key={d.key} disabled={saving} onClick={()=>select(d)}>{d.label||t('未命名图表','Untitled figure')} · {t(`第 ${d.page} 页`,`p.${d.page}`)}</button>)}</details>}
-    </div><footer className="figure-manager-save"><label className="figure-reviewed"><input type="checkbox" checked={draft.reviewed} disabled={saving||!draft.crop||!rendered||revisionConflict} onChange={e=>update({reviewed:e.target.checked})}/>{t('已核对完整边界与原文图注','I checked the full crop and source caption')}</label><button className="primary-button" disabled={saving||!draft.reviewed||!draft.crop||!draft.caption.trim()||!rendered||revisionConflict} onClick={()=>void save()}>{saving?<Loader2 className="spin" size={16}/>:<Check size={16}/>} {draft.figureId?t('保存修改','Save changes'):t('保存图表','Save figure')}</button><small>{draftStored?t('草稿仅保存在此标签页；关掉工具可继续阅读。','Drafts stay in this browser tab. Close this tool to resume reading.'):t('浏览器未能持久保存草稿。本页内关闭再打开可恢复，但刷新或关闭标签页会丢失编辑。','Browser draft storage is unavailable. Reopening this tool recovers the draft, but reloading or closing the tab loses edits.')}</small></footer></aside></div></>}
-    {(error||notice||revisionConflict)&&<div className={`figure-manager-feedback ${error?'is-error':''}`} role={error?'alert':'status'}>{error||(revisionConflict?t('图表集合已变更。草稿已保留，请加载最新图表后重新核对。','The figure collection changed. Your draft is preserved; load the latest figures and review it again.'):notice)}{revisionConflict&&<button onClick={()=>void refreshConflict()}>{t('加载最新图表','Load latest figures')}</button>}</div>}
+    </div><footer className="figure-manager-save"><label className="figure-reviewed"><input type="checkbox" checked={draft.reviewed} disabled={saving||!draft.crop||!rendered||revisionConflict} onChange={e=>update({reviewed:e.target.checked})}/>{t('已核对完整边界与原文图注','I checked the full crop and source caption')}</label><button className="primary-button" disabled={saving||awaitingSave||!draft.reviewed||!draft.crop||!draft.caption.trim()||!rendered||revisionConflict} onClick={()=>void save()}>{saving?<Loader2 className="spin" size={16}/>:<Check size={16}/>} {draft.figureId?t('保存修改','Save changes'):t('保存图表','Save figure')}</button><small>{awaitingSave&&!saving?t('上次保存仍在完成中，可继续编辑；收到结果后再保存修改。','The previous save is still finishing. You can keep editing; save your changes after it completes.'):draftStored?t('草稿仅保存在此标签页；关掉工具可继续阅读。','Drafts stay in this browser tab. Close this tool to resume reading.'):t('浏览器未能持久保存草稿。本页内关闭再打开可恢复，但刷新或关闭标签页会丢失编辑。','Browser draft storage is unavailable. Reopening this tool recovers the draft, but reloading or closing the tab loses edits.')}</small></footer></aside></div></>}
+    {(error||notice||revisionConflict)&&<div className={`figure-manager-feedback ${error?'is-error':''}`} role={error?'alert':'status'}>{error||(revisionConflict?t('图表集合已变更。草稿已保留，请加载最新图表后重新核对。','The figure collection changed. Your draft is preserved; load the latest figures and review it again.'):notice)}{revisionConflict&&<button disabled={awaitingSave} onClick={()=>void refreshConflict()}>{t('加载最新图表','Load latest figures')}</button>}</div>}
   </div></div>,document.body);
 }

@@ -40,7 +40,8 @@ test('escaped delimiters, inline and fenced code, math and ordinary English keep
 });
 
 const citationCode = ts.transpileModule(fs.readFileSync(new URL('../src/remark-page-citations.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
-const { default: pageCitations } = await import('data:text/javascript;base64,' + Buffer.from(citationCode).toString('base64'));
+const resolvedCitationCode = citationCode.replace('../shared/prose-citations.mjs', new URL('../shared/prose-citations.mjs', import.meta.url).href);
+const { default: pageCitations } = await import('data:text/javascript;base64,' + Buffer.from(resolvedCitationCode).toString('base64'));
 function citations(source, fix = true) {
   const processor = unified().use(remarkParse).use(remarkGfm).use(remarkMath);
   if (fix) processor.use(pageCitations);
@@ -71,4 +72,22 @@ test('abstract and source-text citations are local navigation only in prose',()=
   const tree=citations('Compare [Abstract], [Source text], [原始摘要] and [来源正文]. Then [p.4].');
   assert.deepEqual(nodes(tree,'link').map(node=>node.url),['#source=abstract','#source=text','#source=abstract','#source=text','#page=4']);
   for(const source of [String.raw`Literal \[Abstract]`, '`[Source text]`', '```text\n[Abstract]\n```', '$[Abstract]$', '[Abstract](https://example.org)', '![Source text](figure.png)', '[Abstractness] [source text added]'])assert.deepEqual(citations(source),citations(source,false),source);
+});
+
+test('unrelated escapes and entities preserve later page/source navigation and visible prose', () => {
+  const source = String.raw`A \* B &amp; C &#x26; D &NotEqualTilde; E: literal \[p.4] and &#91;p.4]; actual [p.4], [第6页], [Abstract] and [来源正文].`;
+  const tree = citations(source);
+  assert.deepEqual(nodes(tree, 'link').map(node => node.url), ['#page=4', '#page=6', '#source=abstract', '#source=text']);
+  assert.equal(nodes(tree, 'text').map(node => node.value).join(''), 'A * B & C & D ≂̸ E: literal [p.4] and [p.4]; actual p.4, p.6, Abstract and 来源正文.');
+  const slash = citations(String.raw`Literal \[Abstract] and [p.9\]; actual \\[p.4].`);
+  assert.deepEqual(nodes(slash, 'link').map(node => node.url), ['#page=4']);
+  assert.equal(nodes(slash, 'text').map(node => node.value).join(''), 'Literal [Abstract] and [p.9]; actual \\p.4.');
+});
+
+test('citation offsets remain correct in multiline containers and table cells after decoding', () => {
+  for (const source of ['> A &amp; B\n> evidence [p.4].', '- A \\* B\n  evidence [p.4].', 'A &amp; B\r\nevidence [p.4].', '| Evidence |\n| --- |\n| A \\| B &amp; C [p.4] |']) {
+    const tree = citations(source);
+    assert.deepEqual(nodes(tree, 'link').map(node => node.url), ['#page=4'], source);
+    assert.equal(nodes(tree, 'text').map(node => node.value).join(''), nodes(citations(source, false), 'text').map(node => node.value).join('').replace('[p.4]', 'p.4'), source);
+  }
 });

@@ -48,6 +48,30 @@ test('plain page changes reject the entire subscription import and model respons
  assert.equal(valid.status,200);assert.equal(valid.data.paper.readingVersions[0].translations.en.markdown,'Translated claim [第1页].');
 });
 
+test('escaped-symbol/entity prose cannot bypass atomic import or model citation checks', async t => {
+ for (const prefix of [String.raw`A \* B`, 'A &amp; B']) {
+  let output;
+  const f=await fixture(t,()=>output);
+  f.original.markdown=`${prefix} reports evidence [p.4].`;f.original.figures=[];
+  const before=JSON.stringify(f.paper);
+  const valid=`${prefix} 报告证据 [第4页]。`;
+  f.configure();
+  for (const invalid of [valid.replace('第4页','第6页'),valid.replace('[第4页]',''),valid+' [p.6]']) {
+   const imported=await f.api('/insights',{...f.translate(invalid),summary:{language:'en',markdown:'An otherwise valid overview must not be partially saved.'}});
+   assert.equal(imported.status,400);assert.equal(JSON.stringify(f.paper),before);
+   output=invalid;
+   const model=await f.api('/translate',{target:'reading',readingId:f.original.id,language:'en'},'POST');
+   assert.equal(model.status,502);assert.equal(JSON.stringify(f.paper),before);
+  }
+  assert.equal(f.calls(),3);
+  const accepted=await f.api('/insights',f.translate(valid));assert.equal(accepted.status,200);
+  assert.equal(accepted.data.paper.readingVersions[0].translations.en.markdown,valid);
+  const saved=JSON.stringify(f.paper);
+  const denied=await f.api('/insights',f.translate(valid.replace('第4页','第6页')));
+  assert.equal(denied.status,400);assert.equal(JSON.stringify(f.paper),saved,'A previous valid cache must remain byte-for-byte intact');
+ }
+});
+
 test('a derived version accepts faithful subscription translation and caption-only completion without rewriting originals or attribution',async t=>{
  const f=await fixture(t),before=structuredClone(f.original);
  const derived=await f.api('/insights',{source:{agent:'Companion author'},derivedInteractive:{sourceReadingId:f.original.id,expectedSourceRevision:readingDerivationRevision(f.paper,f.original),agentTaskId:'12345678-1234-4234-8234-123456789abc',interactive}});

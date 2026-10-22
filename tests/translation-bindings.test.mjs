@@ -114,3 +114,32 @@ test("plain page lookalikes inside code, formulae, escaped text and existing lin
   assert.throws(() => validateTranslationBindings(literal + ' Real [p.10].', changed), /source citation/);
   assert.equal(validateTranslationBindings('[p.0] [p.99999] [pp.8-6]', 'Invalid syntax examples may translate.'), 'Invalid syntax examples may translate.');
 });
+
+test("unrelated escaped symbols and entities cannot hide a later real page citation", () => {
+  for (const prefix of [String.raw`A \* B`, 'A &amp; B', 'A &#38; B', 'A &#x26; B', 'A &NotEqualTilde; B', 'A &unknown; B']) {
+    const source = `${prefix} reports evidence [p.4].`;
+    const valid = `${prefix} 报告证据 [第4页]。`;
+    assert.equal(validateTranslationBindings(source, valid), valid);
+    assert.equal(protectTranslationBindings(source).restore(valid), valid);
+    for (const bad of [valid.replace('第4页', '第6页'), valid.replace('[第4页]', ''), valid + ' [p.6]', valid + ' [p.4]']) {
+      assert.throws(() => validateTranslationBindings(source, bad), error => error.status === 400, bad);
+      assert.throws(() => protectTranslationBindings(source).restore(bad), error => error.status === 502, bad);
+    }
+  }
+});
+
+test("escaped citation literals coexist with bound citations and Markdown container prefixes", () => {
+  const source = String.raw`Literal \[p.4], &#91;p.4], [p.4\] and [p&#46;4]; real [p.4], after a slash \\[p.6].`;
+  const valid = String.raw`字面 \[p.9], &#91;p.9], [p.9\] and [p&#46;9]; 实际 [第4页]，斜杠后 \\[第6页]。`;
+  assert.equal(validateTranslationBindings(source, valid), valid);
+  assert.throws(() => validateTranslationBindings(source, valid.replace('[第4页]', '')), /source citation/);
+  assert.throws(() => validateTranslationBindings(source, valid.replace('\\[p.9]', '[p.9]')), /source citation/);
+  for (const [before, after] of [
+    ['> A &amp; B\n> evidence [p.4].', '> 甲 &amp; 乙\n> 证据 [第4页]。'],
+    ['- A \\* B\n  evidence [p.4].', '- 甲 \\* 乙\n  证据 [第4页]。'],
+    ['A &amp; B\r\nevidence [p.4].', '甲 &amp; 乙\r\n证据 [第4页]。'],
+  ]) {
+    assert.equal(validateTranslationBindings(before, after), after);
+    assert.throws(() => validateTranslationBindings(before, after.replace('第4页', '第6页')), /source citation/);
+  }
+});
