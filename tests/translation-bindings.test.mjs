@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { fromMarkdown } from "mdast-util-from-markdown";
-import { protectTranslationBindings } from "../server/translation-bindings.mjs";
+import { protectTranslationBindings, validateTranslationBindings } from "../server/translation-bindings.mjs";
 
 function links(markdown) {
   const found = [];
@@ -74,4 +74,43 @@ test("a local link definition shared with an image retains the image source with
   assert.ok(result.includes('![image][shared]'));
   assert.ok(result.includes('[shared]: #page=2 "Original title"'));
   assert.equal(links(result)[0].title, "Original title");
+});
+
+test("external translations preserve repeated source-language quote bindings while labels, paragraphs and reference syntax may change", () => {
+  const source='原文 [限制][proof]。\n\n另一段 [proof]。\n\n[proof]: #page=2 "有限样本不能证明不可能。"\n\n:::figure chart';
+  const translated='[Limits](#page=2 "有限样本不能证明不可能。")\n\nA reorganized paragraph. [Evidence](#page=2 "有限样本不能证明不可能。")\n\n:::figure chart';
+  assert.equal(validateTranslationBindings(source,translated),translated);
+  for(const bad of [translated.replace('#page=2','#page=3'),translated.replace('有限样本不能证明不可能。','Translated or invented source quote.'),translated.replace(':::figure chart',':::figure nonexistent'),translated+'\n\n:::figure chart'])
+    assert.throws(()=>validateTranslationBindings(source,bad),error=>error.status===400);
+});
+
+test("code and math examples cannot replace actual figure slots, and sentinel results are never completed translations", () => {
+  const source=':::figure chart\n\n```md\n:::figure example\n```\n\n$$\n:::figure formula\n$$';
+  assert.equal(validateTranslationBindings(source,source),source);
+  assert.throws(()=>validateTranslationBindings(source,'```md\n:::figure chart\n:::figure example\n```\n\n$$\n:::figure formula\n$$'),/figure marker/);
+  for(const value of ['', ' ', 'null', '"null"', '`null`', 'undefined', '```json\nnull\n```']) {
+    assert.throws(()=>validateTranslationBindings('Source.',value),error=>error.status===400);
+    assert.throws(()=>protectTranslationBindings('Source.').restore(value),error=>error.status===502);
+  }
+  for(const value of ['R²', 'NaN', 'NULL hypothesis', '0', '$x < 1$', 'Transformer'])assert.equal(validateTranslationBindings('Source.',value),value);
+});
+
+test("plain page citations preserve page/range multiplicity across Chinese equivalents and prose reflow", () => {
+  const source = "Claims [p.4], again [P 04], ranges [pp.6–8; p.10] and [p.12, 13].";
+  const translated = "重排 [第 4 页]、[p.12]、[第13页]。\n\n再次 [p.4]，范围 [pp.6-8] 与 [第10页]。";
+  assert.equal(validateTranslationBindings(source, translated), translated);
+  assert.equal(protectTranslationBindings(source).restore(translated), translated);
+  for (const bad of [translated.replace('[p.4]', '[p.5]'), translated.replace('[第 4 页]', ''), translated + ' [p.4]', translated.replace('6-8', '6-9'), translated.replace('[p.4]', '`[p.4]`'), translated.replace('[p.4]', '$[p.4]$'), translated.replace('[p.4]', '[p.4](https://example.test)')]) {
+    assert.throws(() => validateTranslationBindings(source, bad), error => error.status === 400);
+    assert.throws(() => protectTranslationBindings(source).restore(bad), error => error.status === 502);
+  }
+  assert.throws(() => validateTranslationBindings('No citation.', '译文 [第4页]'), /source citation/);
+});
+
+test("plain page lookalikes inside code, formulae, escaped text and existing links are not citation bindings", () => {
+  const literal = '`[p.1]`\n\n```text\n[p.2]\n```\n\n$[p.3]$\n\n$$\n[p.4]\n$$\n\n\\[p.5] &#91;p.6] [p.7](https://example.test) ![p.8](image.png)';
+  const changed = literal.replaceAll(/p\.[1-8]/g, 'p.9');
+  assert.equal(validateTranslationBindings(literal, changed), changed);
+  assert.throws(() => validateTranslationBindings(literal + ' Real [p.10].', changed), /source citation/);
+  assert.equal(validateTranslationBindings('[p.0] [p.99999] [pp.8-6]', 'Invalid syntax examples may translate.'), 'Invalid syntax examples may translate.');
 });

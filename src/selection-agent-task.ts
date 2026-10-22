@@ -32,9 +32,11 @@ export function prepareSelectionAgentTask(binding: SelectionTaskBinding, storage
   const key = selectionBindingKey(binding);
   let recent: SelectionAgentTask[] = [];
   try { const raw = storage?.getItem(storageKey); if (raw && raw.length < 600000) { const parsed: unknown = JSON.parse(raw); if (Array.isArray(parsed)) recent = parsed.filter(item => item && typeof item.agentTaskId === 'string' && uuid.test(item.agentTaskId) && typeof item.text === 'string' && item.text.length <= 12000).slice(-20); } } catch { /* Session storage is optional. */ }
-  const previous = recent.find(item => selectionBindingKey(item) === key);
+  // Older tasks trimmed their text. Keep them usable, but do not reuse their ID
+  // for a newly selected indented code fragment whose exact source differs.
+  const previous = recent.find(item => selectionBindingKey(item) === key && item.text === binding.text);
   if (previous) return previous;
-  const task = { ...binding, text: binding.text.trim(), language: language(binding.language), agentTaskId: crypto.randomUUID() };
+  const task = { ...binding, language: language(binding.language), agentTaskId: crypto.randomUUID() };
   try { storage?.setItem(storageKey, JSON.stringify([...recent.slice(-19), task])); } catch { /* The visible task still works without storage. */ }
   return task;
 }

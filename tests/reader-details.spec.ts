@@ -43,7 +43,7 @@ test('an internal PDF destination reveals its heading within a page and back res
   const viewport=page.getByLabel('Continuous paper pages',{exact:true});
   const before=await viewport.evaluate(el=>el.scrollTop);
   const link=page.locator('[data-pdf-page="1"] .pdf-annotation-layer a').first();
-  await expect(link).toHaveAttribute('href','#pdf-reference'); await link.click();
+  await expect(link).toHaveAttribute('href','#pdf-reference-1-1'); await expect(link).toHaveAccessibleName('Paper reference “Read the evidence section” · from page 1'); await link.click();
   await expect(page.getByLabel('PDF page number',{exact:true})).toHaveValue('2');
   const heading=page.locator('[data-pdf-page="2"] .pdf-text-layer span').filter({hasText:'Evidence anchor inside this page'}).first();
   await expect(heading).toBeVisible();

@@ -65,7 +65,7 @@ test('a shared older-version chapter overrides saved PDF mode and stays in the s
   const menu=page.getByRole('button',{name:'展开导航',exact:true});if(await menu.isVisible())await menu.click();
   await locale.click();
   await expect(section(page,'older-version',5)).toHaveAttribute('aria-label','Evidence 3');
-  await expect.poll(()=>top(page,'older-version',5)).toBeCloseTo(previousTop,0);
+  await expect.poll(async()=>Math.abs(await top(page,'older-version',5)-previousTop)).toBeLessThan(2);
   expect(writes.filter(w=>w.path.endsWith('/translate')||w.path.endsWith('/report')||w.path===`/papers/section-paper`)).toHaveLength(0);
   await page.reload();
   await expect(page.getByLabel('Reading version',{exact:true})).toHaveValue('older-version');

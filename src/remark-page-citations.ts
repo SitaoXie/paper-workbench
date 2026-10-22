@@ -14,9 +14,15 @@ export default function remarkPageCitations() {
         const start = child.position?.start.offset, end = child.position?.end.offset;
         // An escaped bracket is literal text. Do not reinterpret escaped nodes.
         if (start !== undefined && end !== undefined && source.slice(start, end) !== child.value) { next.push(child); continue; }
-        const matches = child.value.matchAll(/\[((?:pp?\.?\s*\d)[^\]\n]{0,100}|第\s*\d{1,4}\s*页)\]/gi);
+        const matches = child.value.matchAll(/\[((?:pp?\.?\s*\d)[^\]\n]{0,100}|第\s*\d{1,4}\s*页|Abstract|Source text|原始摘要|摘要|来源正文|来源文本)\]/gi);
         let cursor = 0;
         for (const match of matches) {
+          const sourceTarget=/^(?:Abstract|原始摘要|摘要)$/i.test(match[1])?'abstract':/^(?:Source text|来源正文|来源文本)$/i.test(match[1])?'text':undefined;
+          if(sourceTarget){
+            if(match.index!>cursor)next.push({type:'text',value:child.value.slice(cursor,match.index!)});
+            next.push({type:'link',url:`#source=${sourceTarget}`,children:[{type:'text',value:match[1]}]});
+            cursor=match.index!+match[0].length;continue;
+          }
           const parts = match[1].replace(/^第\s*(\d+)\s*页$/, 'p.$1').split(/\s*[,;，、]\s*/);
           if (parts.length > 12) continue;
           const pages = parts.map(part => /^(?:pp?\.?\s*)?(\d{1,4})(?:\s*[-–—]\s*(?:pp?\.?\s*)?(\d{1,4}))?$/i.exec(part));

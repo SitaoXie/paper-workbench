@@ -66,3 +66,9 @@ test('CJK emphasis and page citations compose in the same paragraph without leav
   assert.deepEqual(nodes(tree,'link').map(node=>node.url),['#page=2','#page=6']);
   assert.equal(nodes(tree,'text').some(node=>node.value.includes('**')),false);
 });
+
+test('abstract and source-text citations are local navigation only in prose',()=>{
+  const tree=citations('Compare [Abstract], [Source text], [原始摘要] and [来源正文]. Then [p.4].');
+  assert.deepEqual(nodes(tree,'link').map(node=>node.url),['#source=abstract','#source=text','#source=abstract','#source=text','#page=4']);
+  for(const source of [String.raw`Literal \[Abstract]`, '`[Source text]`', '```text\n[Abstract]\n```', '$[Abstract]$', '[Abstract](https://example.org)', '![Source text](figure.png)', '[Abstractness] [source text added]'])assert.deepEqual(citations(source),citations(source,false),source);
+});

@@ -157,7 +157,7 @@ test('initial page deep link survives StrictMode and a late initial load cannot 
   await expect(page.getByRole('tab',{name:'论文',exact:true})).toHaveAttribute('aria-selected','true');
   await expect(page.getByLabel('PDF 页码',{exact:true})).toHaveValue('5');
   await expect(page.locator('[data-pdf-page="5"] canvas[data-rendered="true"]')).toBeVisible();
-  await expect(page).toHaveURL(/paper=alpha&page=5/);
+  await expect(page).toHaveURL(url=>url.searchParams.get('paper')==='alpha'&&url.searchParams.get('page')==='5'&&url.searchParams.get('tab')==='paper');
   let release:Route|undefined;
   await page.route('**/api/papers/alpha',route=>{release=route;});
   await page.goto('/zh/?paper=alpha&page=5');await expect.poll(()=>!!release).toBe(true);

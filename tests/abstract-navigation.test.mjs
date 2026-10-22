@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+import ts from 'typescript';
+const compiled=ts.transpileModule(readFileSync(new URL('../src/abstract-navigation.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
+const exports={};vm.runInNewContext(compiled,{exports});const {resolveAbstractSource}=exports;
+const paper={abstract:'Recent studies examine rare successful routes. They require careful sampling.',translations:{'zh-CN':{abstract:{markdown:'近期研究考察罕见的成功路径，需要谨慎采样。'}},en:{abstract:{markdown:'Old translated content.',stale:true}}}};
+test('an English source history chooses the actual original without changing the UI language',()=>{const source=resolveAbstractSource(paper,'Recent studies\nexamine rare successful routes.','zh-CN');assert.equal(source.original,true);assert.equal(source.text,paper.abstract);assert.equal(source.matched,true);});
+test('a translated selection returns to that saved translation, not a new model request',()=>{const source=resolveAbstractSource(paper,'罕见的成功路径','en');assert.equal(source.original,false);assert.equal(source.language,'zh-CN');assert.equal(source.matched,true);});
+test('missing or stale quotes do not fabricate a match or use stale translations',()=>{for(const quote of ['a different abstract','Old translated content.']){const source=resolveAbstractSource(paper,quote);assert.equal(source.matched,false);assert.equal(source.original,true);assert.equal(source.text,paper.abstract);}});

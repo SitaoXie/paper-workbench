@@ -241,11 +241,14 @@ export class Ingestor {
   }
   async upload(buffer, name) {
     const parsed = await parsePdf(buffer, name);
+    const sourcePdfRevision = createHash("sha256").update(buffer).digest("hex");
     const paper = {
       ...this.base(),
       ...parsed,
       source: "pdf",
-      contentHash: createHash("sha256").update(buffer).digest("hex"),
+      contentHash: sourcePdfRevision,
+      sourcePdfRevision,
+      pdfRevision: sourcePdfRevision,
     };
     paper.filePath = await this.savePdf(buffer, paper.id);
     return paper;
@@ -391,11 +394,14 @@ export class Ingestor {
     try {
       const result = await this.download(paper.pdfUrl);
       const parsed = await parsePdf(result.buffer, `${identifier}.pdf`);
+      const sourcePdfRevision = createHash("sha256").update(result.buffer).digest("hex");
       Object.assign(paper, {
         text: parsed.text,
         pages: parsed.pages,
         pageCount: parsed.pageCount,
         extractionTruncated: parsed.extractionTruncated,
+        sourcePdfRevision,
+        pdfRevision: sourcePdfRevision,
       });
       paper.filePath = await this.savePdf(result.buffer, paper.id);
     } catch (error) {

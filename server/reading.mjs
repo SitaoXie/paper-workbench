@@ -4,6 +4,36 @@ import { ApiError } from "./network.mjs";
 const hash = (value) => createHash("sha256").update(value || "").digest("hex");
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).filter(key => value[key] !== undefined).sort().map(key => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+/** The fixed original, not a translation or the active reader's presentation. */
+export function readingDerivationSource(paper, version) {
+  return {
+    markdown: version.markdown,
+    language: version.language || "en",
+    style: version.style || "deep",
+    ...(version.focus !== undefined ? { focus: version.focus } : {}),
+    ...(version.title !== undefined ? { title: version.title } : {}),
+    figures: clone(version.figures || paper.figures || []),
+    ...(version.figuresRevision ? { figuresRevision: version.figuresRevision } : {}),
+    ...(version.pdfRevision || paper.sourcePdfRevision || paper.contentHash || paper.pdfRevision ? { pdfRevision: version.pdfRevision || paper.sourcePdfRevision || paper.contentHash || paper.pdfRevision } : {}),
+  };
+}
+
+/** A comparison token for derivation, not proof of the scientific content. */
+export function readingDerivationRevision(paper, version) {
+  return hash(stableJson({ paperId: paper.id, readingId: version.id,
+    source: readingDerivationSource(paper, version), createdAt: version.createdAt,
+    attribution: version.articleSource || version.source || null,
+    sourcePdfRevision: paper.sourcePdfRevision || paper.contentHash || null,
+    currentPdfRevision: paper.pdfRevision || null, pageCount: paper.pages?.length || 0,
+  }));
+}
+
 export function readingFormat(value = "article") {
   if (!["article", "interactive"].includes(value))
     throw new ApiError("Reading format must be article or interactive.");

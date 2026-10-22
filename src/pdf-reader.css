@@ -1291,3 +1291,17 @@ html[data-theme="dark"] .pdf-reader[data-paper-colors="theme"] {
 .pdf-annotation-feedback.is-error { color:var(--danger,#ba3b32); }
 .pdf-annotation-feedback button { display:grid;place-items:center;width:28px;height:28px;flex:none;border-radius:6px;color:inherit; }
 .pdf-annotation-feedback button:hover { background:var(--hover); }
+
+/* A folded draft stays mounted so task IDs, manual text and requests survive. */
+.pdf-selection-menu[hidden], .pdf-inline-assist[hidden], .pdf-note-editor[hidden] { display: none; }
+.pdf-selection-draft-chip { position: fixed; z-index: 60; display: flex; align-items: center; width: min(300px, calc(100vw - 24px)); min-height: 46px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); color: var(--text); box-shadow: 0 4px 16px #32232920; }
+.pdf-draft-restore { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; min-height: 46px; padding: 7px 10px; text-align: left; color: inherit; border-radius: 10px; }
+.pdf-draft-restore span { display: grid; min-width: 0; gap: 2px; }
+.pdf-draft-restore strong { font-size: 12px; font-weight: 600; }
+.pdf-draft-restore small { font-size: 10px; color: var(--secondary); }
+.pdf-draft-discard { display: grid; place-items: center; min-width: 44px; min-height: 44px; color: var(--secondary); border-radius: 9px; }
+.pdf-selection-draft-chip button:hover { background: var(--hover); }
+.pdf-selection-draft-chip button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pdf-selection-draft-chip button:disabled { opacity: .65; cursor: progress; }
+.pdf-draft-location-notice { margin: 6px 8px; font-size: 11px; line-height: 1.5; color: var(--secondary); }
+@media (pointer: coarse) { .pdf-selection-menu .pdf-popover-close { min-width: 40px; max-width: 40px; min-height: 44px; } }

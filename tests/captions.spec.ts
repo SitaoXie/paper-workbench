@@ -125,7 +125,7 @@ test('a language change while the overview is hidden waits until visible before 
   // This represents an app-level language change, not an interaction with the
   // hidden reading tools themselves.
   await page.getByLabel('阅读语言',{exact:true}).selectOption('en',{force:true});
-  await expect(page.locator('.reading-overview .translation-missing button')).toHaveText('Translate this version');
+  await expect(page.locator('.reading-overview .translation-missing').getByRole('button',{name:'Translate this version',exact:true,includeHidden:true})).toHaveCount(1);
   expect(fixture.requests).toHaveLength(0);
   await page.getByRole('tab',{name:'Overview',exact:true}).click();
   await expect.poll(()=>fixture.requests.length).toBe(1);

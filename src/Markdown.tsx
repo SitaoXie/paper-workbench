@@ -16,6 +16,7 @@ const PdfFigure = lazy(() => import("./PdfFigure"));
 export default function Mark({
   children,
   onPage,
+  onSource,
   figures,
   pdfUrl,
   figureCaptions,
@@ -25,6 +26,7 @@ export default function Mark({
 }: {
   children: string;
   onPage?: (page: number, quote?: string) => void;
+  onSource?: (source:'abstract'|'text') => void;
   figures?: Figure[];
   pdfUrl?: string;
   sectionNavigation?: { readingId: string; sections: ReadingSection[]; href: (index: number) => string; onNavigate: (index: number) => void };
@@ -59,7 +61,7 @@ export default function Mark({
         {parts.map((part, i) => {
           if (!part.figure)
             return (
-              <Mark key={i} onPage={onPage} sectionNavigation={sectionNavigation} sourceOffset={sourceOffset + part.start}>
+              <Mark key={i} onPage={onPage} onSource={onSource} sectionNavigation={sectionNavigation} sourceOffset={sourceOffset + part.start}>
                 {part.text}
               </Mark>
             );
@@ -85,7 +87,7 @@ export default function Mark({
   }
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkMath, remarkCjkEmphasis, ...(onPage ? [remarkPageCitations] : [])]}
+      remarkPlugins={[remarkGfm, remarkMath, remarkCjkEmphasis, ...(onPage || onSource ? [remarkPageCitations] : [])]}
       rehypePlugins={[rehypeKatex]}
       components={{
         ...headings,
@@ -95,6 +97,8 @@ export default function Mark({
           </span>
         ),
         a: ({ children, href, title }) => {
+          const source=href==='#source=abstract'?'abstract':href==='#source=text'?'text':undefined;
+          if(source)return onSource?<button className="citation-link" title={source==='abstract'?t('查看原始摘要','View original abstract'):t('查看来源正文','View source text')} onClick={()=>onSource(source)}>{source==='abstract'?t('原始摘要','Abstract'):t('来源正文','Source text')}</button>:<span>{children}</span>;
           const citation = paperCitation(href, title);
           return citation && onPage ? (
             <button

@@ -77,3 +77,18 @@ test("duplicate JSON names including escaped aliases cannot silently overwrite a
   for (const source of ['{"chart":"first","chart":"last"}', '{"chart":"first","ch\\u0061rt":"last"}', '[{"fields":{"title":1,"title":2}}]'])
     assert.throws(() => assertUniqueJsonKeys(source), /must not repeat/);
 });
+
+test("sentinel captions are not usable caches and model repair remains bounded without filtering technical labels", async () => {
+  const sources=[{id:'chart',caption:'Sample outcome.'}];
+  for(const caption of ['null','undefined','"null"','```text\nnull\n```']){
+    assert.throws(()=>validateFigureCaptions({chart:caption},sources),/non-empty text/);
+    assert.equal(usableFigureCaptions({figureCaptions:{chart:caption},figureCaptionsSourceHash:figureCaptionsSourceHash(sources)},sources),false);
+  }
+  for(const caption of ['R²','NaN','NULL hypothesis','$x < 1$','GPT-4.1'])assert.deepEqual(validateFigureCaptions({chart:caption},sources),{chart:caption});
+  let calls=0;
+  const repaired=await translateFigureCaptions({figures:sources,language:'en',callModel:async()=>JSON.stringify([{id:'chart',caption:++calls===1?'null':'Sample outcome.'}])});
+  assert.equal(calls,2);assert.equal(repaired.chart,'Sample outcome.');
+  calls=0;
+  await assert.rejects(translateFigureCaptions({figures:sources,language:'en',callModel:async()=>{calls++;return '[{"id":"chart","caption":"null"}]';}}),error=>error.status===502);
+  assert.equal(calls,2);
+});

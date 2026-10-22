@@ -1873,6 +1873,34 @@ test("agent activity tasks bind exact reading versions and PDF ranges without re
   assert.equal(app.locals.store.data.annotations.length, 0);
 });
 
+test("passage assistance and subscription activities preserve exact code indentation while old trimmed tasks remain replayable", async t => {
+  const calls = [];
+  const { api, base } = await fixture(t, { fetchImpl: async (_url, options) => {
+    calls.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "This code returns the squared value." } }] }));
+  } });
+  const paper = await visionPaper(api, base), route = `/api/papers/${paper.id}`;
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const text = "    return value ** 2\n";
+  const selection = { kind: "explanation", sourceScope: "pdf", page: 1, text, language: "en" };
+  const assisted = await api(`${route}/assist`, { method: "POST", body: selection });
+  assert.equal(assisted.status, 200); assert.equal(assisted.data.activity.text, text); assert.equal(assisted.data.activity.quote, text);
+  assert.equal(JSON.parse(calls[0].messages[1].content).selectedPassage, text);
+  const task = { ...selection, agentTaskId: "c9535879-9eb9-493e-97eb-1a2caf93c77f", result: "An external explanation of the code." };
+  const imported = await api(`${route}/activities`, { method: "POST", body: task });
+  assert.equal(imported.status, 201); assert.equal(imported.data.activity.text, text);
+  assert.equal((await api(`${route}/activities`, { method: "POST", body: { ...task, quote: text } })).status, 200);
+  assert.equal((await api(`${route}/activities`, { method: "POST", body: { ...task, quote: text.trim() } })).status, 400);
+  const oldTask = { ...task, agentTaskId: "c9535879-9eb9-493e-97eb-1a2caf93c77e", text: text.trim() };
+  assert.equal((await api(`${route}/activities`, { method: "POST", body: oldTask })).status, 201);
+  const replay = await api(`${route}/activities`, { method: "POST", body: oldTask });
+  assert.equal(replay.status, 200); assert.equal(replay.data.reused, true); assert.equal(replay.data.activity.text, text.trim());
+  assert.equal((await api(`${route}/activities`, { method: "POST", body: { ...oldTask, text } })).status, 409);
+  assert.equal((await api(`${route}/assist`, { method: "POST", body: { ...selection, text: "   \n" } })).status, 400);
+  assert.equal((await api(`${route}/assist`, { method: "POST", body: { ...selection, text: "    <script>bad()</script>\n" } })).status, 400);
+  assert.equal(calls.length, 1);
+});
+
 test("inline requests reject duplicates and discard results after source deletion", async (t) => {
   let release;
   let started;
@@ -2182,6 +2210,7 @@ test("OpenAI vision sends local crop pixels to the independent model and records
   assert.equal(evidence.figureId, "chart"); assert.equal(evidence.source.model, "reader-v1");
   assert.equal(evidence.pixelsProvided, true); assert.equal(evidence.analysisMethod, "vision-model");
   assert.equal(evidence.modelUnverified, true); assert.equal(evidence.binding, "client-rendered-pdf-crop");
+  assert.equal(evidence.excluded, true);
   assert.ok(evidence.limitations.some(text => text.includes("not pixel-level correspondence")));
   assert.equal(calls[0].headers.Authorization, "Bearer vision-private-key");
   assert.equal(calls[0].body.model, "reader-v1");
@@ -2189,6 +2218,8 @@ test("OpenAI vision sends local crop pixels to the independent model and records
   assert.match(calls[0].body.messages[0].content, /actual supplied PDF figure crop image/);
   assert.ok(!JSON.stringify(analyzed.data).includes(visionPng));
   assert.ok(!(await readFile(path.join(directory, "store.json"), "utf8")).includes(visionPng));
+  const included = await api(`/api/papers/${paper.id}/visual-evidence/${evidence.id}`, { method: "PATCH", body: { excluded: false } });
+  assert.equal(included.status, 200); assert.equal(included.data.evidence.modelUnverified, true);
   const generated = await api(`/api/papers/${paper.id}/report`, { method: "POST", body: { adversarial: false, style: "quick" } });
   assert.equal(generated.status, 200);
   assert.equal(calls[1].headers.Authorization, "Bearer writer-private-key");
@@ -2203,6 +2234,82 @@ test("OpenAI vision sends local crop pixels to the independent model and records
   assert.equal(answer.status, 200);
   assert.deepEqual(answer.data.message.source.visualEvidenceIds, [evidence.id]);
   assert.equal(answer.data.message.source.pixelsProvided, false);
+});
+
+test("new visual observations require explicit inclusion for both report and chat, while legacy inclusion and past readings remain intact", async t => {
+  const calls = [];
+  const { api, base, app, directory } = await fixture(t, { fetchImpl: async (_url, options) => {
+    const body = JSON.parse(options.body); calls.push(body);
+    return new Response(JSON.stringify({ choices: [{ message: { content: body.model === "reader-v1" ? `PENDING_VISUAL_CLAIM_${calls.length}. [p.1]` : "A source-bound answer. [p.1]" } }] }));
+  } });
+  const paper = await visionPaper(api, base), route = `/api/papers/${paper.id}`;
+  await enableVision(api);
+  const first = (await api(`${route}/figures/chart/analyze`, { method: "POST", body: visionBody() })).data.evidence;
+  assert.equal(first.excluded, true);
+  const savedRaw = app.locals.store.paper(paper.id);
+  savedRaw.figures[0].source.reviewed = true;
+  const note = await api(`${route}/annotations`, { method: "POST", body: { kind: "note", page: 1, body: "I reviewed the displayed crop geometry." } });
+  assert.equal(note.status, 201);
+  const checkContext = async (included, observations) => {
+    const report = await api(`${route}/report`, { method: "POST", body: { adversarial: false, style: "quick" } });
+    assert.equal(report.status, 200); assert.deepEqual(report.data.report.source.visualEvidenceIds, included);
+    for (const item of observations) assert.equal(JSON.stringify(calls.at(-1)).includes(`[Visual evidence ${item.id}]`), included.includes(item.id));
+    const conversation = await api("/api/chats/new", { method: "POST", body: { paperId: paper.id } });
+    const chat = await api("/api/chat", { method: "POST", body: { paperId: paper.id, conversationId: conversation.data.conversationId, message: "Explain the visible evidence." } });
+    assert.equal(chat.status, 200); assert.deepEqual(chat.data.message.source.visualEvidenceIds, included);
+    for (const item of observations) {
+      assert.equal(JSON.stringify(calls.at(-1)).includes(`[Visual evidence ${item.id}]`), included.includes(item.id));
+      if (!included.includes(item.id)) assert.ok(!JSON.stringify(calls.at(-1)).includes(item.markdown));
+    }
+    return report.data.readingVersion;
+  };
+  await checkContext([], [first]);
+  assert.equal(savedRaw.visualEvidence[0].excluded, true, "Reviewing a crop and taking a note do not approve model interpretation");
+  // Simulate a stored pre-policy observation. Loading it must not silently opt it out.
+  delete savedRaw.visualEvidence[0].excluded;
+  await app.locals.store.save();
+  assert.equal((await createApp({ dataDir: directory })).locals.store.paper(paper.id).visualEvidence[0].excluded, undefined);
+  const legacyReading = await checkContext([first.id], [first]);
+  const legacySnapshot = JSON.stringify(legacyReading);
+  const newest = (await api(`${route}/figures/chart/analyze`, { method: "POST", body: visionBody() })).data.evidence;
+  assert.equal(newest.excluded, true);
+  await checkContext([], [first, newest]);
+  const included = await api(`${route}/visual-evidence/${newest.id}`, { method: "PATCH", body: { excluded: false } });
+  assert.equal(included.status, 200); assert.equal(included.data.evidence.modelUnverified, true);
+  assert.equal(included.data.evidence.verified, undefined); assert.equal(included.data.evidence.markdown, newest.markdown);
+  const reading = await checkContext([newest.id], [first, newest]);
+  assert.equal(reading.source.pixelsProvided, false);
+  const current = (await api(route)).data.paper;
+  assert.equal(JSON.stringify(current.readingVersions.find(version => version.id === legacyReading.id)), legacySnapshot);
+  assert.equal(current.visualEvidence.find(item => item.id === first.id).excluded, undefined);
+});
+
+test("including visual evidence rejects changed crops, changed PDF bytes and missing sources without mutating the interpretation", async t => {
+  for (const change of ["crop", "pdf", "missing-pdf", "legacy-pdf"]) {
+    const { api, base, directory, app } = await fixture(t, { fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { content: "A retained unverified model interpretation. [p.1]" } }] })) });
+    const paper = await visionPaper(api, base), route = `/api/papers/${paper.id}`;
+    await enableVision(api);
+    const evidence = (await api(`${route}/figures/chart/analyze`, { method: "POST", body: visionBody() })).data.evidence;
+    const raw = app.locals.store.paper(paper.id);
+    if (change === "crop") {
+      assert.equal((await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Crop correction" }, figures: [{ id: "chart", page: 1, crop: { ...visionCrop, y: .2 }, caption: "Current source region" }] } })).status, 200);
+    } else if (change === "missing-pdf") await rm(path.join(directory, raw.filePath));
+    else {
+      if (change === "legacy-pdf") delete raw.visualEvidence[0].pdfRevision;
+      await writeFile(path.join(directory, raw.filePath), makePdf(["A different source with the same page dimensions."]));
+    }
+    const result = await api(`${route}/visual-evidence/${evidence.id}`, { method: "PATCH", body: { excluded: false } });
+    assert.equal(result.status, 409, change);
+    assert.doesNotMatch(JSON.stringify(result.data), /pdfs\/|private-key/);
+    const retained = (await api(route)).data.paper.visualEvidence[0];
+    assert.equal(retained.excluded, true); assert.equal(retained.modelUnverified, true);
+    assert.equal(retained.markdown, evidence.markdown); assert.equal(retained.updatedAt, undefined);
+    if (change === "legacy-pdf") {
+      assert.equal(retained.sourceRevisionChanged, true);
+      assert.equal((await createApp({ dataDir: directory })).locals.store.paper(paper.id).visualEvidence[0].sourceRevisionChanged, true);
+    }
+    assert.equal((await api(`${route}/visual-evidence/${evidence.id}`, { method: "PATCH", body: { excluded: true } })).status, 200, "Exclusion remains available for stale or missing sources");
+  }
 });
 
 test("Anthropic vision uses image blocks and unavailable models fail without leaking upstream secrets", async (t) => {
@@ -2407,7 +2514,9 @@ test("changed crops mark saved visual evidence stale and exclude it from later r
   } });
   const paper = await visionPaper(api, base); await enableVision(api);
   const route = `/api/papers/${paper.id}`;
-  assert.equal((await api(`${route}/figures/chart/analyze`, { method: "POST", body: visionBody() })).status, 200);
+  const analyzed = await api(`${route}/figures/chart/analyze`, { method: "POST", body: visionBody() });
+  assert.equal(analyzed.status, 200);
+  assert.equal((await api(`${route}/visual-evidence/${analyzed.data.evidence.id}`, { method: "PATCH", body: { excluded: false } })).status, 200);
   await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Crop correction" }, figures: [{ id: "chart", page: 1, crop: { ...visionCrop, y: 0.2 }, caption: "Corrected crop" }] } });
   const evidence = (await api(route)).data.paper.visualEvidence;
   assert.equal(evidence.length, 1); assert.equal(evidence[0].stale, true);
@@ -2428,7 +2537,9 @@ test("text synthesis uses only the latest analysis per figure and never falls ba
   const route = `/api/papers/${paper.id}`;
   const analyze = async (body = visionBody()) => {
     const response = await api(`${route}/figures/chart/analyze`, { method: "POST", body });
-    assert.equal(response.status, 200); return response.data.evidence;
+    assert.equal(response.status, 200);
+    assert.equal((await api(`${route}/visual-evidence/${response.data.evidence.id}`, { method: "PATCH", body: { excluded: false } })).status, 200);
+    return response.data.evidence;
   };
   const older = await analyze();
   const latest = await analyze();
@@ -2471,6 +2582,139 @@ test("in-flight text synthesis records the visual evidence actually sent even wh
     assert.equal(result.source.visualEvidenceMode, "prior-vision-observations");
     assert.equal(paper.visualEvidence.length, 2);
   }
+});
+
+test("figure HTTP edits merge one reviewed crop and preserve legacy reading and translation snapshots", async t => {
+  const { api, base, directory, app } = await fixture(t);
+  const paper = await visionPaper(api, base), route = `/api/papers/${paper.id}`;
+  const raw = app.locals.store.paper(paper.id);
+  raw.summary = { markdown: "A legacy summary.\n\n:::figure chart", language: "en", createdAt: "2026-01-01T00:00:00Z" };
+  raw.translations = { "zh-CN": { summary: { markdown: "旧版解读。", language: "zh-CN", createdAt: "2026-01-02T00:00:00Z", sourceUpdatedAt: raw.summary.createdAt } } };
+  const oldVersions = (await api(route)).data.paper.readingVersions;
+  const beforeGet = structuredClone(raw);
+  const initial = await api(`${route}/figures`);
+  assert.equal(initial.status, 200); assert.match(initial.data.pdfRevision, /^[a-f0-9]{64}$/);
+  assert.deepEqual(raw, beforeGet, "GET is read-only, including legacy materialization");
+  assert.equal(JSON.stringify(initial.data).includes(directory), false);
+  assert.equal(JSON.stringify(initial.data).includes(raw.filePath), false);
+  const envelope = collection => ({ pdfRevision: collection.pdfRevision, expectedFiguresRevision: collection.figuresRevision, source: { method: "manual", reviewed: true } });
+  const inserted = await api(`${route}/figures`, { method: "POST", body: { ...envelope(initial.data), figure: { page: 1, crop: { x: .2, y: .6, width: .5, height: .2 }, caption: "A second reviewed diagram.", label: "Fig. 2" } } });
+  assert.equal(inserted.status, 201, JSON.stringify(inserted.data));
+  assert.equal(inserted.data.figures.length, 2); assert.equal(inserted.data.figure.source.reviewed, true);
+  assert.deepEqual(inserted.data.paper.readingVersions, oldVersions);
+  const second = structuredClone(inserted.data.figure);
+  const edited = await api(`${route}/figures/chart`, { method: "PATCH", body: { ...envelope(inserted.data), figure: { crop: { ...visionCrop, y: .2 }, caption: "A corrected caption." } } });
+  assert.equal(edited.status, 200); assert.equal(edited.data.figure.id, "chart");
+  assert.deepEqual(edited.data.figures.find(figure => figure.id === second.id), second);
+  assert.deepEqual(edited.data.paper.readingVersions, oldVersions);
+  assert.equal(edited.data.figure.history.length, 1);
+  assert.deepEqual(edited.data.figure.history[0].crop, visionCrop);
+  assert.equal(edited.data.paper.pdfRevision, initial.data.pdfRevision);
+  for (const body of [
+    { ...envelope(edited.data), figure: { caption: "Invalid review" }, source: { method: "manual", reviewed: false } },
+    { ...envelope(edited.data), figure: { page: 2 } },
+    { ...envelope(edited.data), figure: { crop: { ...visionCrop, height: 2 } } },
+    { ...envelope(edited.data), figure: { url: "https://example.com/remote.png" } },
+  ]) assert.equal((await api(`${route}/figures/chart`, { method: "PATCH", body })).status, 400);
+  assert.equal((await api(`${route}/figures/not-this-paper`, { method: "PATCH", body: { ...envelope(edited.data), figure: { caption: "Cannot edit unknown figure" } } })).status, 404);
+  const reopened = (await createApp({ dataDir: directory })).locals.store.paper(paper.id);
+  assert.deepEqual(publicPaper(reopened).readingVersions, oldVersions);
+  assert.deepEqual(reopened.figures, edited.data.figures);
+  // Missing records and files must not disclose their private source path.
+  assert.equal((await api("/api/papers/missing/figures")).status, 404);
+  await rm(path.join(directory, raw.filePath));
+  const missing = await api(`${route}/figures`);
+  assert.equal(missing.status, 409); assert.equal(JSON.stringify(missing.data).includes(directory), false);
+});
+
+test("two concurrent figure HTTP writes with one old revision cannot both succeed", async t => {
+  const { api, base, app, directory } = await fixture(t);
+  const paper = await visionPaper(api, base), route = `/api/papers/${paper.id}/figures`;
+  const collection = (await api(route)).data;
+  const makeBody = caption => ({ pdfRevision: collection.pdfRevision, expectedFiguresRevision: collection.figuresRevision,
+    source: { method: "manual", reviewed: true }, figure: { caption, page: 1, crop: visionCrop } });
+  const results = await Promise.all([api(route, { method: "POST", body: makeBody("Competing crop A.") }), api(route, { method: "POST", body: makeBody("Competing crop B.") })]);
+  assert.deepEqual(results.map(result => result.status).sort(), [201, 409]);
+  const successful = results.find(result => result.status === 201).data;
+  assert.equal(successful.figures.length, 2);
+  assert.deepEqual((await api(route)).data, { figures: successful.figures, pdfRevision: successful.pdfRevision, figuresRevision: successful.figuresRevision });
+  assert.deepEqual(app.locals.store.paper(paper.id).figures, successful.figures);
+  assert.deepEqual((await createApp({ dataDir: directory })).locals.store.paper(paper.id).figures, successful.figures);
+});
+
+test("a paid adversarial interactive report keeps one source snapshot while reviewed figures change between stages", async t => {
+  let releaseResearch, releaseInteractive, enteredResearch, enteredInteractive;
+  const researchEntered = new Promise(resolve => { enteredResearch = resolve; });
+  const interactiveEntered = new Promise(resolve => { enteredInteractive = resolve; });
+  const researchGate = new Promise(resolve => { releaseResearch = resolve; });
+  const interactiveGate = new Promise(resolve => { releaseInteractive = resolve; });
+  t.after(() => { releaseResearch(); releaseInteractive(); });
+  const calls = [];
+  const { api, base, app } = await fixture(t, { fetchImpl: async (_url, options) => {
+    const request = JSON.parse(options.body); calls.push(request);
+    const count = calls.length;
+    if (count === 1) { enteredResearch(); await researchGate; }
+    if (count === 4) { enteredInteractive(); await interactiveGate; }
+    const content = count === 4 ? JSON.stringify(interactiveFixture()) : "A grounded original comparison. [p.1]\n\n:::figure chart";
+    return new Response(JSON.stringify({ choices: [{ message: { content } }] }));
+  } });
+  const paper = await visionPaper(api, base), route = `/api/papers/${paper.id}`;
+  const initial = (await api(`${route}/figures`)).data;
+  await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
+  const pending = api(`${route}/report`, { method: "POST", body: { format: "interactive", adversarial: true, language: "en" } });
+  await researchEntered;
+  const edit = (collection, caption, y) => api(`${route}/figures/chart`, { method: "PATCH", body: {
+    pdfRevision: collection.pdfRevision, expectedFiguresRevision: collection.figuresRevision,
+    source: { method: "manual", reviewed: true }, figure: { caption, crop: { ...visionCrop, y } },
+  } });
+  const firstEdit = await edit(initial, "CURRENT_EDIT_ONE", .2);
+  assert.equal(firstEdit.status, 200);
+  // Source metadata can also change while inference is pending. Later stages
+  // must still describe the source present when the paid operation began.
+  app.locals.store.paper(paper.id).pages[0].text = "CURRENT_SOURCE_EDIT_NOT_IN_SNAPSHOT";
+  releaseResearch(); await interactiveEntered;
+  const secondEdit = await edit(firstEdit.data, "CURRENT_EDIT_TWO", .3);
+  assert.equal(secondEdit.status, 200); releaseInteractive();
+  const generated = await pending;
+  assert.equal(generated.status, 200, JSON.stringify(generated.data));
+  assert.equal(calls.length, 4);
+  for (const request of calls) {
+    const serialized = JSON.stringify(request);
+    assert.match(serialized, /Comparison with uncertainty/);
+    assert.doesNotMatch(serialized, /CURRENT_EDIT_|CURRENT_SOURCE_EDIT_NOT_IN_SNAPSHOT/);
+  }
+  assert.deepEqual(generated.data.report.figures, initial.figures);
+  assert.deepEqual(generated.data.readingVersion.figures, initial.figures);
+  assert.equal(generated.data.readingVersion.figuresRevision, initial.figuresRevision);
+  assert.equal(generated.data.readingVersion.pdfRevision, initial.pdfRevision);
+  assert.deepEqual(generated.data.paper.figures, secondEdit.data.figures);
+  assert.equal(generated.data.readingVersion.format, "interactive");
+  assert.equal(generated.data.readingVersion.stages.length, 3);
+});
+
+test("vision records bind PDF bytes and an in-flight byte replacement cannot attach or reuse old observations", async t => {
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  t.after(() => release());
+  let calls = 0;
+  const { api, base, directory, app } = await fixture(t, { fetchImpl: async () => {
+    if (++calls === 2) { entered(); await gate; }
+    return new Response(JSON.stringify({ choices: [{ message: { content: "A model observation of the submitted crop." } }] }));
+  } });
+  const paper = await visionPaper(api, base), route = `/api/papers/${paper.id}`;
+  await enableVision(api);
+  const first = await api(`${route}/figures/chart/analyze`, { method: "POST", body: visionBody() });
+  assert.equal(first.status, 200); assert.match(first.data.evidence.pdfRevision, /^[a-f0-9]{64}$/);
+  assert.equal(first.data.paper.visualEvidence[0].stale, false);
+  const pending = api(`${route}/figures/chart/analyze`, { method: "POST", body: visionBody() });
+  await started;
+  await writeFile(path.join(directory, app.locals.store.paper(paper.id).filePath), makePdf(["Different PDF bytes with the same page dimensions."]));
+  release(); const failed = await pending;
+  assert.equal(failed.status, 409); assert.doesNotMatch(JSON.stringify(failed.data), /pdfs\//);
+  const changed = (await api(route)).data.paper;
+  assert.equal(changed.visualEvidence.length, 1); assert.equal(changed.visualEvidence[0].stale, true);
+  assert.notEqual(changed.pdfRevision, first.data.evidence.pdfRevision);
 });
 
 test("model request timeouts are profile-scoped, public, validated and default to 90 for old profiles", async (t) => {
@@ -2593,6 +2837,7 @@ test("excluding the latest visual observation is reversible, paper-bound and nev
   const older = (await api(`${route}/figures/chart/analyze`, { method: "POST", body: visionBody() })).data.evidence;
   const latest = (await api(`${route}/figures/chart/analyze`, { method: "POST", body: visionBody() })).data.evidence;
   const patchRoute = `${route}/visual-evidence/${latest.id}`;
+  assert.equal((await api(patchRoute, { method: "PATCH", body: { excluded: false } })).status, 200);
   for (const body of [{ excluded: "true" }, { excluded: 1 }, { excluded: null }, {}, { excluded: true, markdown: "replacement" }])
     assert.equal((await api(patchRoute, { method: "PATCH", body })).status, 400);
   const other = (await api("/api/import", { method: "POST", body: { url: "https://example.com/another-visual-context" } })).data.paper;
@@ -2603,8 +2848,10 @@ test("excluding the latest visual observation is reversible, paper-bound and nev
   assert.ok(!Number.isNaN(Date.parse(excluded.data.evidence.updatedAt)));
   assert.equal(excluded.data.paper.visualEvidence.length, 2);
   assert.equal((await createApp({ dataDir: directory })).locals.store.paper(paper.id).visualEvidence.at(-1).excluded, true);
-  // Restoring the older record must not override the exclusion on the latest.
-  assert.equal((await api(`${route}/visual-evidence/${older.id}`, { method: "PATCH", body: { excluded: false } })).status, 200);
+  // Historical records remain auditable but cannot override the latest choice.
+  const historical = await api(`${route}/visual-evidence/${older.id}`, { method: "PATCH", body: { excluded: false } });
+  assert.equal(historical.status, 409); assert.match(historical.data.error, /newer observation/);
+  assert.equal((await api(`${route}/visual-evidence/${older.id}`, { method: "PATCH", body: { excluded: true } })).status, 200);
   const report = await api(`${route}/report`, { method: "POST", body: { adversarial: false } });
   assert.equal(report.status, 200);
   assert.equal(report.data.report.source.visualEvidenceMode, "none");
@@ -2766,7 +3013,7 @@ test("interactive timeout preserves a finished translated article and exposes on
     return new Response(JSON.stringify({ choices: [{ message: { content: "The completed English article. [p.1]" } }] }));
   } });
   const paper = await visionPaper(api, base); const route = `/api/papers/${paper.id}`;
-  const imported = await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: { markdown: "中文解读。", language: "zh-CN", interactive: chineseInteractiveFixture() } } });
+  const imported = await api(`${route}/insights`, { method: "PUT", body: { source: { agent: "Fixture" }, summary: { markdown: "中文解读。[p.1]", language: "zh-CN", interactive: chineseInteractiveFixture() } } });
   await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key" } });
   const result = await api(`${route}/translate`, { method: "POST", body: { target: "reading", readingId: imported.data.paper.activeReadingId, language: "en" } });
   assert.equal(result.status, 200);

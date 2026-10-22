@@ -1,4 +1,5 @@
 import express from "express";
+import packageMetadata from "../package.json" with { type: "json" };
 import multer from "multer";
 import path from "node:path";
 import { existsSync } from "node:fs";
@@ -26,14 +27,20 @@ import {
   validateAssistResult,
   analyzeFigure,
 } from "./models.mjs";
-import { visionModel, prepareVisionInput, visualEvidenceRecord } from "./vision.mjs";
+import { visionModel, prepareVisionInput, visualEvidenceRecord, assertVisualEvidenceIncludable } from "./vision.mjs";
 import { readingPreferences, readingFormat, readingState, materializeReadingVersions, appendReadingVersion, syncReadingTranslations } from "./reading.mjs";
+import { prepareDerivedInteractive } from "./reading-derived.mjs";
 import { generateInteractiveReading, translateInteractiveReading, usableInteractiveTranslation, interactiveTranslationFailure } from "./interactive.mjs";
 import { validateAnnotation, validatePage, annotationMarkdown } from "./annotations.mjs";
+import { readStoredPdf } from "./stored-pdf.mjs";
+import { annotatedPdfDisposition } from "./download-name.mjs";
+import { annotationSourceState, annotationSourceFingerprint, validateAnnotationSourceAcceptance, prepareAnnotationSourceAcceptance } from "./annotation-source.mjs";
 import { figureCaptionsSourceHash, usableFigureCaptions, translateFigureCaptions, captionTranslationFailure } from "./captions.mjs";
+import { usableTranslationBindings } from "./translation-bindings.mjs";
 import { selectionPageBinding } from "./source-selection.mjs";
 import { existingTaskActivity, validateAgentTaskId } from "./activity-task.mjs";
 import { assertUniqueJsonKeys } from "./json.mjs";
+import { currentFigures, figuresRevision, getFigureCollection, prepareFigureChange, pdfRevision, bindPdfRevision } from "./figures.mjs";
 
 import {
   prepareInsights,
@@ -64,8 +71,8 @@ export async function createApp({
   });
   const reportJobs = new Set();
   const translationJobs = new Map();
-  const reusableTranslation = (entry, sourceHash, updatedAt) => entry &&
-    typeof entry.markdown === "string" && entry.markdown.trim() && !entry.stale &&
+  const reusableTranslation = (entry, sourceHash, updatedAt, source) => entry &&
+    usableTranslationBindings(source, entry.markdown) && !entry.stale &&
     (entry.sourceHash ? entry.sourceHash === sourceHash : Boolean(updatedAt) && entry.sourceUpdatedAt === updatedAt);
   const coalesceTranslation = async (key, work) => {
     if (translationJobs.has(key)) return translationJobs.get(key);
@@ -211,7 +218,7 @@ export async function createApp({
   app.get("/api/health", (_request, response) =>
     response.json({
       status: "ok",
-      version: "0.2.0",
+      version: packageMetadata.version,
       modelConfigured: canUseModel(store.data.settings),
       paperCount: store.data.papers.length,
     }),
@@ -458,11 +465,37 @@ export async function createApp({
       response.json({ papers, warnings });
     }),
   );
+  app.get("/api/papers/:id/figures", wrap(async (request, response) => {
+    const paper = paperById(request.params.id);
+    const collection = await getFigureCollection(paper, store.directory);
+    if (store.paper(paper.id) !== paper) throw new ApiError("The paper changed while its figures were being read. Reload it before reviewing figures.", 409);
+    response.json(collection);
+  }));
+  const saveFigure = wrap(async (request, response) => {
+    const paper = paperById(request.params.id);
+    const body = bodyOf(request);
+    const collection = await getFigureCollection(paper, store.directory);
+    if (store.paper(paper.id) !== paper) throw new ApiError("The paper changed while its figure was being saved. Reload it before reviewing figures.", 409);
+    const change = prepareFigureChange(paper, body, { pdfRevision: collection.pdfRevision, figureId: request.params.figureId });
+    // No await between live-revision validation and assignment. A competing
+    // request with the same old revision must now conflict, even during save().
+    materializeReadingVersions(paper);
+    bindPdfRevision(paper, change.pdfRevision);
+    paper.figures = change.figures;
+    const result = structuredClone({ paper: publicPaper(paper), ...change });
+    await store.save();
+    response.status(request.params.figureId ? 200 : 201).json(result);
+  });
+  app.post("/api/papers/:id/figures", saveFigure);
+  app.patch("/api/papers/:id/figures/:figureId", saveFigure);
+
   app.post("/api/papers/:id/figures/:figureId/analyze", wrap(async (request, response) => {
     const paper = paperById(request.params.id);
     const body = bodyOf(request);
     const selected = visionModel(store.data.settings);
-    const input = prepareVisionInput(body, paper, request.params.figureId);
+    // Validate before hashing or reserving a request, then bind the actual PDF
+    // bytes after taking the per-paper lock. Client hashes never supply trust.
+    prepareVisionInput(body, paper, request.params.figureId);
     const language = validateLanguage(body.language);
     if (visionJobs.has(paper.id)) throw new ApiError("A figure analysis is already running for this paper.", 409);
     visionRequests = visionRequests.filter(time => Date.now() - time < 60000);
@@ -470,9 +503,18 @@ export async function createApp({
     visionJobs.add(paper.id);
     visionRequests.push(Date.now());
     try {
+      const revision = await pdfRevision(paper, store.directory);
+      if (store.paper(paper.id) !== paper) throw new ApiError("The paper changed while preparing figure analysis.", 409);
+      bindPdfRevision(paper, revision);
+      const input = prepareVisionInput(body, paper, request.params.figureId);
+      if (input.figure.source?.pdfRevision && input.figure.source.pdfRevision !== revision)
+        throw new ApiError("The source PDF changed since this crop was reviewed. Review and save the current crop before analyzing it.", 409);
       const markdown = validateMarkdown(await analyzeFigure(paper, input, language, selected, { fetchImpl }), "Visual analysis", 50000);
       const current = store.paper(paper.id);
       if (!current) throw new ApiError("The paper was deleted while analyzing the figure.", 409);
+      const completedRevision = await pdfRevision(current, store.directory);
+      if (store.paper(paper.id) !== current) throw new ApiError("The paper changed while analyzing the figure.", 409);
+      bindPdfRevision(current, completedRevision);
       // If an agent corrected the crop during inference, do not attach the old
       // image interpretation to a newly positioned figure with the same id.
       let fingerprint;
@@ -493,6 +535,22 @@ export async function createApp({
     const body = bodyOf(request);
     if (typeof body.excluded !== "boolean" || Object.keys(body).some(key => key !== "excluded"))
       throw new ApiError("Provide only excluded as a boolean.");
+    if (!body.excluded) {
+      assertVisualEvidenceIncludable(paper, evidence);
+      const revision = await pdfRevision(paper, store.directory);
+      if (store.paper(paper.id) !== paper || !paper.visualEvidence?.includes(evidence))
+        throw new ApiError("The paper or observation changed while checking its source. Reload before choosing visual evidence.", 409);
+      bindPdfRevision(paper, revision);
+      try {
+        // Recheck the latest observation and crop after the asynchronous read.
+        assertVisualEvidenceIncludable(paper, evidence);
+      } catch (error) {
+        // Persist a newly discovered byte mismatch so later context selection
+        // also withdraws stale legacy observations. No interpretation is changed.
+        await store.save();
+        throw error;
+      }
+    }
     evidence.excluded = body.excluded;
     evidence.updatedAt = new Date().toISOString();
     await store.save();
@@ -529,11 +587,62 @@ export async function createApp({
     await store.save();
     response.json({ ok: true, annotation });
   }));
+  const annotationPdfSource = wrap(async (request, response) => {
+    const paper = paperById(request.params.id);
+    const accepting = request.method === "POST";
+    const body = accepting ? bodyOf(request) : undefined;
+    if (accepting) validateAnnotationSourceAcceptance(body);
+    if (!paper.filePath) return response.status(404).json({ code: "pdf_source_missing", error: "Import a source PDF before reviewing its annotation export binding." });
+    const fingerprint = annotationSourceFingerprint(paper);
+    let bytes;
+    try { bytes = await readStoredPdf(paper, store.directory); }
+    catch { return response.status(409).json({ code: "pdf_source_unavailable", error: "The stored PDF is unavailable. Reimport the source before reviewing its annotation export binding." }); }
+    if (store.paper(paper.id) !== paper || fingerprint !== annotationSourceFingerprint(paper))
+      return response.status(409).json({ code: "pdf_source_binding_changed", error: "The paper or its source choice changed during this request. Reload its status before continuing." });
+    const pdfRevision = contentHash(bytes);
+    if (accepting) {
+      // No await between checking the live binding and assigning it: concurrent
+      // requests cannot overwrite the first accepted choice or its timestamp.
+      paper.annotationExportBinding = prepareAnnotationSourceAcceptance(paper, body, pdfRevision);
+      const state = annotationSourceState(paper, pdfRevision);
+      await store.save();
+      return response.status(201).json(state);
+    }
+    response.json(annotationSourceState(paper, pdfRevision));
+  });
+  app.get("/api/papers/:id/annotations/pdf-source", annotationPdfSource);
+  app.post("/api/papers/:id/annotations/pdf-source", annotationPdfSource);
+
   app.get("/api/papers/:id/annotations/export", wrap(async (request, response) => {
     const paper = paperById(request.params.id);
     const format = request.query.format || "markdown";
-    if (!["markdown", "json"].includes(format)) throw new ApiError("Export format must be markdown or json.");
-    const annotations = store.data.annotations.filter((item) => item.paperId === paper.id && !item.deletedAt);
+    if (!["markdown", "json", "pdf"].includes(format)) throw new ApiError("Export format must be markdown, json or pdf.");
+    const annotations = structuredClone(store.data.annotations.filter((item) => item.paperId === paper.id && !item.deletedAt));
+    if (format === "pdf") {
+      if (!paper.filePath) return response.status(404).json({code: "pdf_source_missing", error: "Import a source PDF before exporting an annotated copy."});
+      let pdfBytes;
+      try { pdfBytes = await readStoredPdf(paper, store.directory); }
+      catch { return response.status(409).json({code: "pdf_source_unavailable", error: "The stored PDF is unavailable. Reimport the source before exporting annotations."}); }
+      // A figure/vision review may update pdfRevision to describe the current
+      // file; that must not rebind older annotation positions to different bytes.
+      const sourceState = annotationSourceState(paper, contentHash(pdfBytes));
+      if (sourceState.bindingStatus === "unbound") return response.status(409).json({code: "pdf_source_unbound", error: "This older import has no original PDF fingerprint. Review the current PDF and explicitly accept it for annotation export, or keep the Markdown or JSON export. This does not verify historical annotation locations."});
+      if (sourceState.bindingStatus === "changed") return response.status(409).json({code: "pdf_source_changed", error: "The source PDF changed. Review the annotation locations before exporting."});
+      const { exportAnnotatedPdf, AnnotationPdfGeometryError, AnnotationPdfExportError } = await import("./annotation-pdf.mjs");
+      let result;
+      try { result = await exportAnnotatedPdf({pdfBytes, annotations, paperId: paper.id}); }
+      catch (error) {
+        if (error instanceof AnnotationPdfGeometryError || error instanceof AnnotationPdfExportError) return response.status(422).json({code: error.code, error: error.message});
+        throw error;
+      }
+      response.setHeader("Content-Disposition", annotatedPdfDisposition(paper.title));
+      response.setHeader("Cache-Control", "no-store");
+      response.setHeader("X-Annotation-Count", String(result.annotationCount));
+      response.setHeader("X-Annotation-Page-Comments", String(result.warnings.filter(item => item.code === "annotation_page_comment").length));
+      response.setHeader("X-Annotation-Source-Binding", sourceState.bindingStatus);
+      response.type("application/pdf").send(Buffer.from(result.bytes));
+      return;
+    }
     response.setHeader("Content-Disposition", `attachment; filename="paper-notes.${format === "json" ? "json" : "md"}"`);
     if (format === "json") response.json({ version: 1, paper: { id: paper.id, title: paper.title, url: paper.url }, annotations });
     else response.type("text/markdown").send(annotationMarkdown(paper, annotations));
@@ -541,13 +650,17 @@ export async function createApp({
 
   const passageRequest = (body, paper) => {
     if (!["translation", "explanation"].includes(body.kind)) throw new ApiError("Assist kind must be translation or explanation.");
+    const text = body.text ?? body.quote;
+    validateMarkdown(text, "Selected text", 12000);
     const common = {
       kind: body.kind,
-      text: validateMarkdown(body.text ?? body.quote, "Selected text", 12000),
+      text,
       language: validateLanguage(body.language),
     };
-    if (body.text !== undefined && body.quote !== undefined && validateMarkdown(body.quote, "quote", 12000) !== common.text)
-      throw new ApiError("text and quote must describe the same selected passage.");
+    if (body.text !== undefined && body.quote !== undefined) {
+      validateMarkdown(body.quote, "quote", 12000);
+      if (body.quote !== common.text) throw new ApiError("text and quote must describe the same selected passage.");
+    }
     const sourceScope = body.sourceScope ?? (paper.filePath ? "pdf" : "source-text");
     if (!["pdf", "source-text", "reading", "abstract"].includes(sourceScope))
       throw new ApiError("sourceScope must be pdf, source-text, reading, or abstract.");
@@ -639,17 +752,36 @@ export async function createApp({
           "A report is already being generated for this paper.",
           409,
         );
+      // All paid stages and the final saved version share one immutable source
+      // snapshot. A reviewed figure may change in the live library meanwhile.
+      const sourcePaper = structuredClone(paper);
+      sourcePaper.figures = currentFigures(sourcePaper);
+      original = original ? structuredClone(original) : undefined;
+      const readingFigures = structuredClone(original?.figures || sourcePaper.figures);
+      const sourceFiguresRevision = original?.figuresRevision || figuresRevision({ ...sourcePaper, figures: readingFigures });
       reportJobs.add(paper.id);
       try {
+        if (sourcePaper.filePath) {
+          const revision = await pdfRevision(sourcePaper, store.directory);
+          if (store.paper(paper.id) !== paper) throw new ApiError("The paper changed while preparing its report.", 409);
+          bindPdfRevision(sourcePaper, revision);
+          bindPdfRevision(paper, revision);
+          // Explicitly obsolete crops are not eligible for a new synthesis.
+          // Archived version conversion still keeps its own immutable figures.
+          if (!original) {
+            sourcePaper.figures = sourcePaper.figures.filter(figure => !figure.source?.pdfRevision || figure.source.pdfRevision === revision);
+            readingFigures.splice(0, readingFigures.length, ...structuredClone(sourcePaper.figures));
+          }
+        }
         const report = original ? {
           markdown: original.markdown, language: original.language || "en", ...preferences,
           mode: "model-interactive", createdAt: new Date().toISOString(), stages: [],
           source: { kind: "model", model: settings.model },
-          ...(original.source ? { articleSource: original.source } : {}),
+          ...(original.articleSource || original.source ? { articleSource: original.articleSource || original.source } : {}),
           derivedFromReadingId: original.id,
-          figures: original.figures || paper.figures || [],
+          figures: readingFigures,
         } : await generateReport(
-          paper,
+          sourcePaper,
           settings,
           {
             adversarial: body.adversarial !== false,
@@ -658,13 +790,16 @@ export async function createApp({
             fetchImpl,
           },
         );
+        report.figures = readingFigures;
+        report.figuresRevision = original ? sourceFiguresRevision : figuresRevision(sourcePaper);
+        if (sourcePaper.pdfRevision) report.pdfRevision = original?.pdfRevision || sourcePaper.pdfRevision;
         report.markdown = validateMarkdown(report.markdown);
         report.format = format;
         if (format === "interactive") {
           try {
             report.interactive = await generateInteractiveReading({
               markdown: report.markdown, language: report.language, ...preferences,
-              figures: original?.figures || paper.figures || discoverFigures(paper), pageCount: paper.pages?.length,
+              figures: readingFigures, pageCount: sourcePaper.pages?.length,
               callModel: (prompt) => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens || 4096 }),
             });
           } catch (error) {
@@ -686,10 +821,10 @@ export async function createApp({
         if (paper.report)
           paper.reportHistory = [...(paper.reportHistory || []), paper.report];
         paper.report = report;
-        paper.figures ??= discoverFigures(paper);
-        const readingVersion = appendReadingVersion(paper, report, { ...preferences, target: "report", ...(original ? { figures: original.figures || paper.figures || [], title: original.title } : {}) });
+        const readingVersion = appendReadingVersion(paper, report, { ...preferences, target: "report", figures: readingFigures, ...(original ? { title: original.title } : {}) });
         await store.save();
-        response.json({ report, readingVersion, paper: publicPaper(paper) });
+        const published = publicPaper(paper);
+        response.json({ report, readingVersion: published.readingVersions.find(version => version.id === readingVersion.id), paper: published });
       } finally {
         reportJobs.delete(paper.id);
       }
@@ -710,7 +845,7 @@ export async function createApp({
         const translationOptions = { language, pageCount: paper.pages?.length, figures: version.figures || paper.figures };
         const captionsHash = figureCaptionsSourceHash(translationOptions.figures);
         const sameLanguage = validateLanguage(version.language || "en") === language;
-        const article = reusableTranslation(cached, sourceHash, version.createdAt) ? cached : sameLanguage ? {
+        const article = reusableTranslation(cached, sourceHash, version.createdAt, version.markdown) ? cached : sameLanguage ? {
           markdown: version.markdown, language, createdAt: version.createdAt,
           sourceHash, sourceUpdatedAt: version.createdAt,
           ...(version.mode ? { mode: version.mode } : {}), ...(version.source ? { source: version.source } : {}),
@@ -762,7 +897,7 @@ export async function createApp({
           // An external agent may have published a translation while the model
           // was running. Preserve that valid result instead of overwriting it.
           const current = saved.translations?.[language];
-          if (reusableTranslation(current, sourceHash, saved.createdAt) && contentHash(JSON.stringify(current)) !== cachedFingerprint) return current;
+          if (reusableTranslation(current, sourceHash, saved.createdAt, saved.markdown) && contentHash(JSON.stringify(current)) !== cachedFingerprint) return current;
           Object.assign(translated, { sourceHash, sourceUpdatedAt: saved.createdAt });
           saved.translations ||= {};
           saved.translations[language] = translated;
@@ -776,7 +911,7 @@ export async function createApp({
       const sourceUpdatedAt = sourceVersion(paper, target);
       const sourceHash = contentHash(source);
       const cached = paper.translations?.[language]?.[target];
-      if (reusableTranslation(cached, sourceHash, sourceUpdatedAt))
+      if (reusableTranslation(cached, sourceHash, sourceUpdatedAt, source))
         return response.json({ translation: cached, paper: publicPaper(paper) });
       const key = JSON.stringify([paper.id, target, language, sourceHash, sourceUpdatedAt]);
       const translation = await coalesceTranslation(key, async () => {
@@ -784,7 +919,7 @@ export async function createApp({
         if (!store.paper(paper.id) || sourceVersion(paper, target) !== sourceUpdatedAt || translationSource(paper, target) !== source)
           throw new ApiError("The source changed while translating. Retry against the current content.", 409);
         const current = paper.translations?.[language]?.[target];
-        if (reusableTranslation(current, sourceHash, sourceUpdatedAt)) return current;
+        if (reusableTranslation(current, sourceHash, sourceUpdatedAt, source)) return current;
         Object.assign(translated, { sourceUpdatedAt, sourceHash });
         paper.translations ||= {};
         paper.translations[language] ||= {};
@@ -806,6 +941,16 @@ export async function createApp({
           409,
         );
       const body = bodyOf(request);
+      if (Object.hasOwn(body, "derivedInteractive")) {
+        const result = prepareDerivedInteractive(body, paper);
+        // Preserve the reader's effective selection, including a legacy default.
+        // No await separates revision/idempotency validation and the insertion.
+        materializeReadingVersions(paper);
+        if (!result.reused) paper.readingVersions.push(result.readingVersion);
+        await store.save();
+        const published = publicPaper(paper);
+        return response.json({paper: published, readingVersion: published.readingVersions.find(version => version.id === result.readingVersion.id), reused: result.reused});
+      }
       const preferences = readingPreferences(body, body.summary && !body.report ? "quick" : "deep");
       const update = prepareInsights(body, paper);
       materializeReadingVersions(paper);
@@ -1004,7 +1149,12 @@ export async function createApp({
   app.post(
     "/api/chat",
     wrap(async (request, response) => {
-      const { message, history } = bodyOf(request);
+      const { message, history, processing } = bodyOf(request);
+      if (processing !== undefined && !["api", "extractive"].includes(processing))
+        throw new ApiError("processing must be api or extractive; omit it for the compatible automatic behavior.");
+      const settings = { ...store.data.settings };
+      if (processing === "api" && !canUseModel(settings))
+        throw Object.assign(new ApiError("API answering is not configured. Use your Codex / Claude subscription session, configure a model API, or explicitly choose local source retrieval.", 409), { code: "chat_model_unconfigured" });
       const paperId = validatePaperContext(request.body.paperId ?? null);
       const suppressBoundSelection = request.body.metadata === null;
       let metadata = questionMetadata(suppressBoundSelection ? { ...request.body, metadata: undefined } : request.body, paperId);
@@ -1060,8 +1210,8 @@ export async function createApp({
         papers,
         message.trim(),
         previous,
-        { ...store.data.settings },
-        { fetchImpl, metadata },
+        settings,
+        { fetchImpl, metadata, forceExtractive: processing === "extractive" },
       );
       if (paperId && !store.paper(paperId))
         throw new ApiError(
@@ -1138,7 +1288,7 @@ export async function createApp({
     if (error.type === "entity.too.large")
       return response.status(413).json({ error: "Request body is too large." });
     response.status(error.status || 500).json({
-      ...(error instanceof ApiError && ["selection_no_translatable_text", "selection_model_unconfigured"].includes(error.code) ? { code: error.code } : {}),
+      ...(error instanceof ApiError && ["selection_no_translatable_text", "selection_model_unconfigured", "chat_model_unconfigured", "pdf_source_binding_invalid", "pdf_source_acceptance_invalid", "pdf_source_changed", "pdf_source_already_bound"].includes(error.code) ? { code: error.code } : {}),
       error:
         error instanceof ApiError
           ? error.message

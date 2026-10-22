@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { ApiError } from "./network.mjs";
 import { assertUniqueJsonKeys } from "./json.mjs";
-import { substantialLanguageMismatch } from "./translation-language.mjs";
+import { substantialLanguageMismatch, hasUsableResultText } from "./translation-language.mjs";
 
 export const CAPTION_TRANSLATION_INCOMPLETE = "Figure caption translation is incomplete or out of date. The article and available interactive content remain available; retry to translate captions.";
 const MAX_CAPTION = 6000;
@@ -33,7 +33,7 @@ export function validateFigureCaptions(input, figures = [], { language } = {}) {
     throw new ApiError("figureCaptions must include every bound non-empty caption exactly once, with no unknown figure IDs.");
   return Object.fromEntries(sources.map(({ id, caption }) => {
     const value = Object.hasOwn(input, id) ? input[id] : undefined;
-    if (typeof value !== "string" || !value.trim() || value.length > MAX_CAPTION || /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(value))
+    if (!hasUsableResultText(value) || value.length > MAX_CAPTION || /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(value))
       throw new ApiError(`Each translated figure caption must be non-empty text of up to ${MAX_CAPTION} characters.`);
     if (substantialLanguageMismatch(value.trim(), language, caption))
       throw new ApiError("Figure caption contains substantial untranslated prose for the requested language.");

@@ -1,3 +1,9 @@
+/** Reject only empty/sentinel responses, not short technical words or formulas. */
+export function hasUsableResultText(value) {
+  const cleaned = typeof value === "string" ? value.trim().replace(/^```(?:json|text)?\s*/i, "").replace(/\s*```$/, "").trim() : "";
+  return Boolean(cleaned) && !/^(?:null|undefined|"null"|'null'|`null`)$/i.test(cleaned);
+}
+
 /** Conservative en/zh prose mismatch check, not general language identification. */
 export function substantialLanguageMismatch(value, language, original) {
   const target = String(language || "").toLowerCase().split("-")[0];

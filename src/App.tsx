@@ -1,6 +1,9 @@
 import { prepareAgentQuestionTask } from "./agent-task";
 import { parseReadingSectionLocation, readingSectionUrl, READING_SECTION_EVENT } from "./reading-sections";
 import { activityResultText, usableActivityResult } from "./activity-result";
+import { resolveAbstractSource, type AbstractSourceView } from "./abstract-navigation";
+import {paperBibtex,paperDisplayDate} from './paper-bibliography';
+import {readWorkspaceHistory,workspaceHistoryState,workspaceLocation,workspaceUrl,loadWorkspaceHistoryPositions,saveWorkspaceHistoryPositions,type WorkspaceHistory} from './workspace-history';
 import { useChatScroll } from "./useChatScroll";
 import { adoptChatScroll, readChatScroll, removePaperChatScroll } from "./chat-scroll";
 import "./chat-scroll.css";
@@ -47,6 +50,7 @@ import {
 } from "lucide-react";
 import Mark from "./Markdown";
 import MessageActions from "./MessageActions";
+import QuestionTaskBridge,{type PreparedQuestionTask} from './QuestionTaskBridge';
 import SelectionTools from "./SelectionTools";
 import ReadingOverview from "./ReadingOverview";
 import NotebookPanel from "./NotebookPanel";
@@ -73,6 +77,7 @@ import { selectionErrorMessage } from "./selection-errors";
 import { pageLabel } from "./page-label";
 import ReadingTools, { ModelSelect } from "./ReadingTools";
 const PdfFigure = lazy(() => import("./PdfFigure"));
+const FigureManager = lazy(() => import("./FigureManager"));
 
 type View = "discover" | "library" | "saved" | "research" | "paper";
 function passageMetadata(passage: DraftPassage) {
@@ -92,17 +97,7 @@ const welcomeQueries = [
 ];
 const exampleUrl = "https://arxiv.org/abs/1706.03762";
 
-function date(value?: string) {
-  if (!value) return t("本地论文");
-  const d = new Date(value);
-  return isNaN(d.getTime())
-    ? t("本地论文")
-    : d.toLocaleDateString(getLocale() === "zh" ? "zh-CN" : "en", {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-      });
-}
+function date(paper: Paper) {return paperDisplayDate(paper,getLocale()==='zh'?'zh-CN':'en')||t('本地论文');}
 function download(text: string, name: string, type = "text/markdown") {
   const u = URL.createObjectURL(new Blob([text], { type }));
   const a = document.createElement("a");
@@ -114,15 +109,26 @@ function download(text: string, name: string, type = "text/markdown") {
 
 export default function App() {
   const { locale, setLocale } = useLocale();
-  const [view, setView] = useState<View>("discover");
+  const [view, setView] = useState<View>(()=>{const initial=workspaceLocation(location.href);return initial.view==='paper'?'discover':initial.view;});
   const [papers, setPapers] = useState<Paper[]>([]);
   const [paper, setPaper] = useState<Paper | null>(null);
+  const [figureReview, setFigureReview] = useState<{paperId:string;page:number}>();
   const [tab, setTab] = useState<"summary" | "paper">("summary");
   const [pdfVisited, setPdfVisited] = useState(false);
-  const [pdfNavigation, setPdfNavigation] = useState<{ page: number; nonce: number; fromOverview?: boolean; quote?: string }>();
+  const [pdfNavigation, setPdfNavigation] = useState<{ page: number; nonce: number; fromOverview?: boolean; quote?: string; position?:PdfReadingPosition }>();
+  const [historyReading,setHistoryReading]=useState<{paperId:string;readingId?:string;presentation:'article'|'interactive';revision:number}>();
+  const historySuppressed=useRef(false);
+  const historyRestoreTimer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined);
+  const historyEntry=useRef(readWorkspaceHistory(history.state)?.entryId);
+  const [historyPositions]=useState(()=>({current:loadWorkspaceHistoryPositions()}));
+  const historyCacheTimer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined);
+  const pdfPositionCapture=useRef<(()=>void)|undefined>(undefined);
   const [overviewReturn, setOverviewReturn] = useState(false);
   const overviewScroll = useRef(0);
   const summaryRef = useRef<HTMLElement>(null);
+  const [abstractSource, setAbstractSource] = useState<(AbstractSourceView & {paperId:string;returnTo:{tab:"summary"|"paper";scrollY:number;expanded:boolean;companion:CompanionMode;anchor?:{hash:string;offset:number}}})>();
+  const [abstractNavigation,setAbstractNavigation] = useState<{paperId:string;nonce:number;target:'abstract'|'return';scrollY?:number;anchor?:{hash:string;offset:number}}>();
+  const pendingAbstractNavigation=useRef(0);
   const [initialPdfPosition, setInitialPdfPosition] = useState<PdfReadingPosition>();
   const [initialPresentation, setInitialPresentation] = useState<"article" | "interactive">();
   const [overviewContext, setOverviewContext] = useState<(OverviewReadingContext & { paperId: string; source: string })>();
@@ -130,6 +136,7 @@ export default function App() {
   const navigationSequence = useRef(0);
   function changePaperTab(next: "summary" | "paper") {
     if (next === tab) return;
+    if(paper)recordWorkspaceNavigation(workspaceUrl(location.href,{view:'paper',paperId:paper.id,tab:next,hash:next==='summary'?location.hash:''}),{...workspaceSnapshot(),tab:next});
     if (tab === "summary") rememberOverview(true);
     if (next === "paper") setPdfVisited(true);
     setTab(next);
@@ -206,6 +213,9 @@ export default function App() {
   const [mobileNav, setMobileNav] = useState(false);
   const [copyState, setCopyState] = useState<{kind: "citation" | "agent"; context: string} | null>(null);
   const [copyingAgent, setCopyingAgent] = useState(false);
+  const preparingQuestion=useRef(false);
+  const [questionModes,setQuestionModes]=useState<Record<string,'api'|'agent'|'extractive'>>({});
+  const [questionTasks,setQuestionTasks]=useState<Record<string,PreparedQuestionTask>>({});
   const [showCite, setShowCite] = useState(false);
   const [pdfPage, setPdfPage] = useState(1);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -221,9 +231,10 @@ export default function App() {
   const navigationRevision = useRef(0);
   const initialized = useRef(false);
   const initialNavigation = useRef((() => {
-    const params = new URLSearchParams(location.search);
-    const page = Number(params.get("page"));
-    return { paperId: params.get("paper"), page: Number.isInteger(page) && page > 0 ? page : undefined };
+    const route=workspaceLocation(location.href),params=new URLSearchParams(location.search);
+    const stored=readWorkspaceHistory(history.state);
+    const restoration=stored?.entryId?historyPositions.current.get(stored.entryId)||stored:stored;
+    return {...route,tab:params.has('tab')||params.has('page')||location.hash?route.tab:undefined,restoration};
   })());
   useEffect(() => {
     const followSectionLink = () => {
@@ -418,11 +429,12 @@ export default function App() {
     api<Settings>("/settings")
       .then(setSettings)
       .catch((e) => setError(e.message));
-    const { paperId: id, page } = initialNavigation.current;
+    const { paperId: id, page, tab:initialTab,restoration } = initialNavigation.current;
     if (id)
       api<{ paper: Paper }>(`/papers/${encodeURIComponent(id)}`)
-        .then((r) => { if (navigationRevision.current === revision) openPaper(r.paper, { page }); })
+        .then((r) => { if (navigationRevision.current === revision) openPaper(r.paper, { page,tab:initialTab,historyMode:'replace',restoration }); })
         .catch((e) => { if (navigationRevision.current === revision) setError(e.message); });
+    else {const entryId=crypto.randomUUID();historyEntry.current=entryId;history.replaceState(workspaceHistoryState({version:1,view,entryId}),'',location.href);}
   }, []);
   useEffect(() => {
     if (notice) {
@@ -470,7 +482,8 @@ export default function App() {
     const r = await api<{ papers: Paper[] }>("/papers");
     setPapers(r.papers);
   }
-  function navigate(v: View) {
+  function navigate(v: View,historyMode:'push'|'none'='push') {
+    if(historyMode==='push')recordWorkspaceNavigation(workspaceUrl(location.href,{view:v}),{version:1,view:v});
     rememberOverview(true);
     if (view === "paper" && paper) saveReadingTab(paper.id, pdfDocumentKey(paper), tab);
     flushReadingPositions();
@@ -479,7 +492,6 @@ export default function App() {
     setError("");
     setMobileNav(false);
     setResults(null);
-    history.replaceState({}, "", location.pathname);
     if (v !== "paper") paperRef.current = undefined;
     const context = activateChat();
     if (v === "research") {
@@ -497,16 +509,21 @@ export default function App() {
         .finally(() => { if (chatContext.current === context) setConversationBusy(false); });
     }
   }
-  async function openPaper(p: Paper, intent?: { page?: number }) {
+  async function openPaper(p: Paper, intent?: { page?: number;tab?:'summary'|'paper';historyMode?:'push'|'replace'|'none';restoration?:WorkspaceHistory }) {
     rememberOverview(true);
     if (view === "paper" && paper) saveReadingTab(paper.id, pdfDocumentKey(paper), tab);
     flushReadingPositions();
     const saved = readReadingPosition(p.id, pdfDocumentKey(p));
-    const previousOverview = saved?.overviews.find(position => position.language === language && (!p.activeReadingId || position.versionId === p.activeReadingId));
+    const restoration=intent?.restoration?.paperId===p.id&&intent.restoration.source===pdfDocumentKey(p)?intent.restoration:undefined;
+    const previousOverview = restoration?.overview||saved?.overviews.find(position => position.language === language && (!p.activeReadingId || position.versionId === p.activeReadingId));
+    if(restoration?.overview)saveOverviewPosition(p.id,pdfDocumentKey(p),restoration.overview);
+    if(restoration?.language)setLanguage(restoration.language);
+    if(restoration?.original!==undefined)setShowOriginal(restoration.original);
+    setHistoryReading(previousOverview?{paperId:p.id,readingId:previousOverview.versionId,presentation:previousOverview.presentation,revision:++navigationSequence.current}:undefined);
     setOverviewContext(undefined);
     setInitialPresentation(previousOverview?.presentation);
     const explicitPage = intent?.page;
-    const resume = explicitPage ? { page: explicitPage, fraction: 0, left: 0, zoom: saved?.pdf?.zoom ?? null } : saved?.pdf;
+    const resume = restoration?.pdf||(explicitPage ? { page: explicitPage, fraction: 0, left: 0, zoom: saved?.pdf?.zoom ?? null } : saved?.pdf);
     setInitialPdfPosition(resume);
     const revision = ++navigationRevision.current;
     paperRef.current = p.id;
@@ -515,7 +532,7 @@ export default function App() {
     setPaper(p);
     setView("paper");
     setExpanded(!!previousOverview?.expanded);
-    const startInPdf = !!explicitPage || (!parseReadingSectionLocation(location.href, p.id) && saved?.tab === "paper");
+    const startInPdf = (restoration?.tab||intent?.tab)?(restoration?.tab||intent?.tab)==='paper':!!explicitPage || (!parseReadingSectionLocation(location.href, p.id) && saved?.tab === "paper");
     const startPage = Math.max(1, Math.min(resume?.page || 1, p.pageCount || resume?.page || 1));
     overviewScroll.current = 0;
     setPdfVisited(startInPdf);
@@ -527,8 +544,12 @@ export default function App() {
     setActivities([]);
     setChat([]);
     setError("");
-    history.replaceState({}, "", `${location.pathname}?paper=${encodeURIComponent(p.id)}${explicitPage ? `&page=${startPage}` : ""}${location.hash}`);
+    if(intent?.historyMode!=='none'){
+      const hash=new URLSearchParams(location.search).get('paper')===p.id?location.hash:'';
+      recordWorkspaceNavigation(workspaceUrl(location.href,{view:'paper',paperId:p.id,tab:startInPdf?'paper':'summary',...(explicitPage?{page:startPage}:{}),hash}),{version:1,view:'paper',paperId:p.id,source:pdfDocumentKey(p),tab:startInPdf?'paper':'summary',overview:previousOverview,pdf:resume,language,original:showOriginal},intent?.historyMode==='replace');
+    }
     try {
+      const mutationRevision=paperMutation.current;
       const [detail, r] = await Promise.all([
         api<{ paper: Paper }>(`/papers/${encodeURIComponent(p.id)}`),
         api<{ messages: Message[]; conversationId?: string }>(
@@ -536,8 +557,10 @@ export default function App() {
         ),
       ]);
       if (navigationRevision.current === revision && paperRef.current === p.id) {
-        setPaper(detail.paper);
-        setPapers(previous => previous.map(item => item.id === detail.paper.id ? detail.paper : item));
+        if(paperMutation.current===mutationRevision){
+          setPaper(detail.paper);
+          setPapers(previous => previous.map(item => item.id === detail.paper.id ? detail.paper : item));
+        }
         if (chatContext.current === context) {
           activateChat(p.id, r.conversationId, true);
           setChat(r.messages);
@@ -706,6 +729,7 @@ export default function App() {
           paperId: context.paperId,
           conversationId: context.conversationId,
           message,
+          processing: questionMode==='extractive'?'extractive':'api',
           ...(!submitted.verbatim ? { questionText: text.trim() } : {}),
           ...(metadata !== undefined ? { metadata } : {}),
           // Saved sessions carry server-verified source provenance. Sending a
@@ -751,7 +775,7 @@ export default function App() {
       }));
       setChat(response.messages); setShowHistory(false);
       setNotice(t("已创建分支，原对话仍保留在历史中。", "Created a branch. The original conversation remains in history."));
-      if (action === "retry" && modelReady) await ask(response.draft.message, {history:response.messages});
+      if (action === "retry" && modelReady && questionMode==='api') await ask(response.draft.message, {history:response.messages});
       else requestAnimationFrame(() => composerRef.current?.focus({preventScroll:true}));
     } catch (reason) {
       if (chatContext.current === context) setError((reason as Error).message);
@@ -793,6 +817,9 @@ export default function App() {
         settings.baseUrl,
       ));
   const pdfSource = paper?.localPdfUrl || paper?.pdfUrl;
+  const questionContext=view==='paper'&&paper?paper.id:'research';
+  const questionMode=questionModes[questionContext]||(modelReady?'api':view==='paper'&&paper?'agent':'extractive');
+  const questionTask=questionTasks[chatDraftKey(view==='paper'?paper?.id:undefined,conversationId)];
   const translations = showOriginal
     ? undefined
     : paper?.translations?.[language];
@@ -801,15 +828,18 @@ export default function App() {
   const agentQuestion = selectedPassage && !draft.verbatim
     ? `${prompt.trim() || t("请解释这段原文")}\n\n${selectedPassage.sourceLabel || t("选中的原文", "Selected passage")}${selectedPassage.page ? ` [${pageLabel(selectedPassage.page,selectedPassage.pages)}]` : ""}:\n${selectedPassage.text}`
     : prompt;
-  const agentCopied = copyState?.kind === "agent" && copyState.context === JSON.stringify([paper?.id, conversationId, agentQuestion, language, locale]);
   const citationCopied = copyState?.kind === "citation" && copyState.context === paper?.id;
-  async function prepareCurrentAgentQuestionTask() {
+  async function prepareCurrentAgentQuestionTask(questionText?:string) {
     const context = chatContext.current;
     if (!paper || context.paperId !== paper.id) throw new Error(t("论文仍在加载，请稍后重试。", "The paper is still loading. Try again shortly."));
     const currentDraft = readChatDraft(context.key);
+    const text=questionText??currentDraft.text;
+    const boundQuestion=currentDraft.passage&&!currentDraft.verbatim
+      ? `${text.trim()||t('请解释这段原文')}\n\n${currentDraft.passage.sourceLabel||t('选中的原文','Selected passage')}${currentDraft.passage.page?` [${pageLabel(currentDraft.passage.page,currentDraft.passage.pages)}]`:''}:\n${currentDraft.passage.text}`
+      :text;
     const result = await prepareAgentQuestionTask({
       origin: location.origin, paperId: paper.id, conversationId: context.conversationId,
-      sessionKey: context, question: agentQuestion.trim() || t("这篇论文的核心贡献和证据边界是什么？", "What are the paper's main contributions and evidence limits?"),
+      sessionKey: context, question: boundQuestion.trim() || t("这篇论文的核心贡献和证据边界是什么？", "What are the paper's main contributions and evidence limits?"),
       language, locale, omitConversationSelection: currentDraft.contextPolicy === "omit",
       metadata: currentDraft.passage ? passageMetadata(currentDraft.passage) : undefined,
     }, body => api<{conversationId:string}>("/chats/new", {method:"POST",body:JSON.stringify(body)}));
@@ -817,17 +847,40 @@ export default function App() {
     if (!context.conversationId) activateChat(context.paperId, result.conversationId, true);
     return result;
   }
-  async function copyAgentQuestion() {
+  async function copyAgentQuestion(text=prompt) {
+    if(preparingQuestion.current||conversationBusy||!paper)return;
+    preparingQuestion.current=true;
     setCopyingAgent(true);
     try {
-      const result = await prepareCurrentAgentQuestionTask();
-      await copy(result.task, "agent", JSON.stringify([paper?.id, result.conversationId, agentQuestion, language, locale]));
+      const paperId=paper.id;
+      const result = await prepareCurrentAgentQuestionTask(text);
+      const key=chatDraftKey(paperId,result.conversationId);
+      const binding:PreparedQuestionTask={...result,paperId,question:text,copied:false};
+      setQuestionTasks(tasks=>({...tasks,[key]:binding}));
+      try{await navigator.clipboard.writeText(result.task);setQuestionTasks(tasks=>tasks[key]?.task===result.task?{...tasks,[key]:{...tasks[key],copied:true}}:tasks);}
+      catch{setQuestionTasks(tasks=>tasks[key]?.task===result.task?{...tasks,[key]:{...tasks[key],clipboardError:true}}:tasks);}
     }
     catch (reason) { setError((reason as Error).message); }
-    finally { setCopyingAgent(false); }
+    finally { preparingQuestion.current=false;setCopyingAgent(false); }
   }
+  function submitQuestion(text=prompt){
+    if(!text.trim()||conversationBusy||chatting||copyingAgent)return;
+    if(text!==prompt)setPrompt(text);
+    if(questionMode==='agent'){void copyAgentQuestion(text);return;}
+    void ask(text);
+  }
+  async function refreshQuestionTask(binding:PreparedQuestionTask){
+    const context=chatContext.current;
+    const result=await api<{messages:Message[];conversationId?:string}>(`/chats?paperId=${encodeURIComponent(binding.paperId)}&conversationId=${encodeURIComponent(binding.conversationId)}`);
+    if(chatContext.current!==context||context.paperId!==binding.paperId||context.conversationId!==binding.conversationId||pendingChats.current.has(context.key))return;
+    if(result.conversationId!==binding.conversationId)throw new Error(t('返回的问答会话不匹配。','The returned conversation does not match this task.'));
+    // Keep replies already received after this refresh started. A stale GET
+    // must not remove newer answers, optimistic messages or the current draft.
+    setChat(old=>{const known=new Set(old.map(message=>message.id).filter(Boolean));const added=result.messages.filter(message=>message.id?!known.has(message.id):!old.some(item=>item.role===message.role&&item.content===message.content));return added.length?[...old,...added]:old;});
+  }
+  const activeAbstractSource=abstractSource?.paperId===paper?.id?abstractSource:undefined;
   const abstractText =
-    translationFor("abstract")?.markdown ||
+    activeAbstractSource?.text || translationFor("abstract")?.markdown ||
     paper?.abstract ||
     paper?.text?.slice(0, 1800) ||
     "";
@@ -847,7 +900,94 @@ export default function App() {
     };
     overviewScroll.current = position.scrollY;
     saveOverviewPosition(paper.id, overviewContext.source, position);
+    saveWorkspaceHistory();
   }
+  function workspaceSnapshot():WorkspaceHistory {
+    if(view!=='paper'||!paper)return {version:1,view:view==='paper'?'library':view};
+    const source=pdfDocumentKey(paper),saved=readReadingPosition(paper.id,source);
+    return {version:1,view:'paper',paperId:paper.id,source,tab,language,original:showOriginal,
+      pdf:saved?.pdf,overview:saved?.overviews.find(position=>position.key===overviewContext?.key)||saved?.overviews[0]};
+  }
+  function saveWorkspaceHistory(){
+    if(historySuppressed.current)return;
+    const current=workspaceLocation(location.href);
+    if(current.view!==view||(view==='paper'&&current.paperId!==paper?.id))return;
+    if(view==='paper'&&(readWorkspaceHistory(history.state)?.tab||current.tab)!==tab)return;
+    const entryId=readWorkspaceHistory(history.state)?.entryId||crypto.randomUUID();historyEntry.current=entryId;
+    const snapshot={...workspaceSnapshot(),entryId};
+    history.replaceState(workspaceHistoryState(snapshot,history.state),'',location.href);
+    historyPositions.current.set(entryId,snapshot);
+    if(!historyCacheTimer.current)historyCacheTimer.current=setTimeout(()=>{historyCacheTimer.current=undefined;saveWorkspaceHistoryPositions(historyPositions.current);},200);
+  }
+  function recordWorkspaceNavigation(url:string,next:WorkspaceHistory,replace=false){
+    if(!replace){rememberOverview(true);saveWorkspaceHistory();}
+    clearTimeout(historyRestoreTimer.current);historySuppressed.current=false;
+    const entryId=replace?(readWorkspaceHistory(history.state)?.entryId||crypto.randomUUID()):crypto.randomUUID();historyEntry.current=entryId;
+    const state=workspaceHistoryState({...next,entryId},replace?history.state:undefined);
+    if(replace)history.replaceState(state,'',url);else history.pushState(state,'',url);
+  }
+  const historyNavigation=useRef<(event:PopStateEvent)=>void>(()=>{});
+  historyNavigation.current=event=>{
+    historySuppressed.current=true;clearTimeout(historyRestoreTimer.current);
+    // Popstate fires before React hides the departing reader. Capture the last
+    // pixel synchronously, including a scroll whose RAF has not run yet.
+    pdfPositionCapture.current?.();rememberOverview(true);
+    if(historyEntry.current){
+      historyPositions.current.set(historyEntry.current,{...workspaceSnapshot(),entryId:historyEntry.current});
+      saveWorkspaceHistoryPositions(historyPositions.current);
+    }
+    historyRestoreTimer.current=setTimeout(()=>{historySuppressed.current=false;},1500);
+    const route=workspaceLocation(location.href),stored=readWorkspaceHistory(event.state);
+    const snapshot=stored?.entryId?historyPositions.current.get(stored.entryId)||stored:stored;
+    historyEntry.current=stored?.entryId;
+    const destination=snapshot&&snapshot.view===route.view&&snapshot.paperId===route.paperId?snapshot:undefined;
+    if(destination)history.replaceState(workspaceHistoryState(destination,event.state),'',location.href);
+    setError('');setMobileNav(false);
+    if(route.view!=='paper'||!route.paperId){navigate(route.view,'none');return;}
+    const targetId=route.paperId;
+    if(view==='paper'&&paper?.id===targetId){
+      const sameSource=destination?.source===pdfDocumentKey(paper);
+      const restore=sameSource?destination:undefined;
+      const nextTab=parseReadingSectionLocation(location.href,targetId)?'summary':destination?.tab||route.tab||'summary';
+      if(restore?.language)setLanguage(restore.language);
+      if(restore?.original!==undefined)setShowOriginal(restore.original);
+      if(restore?.overview){
+        saveOverviewPosition(targetId,pdfDocumentKey(paper),restore.overview);
+        setExpanded(!!restore.overview.expanded);
+        if(!parseReadingSectionLocation(location.href,targetId))setHistoryReading({paperId:targetId,readingId:restore.overview.versionId,presentation:restore.overview.presentation,revision:++navigationSequence.current});
+      }
+      setTab(nextTab);setOverviewReturn(nextTab==='paper'&&!!restore?.overview);
+      if(nextTab==='paper'){
+        setPdfVisited(true);
+        const position=restore?.pdf;
+        const nextPage=position?.page||route.page||1;
+        setPdfPage(nextPage);
+        setPdfNavigation({page:nextPage,nonce:++navigationSequence.current,position});
+      }
+      return;
+    }
+    const revision=++navigationRevision.current;
+    const cached=papers.find(item=>item.id===targetId);
+    if(cached){void openPaper(cached,{page:route.page,tab:destination?.tab||route.tab,historyMode:'none',restoration:destination});return;}
+    void api<{paper:Paper}>(`/papers/${encodeURIComponent(targetId)}`).then(result=>{
+      if(navigationRevision.current===revision)void openPaper(result.paper,{page:route.page,tab:destination?.tab||route.tab,historyMode:'none',restoration:destination});
+    }).catch(reason=>{if(navigationRevision.current===revision){navigate('library','none');setError((reason as Error).message);}});
+  };
+  const historyExit=useRef(()=>{});
+  historyExit.current=()=>{
+    historySuppressed.current=false;pdfPositionCapture.current?.();rememberOverview(true);saveWorkspaceHistory();
+    saveWorkspaceHistoryPositions(historyPositions.current);flushReadingPositions();
+  };
+  useEffect(()=>{
+    const previous=history.scrollRestoration;history.scrollRestoration='manual';
+    const restore=(event:PopStateEvent)=>historyNavigation.current(event);
+    const resume=()=>{clearTimeout(historyRestoreTimer.current);historySuppressed.current=false;};
+    const flush=()=>historyExit.current();
+    window.addEventListener('popstate',restore);
+    window.addEventListener('pagehide',flush);
+    for(const event of ['wheel','pointerdown','touchstart','keydown'])window.addEventListener(event,resume,{passive:true});
+    return()=>{window.removeEventListener('popstate',restore);window.removeEventListener('pagehide',flush);for(const event of ['wheel','pointerdown','touchstart','keydown'])window.removeEventListener(event,resume);clearTimeout(historyRestoreTimer.current);clearTimeout(historyCacheTimer.current);history.scrollRestoration=previous;};
+  },[]);
   useEffect(() => {
     if (view !== "paper" || !paper) return;
     saveReadingTab(paper.id, pdfDocumentKey(paper), tab);
@@ -896,11 +1036,30 @@ export default function App() {
       window.removeEventListener(READING_SECTION_EVENT, sectionNavigation);
     };
   }, [view, tab, paper?.id, overviewContext?.key]);
+  useLayoutEffect(()=>{
+    const target=abstractNavigation;
+    if(!target||target.nonce!==pendingAbstractNavigation.current||target.paperId!==paper?.id||tab!=='summary')return;
+    let frame=0,stopped=false;
+    const scroll=()=>{
+      if(stopped)return;
+      window.dispatchEvent(new CustomEvent(READING_SECTION_EVENT,{detail:{paperId:target.paperId,navigation:'source'}}));
+      const section=summaryRef.current?.querySelector('.abstract-section');
+      const anchors=target.anchor?overviewAnchors().filter(element=>positionHash(element.textContent||'')===target.anchor!.hash):[];
+      const top=target.target==='abstract'&&section?window.scrollY+section.getBoundingClientRect().top-76
+        : anchors.length===1?window.scrollY+anchors[0].getBoundingClientRect().top-target.anchor!.offset:target.scrollY||0;
+      window.scrollTo({top:Math.max(0,top),behavior:'instant'});
+    };
+    const stop=()=>{stopped=true;pendingAbstractNavigation.current=0;cancelAnimationFrame(frame);};
+    scroll();frame=requestAnimationFrame(scroll);const timeout=setTimeout(stop,1200);
+    for(const event of ['wheel','pointerdown','touchstart','keydown'])window.addEventListener(event,stop,{once:true,passive:true});
+    return()=>{stopped=true;clearTimeout(timeout);cancelAnimationFrame(frame);for(const event of ['wheel','pointerdown','touchstart','keydown'])window.removeEventListener(event,stop);};
+  },[abstractNavigation,overviewContext?.key,tab,paper?.id]);
   const summaryText =
     translationFor("summary")?.markdown || paper?.summary?.markdown || "";
   const reportText =
     translationFor("report")?.markdown || paper?.report?.markdown || "";
   function translationStatus(target: "abstract" | "summary" | "report") {
+    if(target==='abstract'&&activeAbstractSource)return null;
     if (showOriginal) return null;
     const sourceLanguage =
       target === "abstract"
@@ -1001,20 +1160,38 @@ export default function App() {
     if (paperRef.current === updated.id) { paperMutation.current++; setPaper(updated); }
     setPapers(previous => previous.map(item => item.id === updated.id ? updated : item));
   };
+  function openAbstractSource(quote?:string) {
+    if(!paper)return;
+    rememberOverview(true);
+    const anchor=overviewAnchors().find(element=>element.getBoundingClientRect().bottom>90);
+    const returnTo=activeAbstractSource?.returnTo||{tab,scrollY:window.scrollY,expanded,companion,anchor:anchor?{hash:positionHash(anchor.textContent||''),offset:anchor.getBoundingClientRect().top}:undefined};
+    setAbstractSource({...resolveAbstractSource(paper,quote,language),paperId:paper.id,returnTo});
+    setExpanded(true);changePaperTab('summary');setAssistant(false);
+    const nonce=++navigationSequence.current;pendingAbstractNavigation.current=nonce;setAbstractNavigation({paperId:paper.id,nonce,target:'abstract'});
+  }
+  function returnFromAbstract() {
+    if(!paper||!activeAbstractSource)return;
+    const back=activeAbstractSource.returnTo;
+    setAbstractSource(undefined);setExpanded(back.expanded);changeCompanion(back.companion);changePaperTab(back.tab);
+    const nonce=++navigationSequence.current;pendingAbstractNavigation.current=nonce;
+    setAbstractNavigation({paperId:paper.id,nonce,target:'return',scrollY:back.scrollY,anchor:back.anchor});
+  }
+  function openReadingSource(source:'abstract'|'text') {
+    if(source==='abstract')openAbstractSource();
+    else goToPage(1);
+  }
   function openQuestionSource(metadata: Message['metadata']) {
     if (!paper || !metadata) return;
     if (metadata.sourceScope === 'reading' && metadata.readingId) {
-      history.pushState({},'',readingSectionUrl(location.href,paper.id,metadata.readingId,0));
+      recordWorkspaceNavigation(readingSectionUrl(location.href,paper.id,metadata.readingId,0),{...workspaceSnapshot(),tab:'summary'});
       window.dispatchEvent(new HashChangeEvent('hashchange'));
-      changePaperTab('summary');
+      setTab('summary');setOverviewReturn(false);
       setAssistant(false);
     } else if (metadata.page) goToPage(metadata.page,(!metadata.pages || metadata.pages.length===1) && metadata.quote && metadata.quote.length<=500 ? metadata.quote : undefined);
-    else { changePaperTab('summary');setAssistant(false);requestAnimationFrame(()=>summaryRef.current?.scrollTo({top:0})); }
+    else openAbstractSource(metadata.quote);
   }
 
-  const bib = paper
-    ? `@misc{${paper.id.replace(/[^a-z0-9]/gi, "")},\n  title = {${paper.title}},\n  author = {${paper.authors.join(" and ")}},\n  year = {${new Date(paper.publishedAt || paper.createdAt).getFullYear()}},\n  url = {${paper.url}}\n}`
-    : "";
+  const bib = paper ? paperBibtex(paper) : '';
   const navItems: [View, typeof Search, string][] = [
     ["discover", Search, t("搜索")],
     ["library", Library, t("文库")],
@@ -1092,6 +1269,10 @@ export default function App() {
   }
   function goToPage(page: number, quote?: string) {
     const next = Math.max(1, Math.min(page, paper?.pageCount || page));
+    if(paper){
+      const snapshot=workspaceSnapshot();
+      recordWorkspaceNavigation(workspaceUrl(location.href,{view:'paper',paperId:paper.id,tab:'paper',page:next}),{...snapshot,tab:'paper',pdf:{page:next,fraction:0,left:snapshot.pdf?.left||0,zoom:snapshot.pdf?.zoom??null}});
+    }
     if (tab === "summary") {
       rememberOverview(true);
       setOverviewReturn(true);
@@ -1156,10 +1337,9 @@ export default function App() {
                 setShowHistory(false);
                 setAssistant(false);
               }}
-              onOverview={() => {
-                setTab("summary");
+              onOverview={(activity) => {
+                openAbstractSource(activity?.quote || activity?.text);
                 setShowHistory(false);
-                setAssistant(false);
               }}
               onVersion={(id) => {
                 if (!paper) return;
@@ -1208,7 +1388,7 @@ export default function App() {
               </p>
               <div className="suggestion-grid">
                 {suggestions().map((s, i) => (
-                  <button key={s} onClick={() => ask(s)} disabled={chatting}>
+                  <button key={s} onClick={() => submitQuestion(s)} disabled={chatting||conversationBusy||copyingAgent}>
                     <span>
                       {
                         [
@@ -1237,7 +1417,7 @@ export default function App() {
                   {m.role === "user" && view === "paper" && (m.metadata?.page || m.metadata?.sourceScope === 'reading' || m.metadata?.sourceScope === 'abstract') && <button className="message-source-link citation-link" onClick={() => openQuestionSource(m.metadata)}>
                     <FileText size={12}/>{m.metadata?.sourceScope === 'reading' ? t('AI 解读选文 · 查看版本','AI overview selection · View version') : m.metadata?.sourceScope === 'abstract' ? t('摘要选文','Abstract selection') : `${t("提问选文", "Question source")} · ${pageLabel(m.metadata!.page,m.metadata!.pages)}`}
                   </button>}
-                  <Mark onPage={view === "paper" ? goToPage : undefined}>
+                  <Mark onPage={view === "paper" ? goToPage : undefined} onSource={view === 'paper' ? openReadingSource : undefined}>
                     {m.content}
                   </Mark>
                   <MessageActions message={m} paper={view === "paper" ? paper || undefined : undefined} question={chat.slice(0, i).reverse().find(item => item.role === "user")}
@@ -1257,7 +1437,7 @@ export default function App() {
         </button>}
         </div>
         <div className="composer-wrap">
-          {!modelReady && (
+          {!modelReady && !(paper&&view==='paper') && (
             <button
               className="setup-hint"
               onClick={() => { setMobileNav(false); setShowSettings(true); }}
@@ -1267,6 +1447,7 @@ export default function App() {
                 : t("配置模型 API，开启完整问答")}{" "}<ChevronRight size={13} />
             </button>
           )}
+          {questionTask&&questionMode==='agent'&&<QuestionTaskBridge key={questionTask.task} binding={questionTask} onClose={()=>setQuestionTasks(tasks=>{const next={...tasks};delete next[chatDraftKey(questionTask.paperId,questionTask.conversationId)];return next;})} onRefresh={()=>refreshQuestionTask(questionTask)}/>}
           {selectedPassage && (
             <div className="selected-passage">
               <div>
@@ -1288,14 +1469,14 @@ export default function App() {
             className="composer"
             onSubmit={(e) => {
               e.preventDefault();
-              ask();
+              submitQuestion();
             }}
           >
             <textarea
               aria-label={t("向研究助手提问")}
               ref={composerRef}
               placeholder={
-                full ? t("问一个研究问题…") : t("询问有关这篇论文的问题…")
+                questionMode==='agent'?t('输入问题，Enter 准备订阅任务…','Ask a question; Enter prepares a subscription task…'):questionMode==='extractive'?t('输入关键词，查找原文片段…','Enter keywords to find source passages…'):full ? t("问一个研究问题…") : t("询问有关这篇论文的问题…")
               }
               value={prompt}
               disabled={conversationBusy}
@@ -1307,7 +1488,7 @@ export default function App() {
                   !e.nativeEvent.isComposing
                 ) {
                   e.preventDefault();
-                  ask();
+                  submitQuestion();
                 }
               }}
             />
@@ -1321,42 +1502,35 @@ export default function App() {
               >
                 <Plus size={19} />
               </button>
-              {(modelReady || view !== "paper") && <ModelSelect
+              <span className={`question-mode-wrap mode-${questionMode}`}><select aria-label={t('问答处理方式','Question processing mode')} value={questionMode} disabled={chatting||conversationBusy||copyingAgent} onChange={event=>setQuestionModes(modes=>({...modes,[questionContext]:event.target.value as 'api'|'agent'|'extractive'}))}>
+                {paper&&view==='paper'&&<option value="agent">{t('Codex / Claude 订阅','Codex / Claude subscription')}</option>}
+                <option value="api" disabled={!modelReady}>{modelReady?t('模型 API','Model API'):t('模型 API · 未配置','Model API · not configured')}</option>
+                <option value="extractive">{t('本地原文检索','Local source search')}</option>
+              </select></span>
+              {questionMode==='api' && <ModelSelect
                 settings={settings}
                 onChange={setSettings}
                 disabled={chatting || reporting || translating}
               />}
-              {paper && view === "paper" && (
-                <button
-                  type="button"
-                  className="icon-button subscription-chat"
-                  aria-label={agentCopied ? t("任务已复制 · 在代理会话中粘贴") : t("用 Codex / Claude 订阅回答 · 复制任务")}
-                  title={agentCopied ? t("任务已复制 · 在代理会话中粘贴") : t("用 Codex / Claude 订阅回答 · 复制任务")}
-                  disabled={copyingAgent || conversationBusy}
-                  onClick={() => void copyAgentQuestion()}
-                >
-                  {copyingAgent ? <Loader2 size={17} className="spin"/> : agentCopied ? <Check size={17} /> : <Code2 size={17} />}
-                  {!modelReady && <span>Codex / Claude</span>}
-                </button>
-              )}
               <button
                 type="button"
                 className="icon-button"
                 aria-label={t("管理模型连接")}
-                title={`${t("管理模型连接")} · ${modelReady ? t("AI 回答可能有误，请核对原文证据。") : t("未连接模型 · 当前仅提供原文摘录")}`}
+                title={`${t("管理模型连接")} · ${modelReady ? t("AI 回答可能有误，请核对原文证据。") : t("可使用订阅任务或配置模型 API","Use a subscription task or configure a model API")}`}
                 onClick={() => { setMobileNav(false); setShowSettings(true); }}
               >
                 <Settings2 size={14} />
               </button>
               <button
                 className="send-button"
-                aria-label={t("发送问题")}
-                disabled={!prompt.trim() || chatting || conversationBusy}
+                aria-label={questionMode==='agent'?t('准备订阅任务','Prepare subscription task'):questionMode==='extractive'?t('查找原文','Find source passages'):t("发送问题")}
+                title={questionMode==='agent'?t('准备并复制订阅任务，不调用模型 API','Prepare and copy a subscription task; no model API call'):questionMode==='extractive'?t('查找原文片段，不调用模型','Find source passages; no model call'):t('发送问题')}
+                disabled={!prompt.trim() || chatting || conversationBusy||copyingAgent||(questionMode==='api'&&!modelReady)}
               >
-                {chatting ? (
+                {chatting||copyingAgent ? (
                   <Loader2 size={16} className="spin" />
                 ) : (
-                  <ArrowUp size={18} />
+                  questionMode==='agent'?<Code2 size={18}/>:questionMode==='extractive'?<Search size={18}/>:<ArrowUp size={18} />
                 )}
               </button>
             </div>
@@ -1536,7 +1710,7 @@ export default function App() {
             >
               <article ref={summaryRef} className="paper-content paper-summary" hidden={tab !== "summary"} key={`summary-${paper.id}`}>
                     <div className="paper-date">
-                      <span>{date(paper.publishedAt || paper.createdAt)}</span>
+                      <span>{date(paper)}</span>
                       <span className="language-label">
                         {paper.source === "pdf" ? "PDF" : t("论文")}{" "}
                         {t("· 本地文库")}
@@ -1571,9 +1745,9 @@ export default function App() {
                       key={paper.id}
                       paper={paper}
                       language={language}
-                      onLanguage={setLanguage}
+                      onLanguage={value=>{setAbstractSource(undefined);setLanguage(value);}}
                       original={showOriginal}
-                      onOriginal={setShowOriginal}
+                      onOriginal={value=>{setAbstractSource(undefined);setShowOriginal(value);}}
                       translating={translating}
                       onTranslate={translate}
                       onUpdated={updateCurrentPaper}
@@ -1588,11 +1762,12 @@ export default function App() {
                       <h2>
                         {paper.abstractIsExcerpt ? t("首页摘录", "Opening excerpt") : t("原始摘要")}{" "}
                         <span>
-                          {translationFor("abstract")
+                          {activeAbstractSource ? (activeAbstractSource.original?t("Abstract · 原文"):t(`译文 · ${activeAbstractSource.language}`,`Translation · ${activeAbstractSource.language}`)) : translationFor("abstract")
                             ? `译文 · ${language}`
                             : paper.abstractIsExcerpt ? t("原文摘录", "Source excerpt") : t("Abstract · 原文")}
                         </span>
                       </h2>
+                      {activeAbstractSource && <div className="abstract-source-navigation"><span>{activeAbstractSource.matched?t("正在查看这条记录的摘要来源","Showing this record’s abstract source"):t("未在当前摘要中找到该选文，以下显示原始摘要供核对。","This quote was not found in the current abstract. The original is shown for review.")}</span><button className="text-button" onClick={returnFromAbstract}>{t("返回阅读位置","Back to reading position")}</button></div>}
                       {paper.abstractIsExcerpt && <p className="abstract-excerpt-notice">{t("未识别出独立摘要，以下显示论文开头的原文摘录。", "A separate abstract was not identified. This is an excerpt from the beginning of the source.")}</p>}
                       {translationStatus("abstract")}
                       <div
@@ -1660,6 +1835,7 @@ export default function App() {
                       language={language}
                       original={showOriginal}
                       initialPresentation={initialPresentation}
+                      historyNavigation={historyReading?.paperId===paper.id?historyReading:undefined}
                       positionContext={positionHash(JSON.stringify([abstractText, expanded]))}
                       onReadingContextChange={context => {
                         const key = positionHash(JSON.stringify([context.key, abstractText, expanded]));
@@ -1668,8 +1844,10 @@ export default function App() {
                       settings={settings}
                       onSettings={setSettings}
                       onConfigure={() => setShowSettings(true)}
+                      onManageFigures={paper.localPdfUrl ? () => setFigureReview({paperId:paper.id,page:pdfPage}) : undefined}
                       onUpdated={updateCurrentPaper}
                       onPage={goToPage}
+                      onSource={openReadingSource}
                       onError={setError}
                       onBusy={setReporting}
                       onAskSelection={(text,sourceLabel,question,source)=>askSelection({text,sourceLabel,question,...source})}
@@ -1710,10 +1888,12 @@ export default function App() {
                           modelReady={!!modelReady}
                           page={pdfPage}
                           initialPosition={initialPdfPosition}
-                          onPositionChange={position => savePdfPosition(paper.id, pdfDocumentKey(paper), position)}
+                          capturePosition={pdfPositionCapture}
+                          onPositionChange={position => {savePdfPosition(paper.id, pdfDocumentKey(paper), position);saveWorkspaceHistory();}}
                           active={tab === "paper"}
                           navigation={pdfNavigation}
                           onPage={setPdfPage}
+                          onManageFigures={paper.localPdfUrl ? page => setFigureReview({paperId:paper.id,page}) : undefined}
                           onReturnToOverview={overviewReturn ? () => { changePaperTab("summary"); setOverviewReturn(false); } : undefined}
                           onAskSelection={askSelection}
                           annotations={annotations}
@@ -1731,6 +1911,7 @@ export default function App() {
                       </Suspense>
                     ) : (
                       <div className="text-reader">
+                        {overviewReturn&&<button className="soft-button" onClick={()=>{changePaperTab('summary');setOverviewReturn(false);}}><ChevronLeft size={14}/>{t('返回阅读位置','Back to reading position')}</button>}
                         <div className="reader-note">
                           <FileText size={16} />{" "}
                           {t("正文阅读 · 此来源没有可用的 PDF 文件")}
@@ -1778,6 +1959,8 @@ export default function App() {
                     <NotebookPanel
                       key={paper.id}
                       paperId={paper.id}
+                      hasPdf={!!paper.localPdfUrl}
+                      onViewSource={() => { goToPage(annotations.find(entry => entry.id === selectedAnnotationId)?.page || 1); if (window.matchMedia("(max-width: 900px)").matches) setNotebook(false); }}
                       annotations={annotations}
                       selectedId={selectedAnnotationId}
                       selectionNonce={annotationFocus?.nonce}
@@ -2060,7 +2243,7 @@ export default function App() {
                                   : t("论文")}
                             </span>
                             <span>·</span>
-                            {date(p.publishedAt || p.createdAt)}
+                            {date(p)}
                           </div>
                           <h3>{p.title}</h3>
                           <div className="card-authors">
@@ -2292,6 +2475,7 @@ export default function App() {
           }}
         />
       )}
+      {figureReview && paper?.id === figureReview.paperId && <Suspense fallback={null}><FigureManager key={paper.id} paper={paper} initialPage={figureReview.page} onClose={() => setFigureReview(undefined)} onSaved={updateCurrentPaper}/></Suspense>}
       {showCite && (
         <div
           className="modal-backdrop"

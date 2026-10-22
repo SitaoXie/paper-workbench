@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { annotationPageLabel, annotationSegments, type Annotation, type AnnotationDraft } from "./reader-annotations";
 import Mark from "./Markdown";
+import PdfExportRecovery from "./PdfExportRecovery";
 import { t, getLocale } from "./i18n";
 import { readNotebookView, writeNotebookView, readNoteDrafts } from "./notebook-state";
 
@@ -28,12 +29,14 @@ const labels: Record<string, () => string> = {
 };
 export default function NotebookPanel({
   paperId,
+  hasPdf = false,
   annotations,
   selectedId,
   selectionNonce,
   page,
   loading,
   onClose,
+  onViewSource,
   onSelect,
   onCreate,
   onUpdate,
@@ -41,18 +44,25 @@ export default function NotebookPanel({
   onRestore,
 }: {
   paperId: string;
+  hasPdf?: boolean;
   annotations: Annotation[];
   selectedId?: string;
   selectionNonce?: number;
   page: number;
   loading?: boolean;
   onClose: () => void;
+  onViewSource?: () => void;
   onSelect: (entry: Annotation, locate?: boolean, page?: number) => void;
   onCreate: (entry: AnnotationDraft) => Promise<Annotation | void>;
   onUpdate: (id: string, patch: Partial<Annotation>) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onRestore: (id: string) => Promise<void>;
 }) {
+  const [exporting, setExporting] = useState(false), [exportNotice, setExportNotice] = useState("");
+  const [reviewExportSource, setReviewExportSource] = useState(() => { try { return sessionStorage.getItem(`pw-export-review:${paperId}`) === "true"; } catch { return false; } });
+  useEffect(() => { try { if (reviewExportSource) sessionStorage.setItem(`pw-export-review:${paperId}`, "true"); else sessionStorage.removeItem(`pw-export-review:${paperId}`); } catch { /* Source acceptance is always rechecked by the server. */ } }, [reviewExportSource, paperId]);
+  const exportController = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => exportController.current?.abort(), [paperId]);
   const [filter, setFilter] = useState("all"),
     [query, setQuery] = useState("");
   const [drafts, setDrafts] = useState(() => readNoteDrafts(paperId));
@@ -159,6 +169,48 @@ export default function NotebookPanel({
       setSaved(true);
     });
   }
+  async function downloadAnnotatedPdf() {
+    if (exporting || !hasPdf) return;
+    const controller = new AbortController(); exportController.current = controller;
+    setExporting(true); setExportNotice(""); setError("");
+    try {
+      const response = await fetch(`/api/papers/${encodeURIComponent(paperId)}/annotations/export?format=pdf`, {signal: controller.signal});
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        if (result.code === "pdf_source_unbound") { setReviewExportSource(true); return; }
+        const translated: Record<string, string> = {
+          pdf_source_missing: t("请先导入原 PDF，再导出批注副本。", "Import a source PDF before exporting an annotated copy."),
+          pdf_source_unavailable: t("原 PDF 无法读取，请重新导入后再导出；笔记仍保留。", "The source PDF is unavailable. Reimport it to export; your notes are preserved."),
+          pdf_source_changed: t("原 PDF 已变化。请核对批注位置后再导出；笔记仍保留。", "The source PDF changed. Review annotation locations before exporting; your notes are preserved."),
+          pdf_encrypted_unsupported: t("加密 PDF 暂不支持批注导出，请先使用未加密副本。", "Encrypted PDFs cannot be exported with annotations. Use an unencrypted copy."),
+          pdf_signed_unsupported: t("重写会使数字签名失效，因此未生成批注副本。原 PDF 未改动，笔记仍可导出为 Markdown 或 JSON。", "Rewriting would invalidate this PDF's digital signature. The source is unchanged; notes remain exportable as Markdown or JSON."),
+          pdf_xfa_unsupported: t("暂不支持 XFA 表单 PDF 的批注导出；原文件和笔记未改动。", "XFA form PDFs are not supported for annotated export; the source and notes are unchanged."),
+          pdf_source_invalid: t("无法安全读取原 PDF，未生成批注副本；笔记仍保留。", "The source PDF could not be read safely. No annotated copy was created; notes are preserved."),
+          pdf_annotations_invalid: t("原 PDF 的批注结构无法完整保留，因此未导出副本。可先导出 Markdown 或 JSON 笔记。", "Existing PDF annotations could not be preserved safely. Export your notes as Markdown or JSON instead."),
+        };
+        throw new Error(translated[result.code] || (typeof result.error === "string" ? result.error : t("批注 PDF 导出失败。", "Annotated PDF export failed.")));
+      }
+      setReviewExportSource(false);
+      const blob = await response.blob();
+      if (controller.signal.aborted) return;
+      if (!response.headers.get("Content-Type")?.startsWith("application/pdf")) throw new Error(t("服务器未返回 PDF 文件。", "The server did not return a PDF."));
+      const url = URL.createObjectURL(blob), link = document.createElement("a");
+      let filename = "paper-annotated.pdf";
+      const encodedName = /filename\*=UTF-8''([^;]+)/i.exec(response.headers.get("Content-Disposition") || "")?.[1];
+      if (encodedName) { try { filename = decodeURIComponent(encodedName); } catch { /* Use the portable fallback. */ } }
+      link.href = url; link.download = filename; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      const comments = Number(response.headers.get("X-Annotation-Page-Comments") || 0);
+      const count = Number(response.headers.get("X-Annotation-Count") || 0);
+      setExportNotice(count === 0
+        ? t("已准备 PDF 副本；目前没有已保存的批注（0 项）。原 PDF 未改动。", "PDF copy prepared. There are no saved annotations (0 marks). The source PDF is unchanged.")
+        : comments > 0
+          ? t(`已准备批注 PDF。${comments} 条未定位到具体区域的笔记保存为页注释；原 PDF 未改动。`, `Annotated PDF prepared. ${comments} ${comments === 1 ? "note without an exact location is saved as a page comment" : "notes without exact locations are saved as page comments"}; the source PDF is unchanged.`)
+          : t("已准备批注 PDF，包含已保存的高亮、笔记和手写；原 PDF 未改动。", "Annotated PDF prepared with saved highlights, notes and ink; the source PDF is unchanged."));
+    } catch (reason) {
+      if (!controller.signal.aborted) setError((reason as Error).message);
+    } finally { if (!controller.signal.aborted) setExporting(false); }
+  }
   return (
     <aside
       className="notebook-panel"
@@ -198,6 +250,10 @@ export default function NotebookPanel({
           <Download size={14} />
           {t("导出 Markdown", "Export Markdown")}
         </a>
+        {hasPdf && <button className="soft-button" onClick={() => void downloadAnnotatedPdf()} disabled={exporting || loading} title={t("导出已保存的批注；未保存的编辑不包含在内。", "Export saved annotations; unsaved edits are not included.")}>
+          {exporting ? <Loader2 size={14} className="spin"/> : <Download size={14}/>}
+          {t("批注 PDF", "Annotated PDF")}
+        </button>}
         <a
           className="text-button"
           href={`/api/papers/${paperId}/annotations/export?format=json`}
@@ -206,6 +262,9 @@ export default function NotebookPanel({
           JSON
         </a>
       </div>
+      {hasPdf && !!Object.keys(drafts).length && <p className="notebook-export-notice">{t("导出仅包含已保存的笔记，当前草稿尚未保存。", "Exports include saved notes only. Your current drafts are unsaved.")}</p>}
+      {exportNotice && <p className="notebook-export-notice" role="status">{exportNotice}</p>}
+      {reviewExportSource && <PdfExportRecovery paperId={paperId} onViewSource={onViewSource} onClose={()=>setReviewExportSource(false)} onAccepted={()=>{setReviewExportSource(false);void downloadAnnotatedPdf();}}/>}
       <div className="notebook-search">
         <Search size={14} />
         <input

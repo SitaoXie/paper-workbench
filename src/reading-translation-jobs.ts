@@ -23,7 +23,7 @@ export function useReadingTranslationJob(paperId: string, versionId: string, lan
 }
 
 export function translationSource(version: ReadingVersion) {
-  return JSON.stringify([version.markdown, version.language, version.figures]);
+  return JSON.stringify([version.markdown, version.language, version.figures, version.interactive, version.createdAt]);
 }
 
 export function markReadingTranslationApplied(paperId: string, versionId: string, language: string, job: TranslationJob) {

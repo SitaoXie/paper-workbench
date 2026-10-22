@@ -1,10 +1,11 @@
 import { mkdir, readFile, writeFile, rename, chmod } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID, createHash } from "node:crypto";
-import { readingState } from "./reading.mjs";
-import { visualEvidenceMatches } from "./vision.mjs";
+import { readingState, readingDerivationRevision } from "./reading.mjs";
+import { currentVisualEvidence, visualEvidenceMatches } from "./vision.mjs";
 import { usableInteractiveTranslation, INTERACTIVE_TRANSLATION_INCOMPLETE } from "./interactive.mjs";
 import { captionSources, usableFigureCaptions, CAPTION_TRANSLATION_INCOMPLETE } from "./captions.mjs";
+import { usableTranslationBindings } from "./translation-bindings.mjs";
 
 export const defaultSettings = {
   provider: "openai",
@@ -177,6 +178,10 @@ export function contentHash(text) {
 export function publicReadingTranslation(translation, original, { language, pageCount, figures = [] } = {}) {
   if (!translation || !original) return translation;
   const result = { ...translation };
+  // Preserve historical bytes, but never offer a broken quote/figure binding
+  // or a sentinel response as a completed translated article.
+  if (typeof original.markdown === "string" && !usableTranslationBindings(original.markdown, translation.markdown))
+    result.stale = true;
   const boundFigures = original.figures || figures;
   if (original.interactive) {
     if (usableInteractiveTranslation(translation.interactive, original.interactive, {
@@ -209,11 +214,21 @@ export function publicPaper(paper, full = true) {
   const { filePath, ...result } = paper;
   Object.assign(result, readingState(paper));
   result.readingVersions = result.readingVersions.map(version => ({ ...version,
+    figures: version.figures || paper.figures || [],
+    derivationRevision: readingDerivationRevision(paper, version),
     translations: Object.fromEntries(Object.entries(version.translations || {}).map(([language, translation]) => [
       language, publicReadingTranslation(translation, version, { language, pageCount: paper.pages?.length, figures: paper.figures }),
     ])),
   }));
-  if (paper.visualEvidence) result.visualEvidence = paper.visualEvidence.map(evidence => ({ ...evidence, stale: !visualEvidenceMatches(paper, evidence) }));
+  if (paper.visualEvidence) {
+    // Determine eligibility before a consumer narrows the paper to some pages.
+    // A later excluded/stale observation must still supersede an older one.
+    const eligible = new Set(currentVisualEvidence(paper));
+    result.visualEvidence = paper.visualEvidence.map(evidence => ({
+      ...evidence, stale: !visualEvidenceMatches(paper, evidence),
+      eligibleForContext: eligible.has(evidence),
+    }));
+  }
   if (filePath) {
     result.hasPdf = true;
     result.localPdfUrl = `/api/papers/${encodeURIComponent(paper.id)}/file`;
@@ -241,9 +256,9 @@ export function publicPaper(paper, full = true) {
               target,
               {
                 ...publicReadingTranslation(translation, paper[target], { language, pageCount: paper.pages?.length, figures: paper.figures }),
-                stale: translation.sourceHash
+                stale: Boolean(translation.stale) || !usableTranslationBindings(source, translation.markdown) || (translation.sourceHash
                   ? translation.sourceHash !== contentHash(source)
-                  : translation.sourceUpdatedAt !== updatedAt,
+                  : translation.sourceUpdatedAt !== updatedAt),
               },
             ];
           }),

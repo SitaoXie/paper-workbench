@@ -184,6 +184,7 @@ test("selection questions create separate sessions and switching history never c
   await first.menu.getByRole("button", { name: "询问助手", exact: true }).click();
   await expect(page.locator(".selected-passage blockquote")).toHaveText(first.quote);
   const firstId = (await (await request.get(`/api/chats?paperId=${paper.id}`)).json()).conversationId;
+  await page.getByLabel("问答处理方式", { exact: true }).selectOption("extractive");
   await page.getByLabel("向研究助手提问", { exact: true }).press("Enter");
   await expect.poll(async () => (await (await request.get(`/api/chats?paperId=${paper.id}`)).json()).messages.length).toBe(2);
   let messages = (await (await request.get(`/api/chats?paperId=${paper.id}`)).json()).messages;
@@ -208,6 +209,7 @@ test("selection questions create separate sessions and switching history never c
   const third = await selectPassage(page, 2, "Second evidence");
   await third.menu.getByLabel("针对选中文字的问题").fill("问题三：基线是否公平？");
   await third.menu.getByRole("button", { name: "询问助手", exact: true }).click();
+  await page.getByLabel("问答处理方式", { exact: true }).selectOption("extractive");
   await page.getByLabel("向研究助手提问", { exact: true }).press("Enter");
   await expect.poll(async () => (await (await request.get(`/api/chats?paperId=${paper.id}`)).json()).messages.length).toBe(2);
   messages = (await (await request.get(`/api/chats?paperId=${paper.id}`)).json()).messages;

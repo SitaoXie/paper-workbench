@@ -1,0 +1,61 @@
+import {test,expect} from '@playwright/test';
+
+test('abstract history reveals its saved source language and returns to the same article paragraph',async({page})=>{
+  const source='Recent studies examine rare successful routes. They require careful sampling.';
+  const chinese='近期研究考察罕见的成功路径，需要谨慎采样。';
+  const version={id:'abstract-version',style:'deep',language:'zh-CN',markdown:Array.from({length:20},(_,i)=>`## 阅读章节 ${i+1}\n\n${'此段解释实验设计及证据局限，需要核对论文原文。'.repeat(14)}`).join('\n\n'),mode:'agent',createdAt:'2026-10-22T00:00:00Z'};
+  const paper={id:'abstract-source-fixture',title:'Abstract source continuity',authors:[],source:'web',createdAt:version.createdAt,abstract:source,text:source,tags:[],readingVersions:[version],activeReadingId:version.id,translations:{'zh-CN':{abstract:{markdown:chinese,language:'zh-CN'}}}};
+  const activities=[{id:'original-activity',kind:'explanation',sourceScope:'abstract',quote:source,result:{text:'The meaning depends on the sampling conditions.'},language:'zh-CN',createdAt:version.createdAt},{id:'translated-activity',kind:'translation',sourceScope:'abstract',quote:chinese,result:{text:'Recent studies examine rare successful routes.'},language:'en',createdAt:version.createdAt}];
+  let writes=0;
+  await page.route('**/api/**',async route=>{const path=new URL(route.request().url()).pathname.slice(4);if(route.request().method()!=='GET')writes++;let json:any={};if(path==='/settings')json={provider:'openai',baseUrl:'',model:'',apiKeyConfigured:false,modelConfigured:false};else if(path==='/papers')json={papers:[paper]};else if(path===`/papers/${paper.id}`)json={paper};else if(path==='/chats')json={messages:[],conversationId:null};else if(path==='/conversations')json={conversations:[]};else if(path.endsWith('/activities'))json={activities};else if(path.endsWith('/annotations'))json={annotations:[]};await route.fulfill({json});});
+  await page.goto('/zh/?paper='+paper.id+'#reading=abstract-version&section=8');
+  const close=page.getByRole('button',{name:'关闭助手',exact:true});if(await close.isVisible())await close.click();
+  await expect(page.locator('.abstract-text')).toContainText(chinese);
+  const paragraph=page.locator('.reading-prose p').nth(7);await paragraph.scrollIntoViewIfNeeded();
+  await page.getByRole('button',{name:'打开悬浮助手',exact:true}).click();
+  await page.getByRole('button',{name:'对话历史',exact:true}).click();
+  const history=page.getByRole('region',{name:'阅读历史',exact:true});await history.getByRole('tab',{name:'解释',exact:true}).click();await history.getByRole('button',{name:/^Recent studies examine/}).click();const before=await paragraph.evaluate(el=>el.getBoundingClientRect().top);await history.getByRole('button',{name:'回到原文 · 原始摘要',exact:true}).click();
+  await expect(page.locator('.abstract-text')).toHaveText(source);
+  await expect.poll(()=>page.locator('.abstract-section').evaluate(el=>el.getBoundingClientRect().top)).toBeGreaterThanOrEqual(65);
+  await expect.poll(()=>page.locator('.abstract-section').evaluate(el=>el.getBoundingClientRect().top)).toBeLessThan(160);
+  await expect(page.getByLabel('阅读语言',{exact:true})).toHaveValue('zh-CN');
+  await expect(page.locator('.reading-prose')).toContainText('此段解释实验设计');
+  await page.getByRole('button',{name:'返回阅读位置',exact:true}).click();
+  await expect(page.locator('.abstract-text')).toContainText(chinese);
+  // Return includes the previous companion layout, preserving the paragraph anchor.
+  await expect(page.getByRole('button',{name:'关闭助手',exact:true})).toBeVisible();
+  await expect.poll(async()=>Math.abs(await paragraph.evaluate(el=>el.getBoundingClientRect().top)-before)).toBeLessThan(2);
+  expect(writes).toBe(0);
+});
+
+for(const interactive of [false,true])test(`${interactive?'interactive':'article'} citations open original abstract or source text and return without regenerating`,async({page})=>{
+  const source='The original abstract makes a limited claim about the available observations.';
+  const body='Full source text keeps the evidence and methodology available for inspection.';
+  const version={id:'citation-version',style:'deep',language:'en',markdown:Array.from({length:12},(_,i)=>`## Section ${i+1}\n\n${'We should evaluate the evidence and its limitations carefully. '.repeat(15)} [Abstract] [Source text]`).join('\n\n'),mode:'agent',createdAt:'2026-10-22T00:00:00Z',...(interactive?{format:'interactive',interactive:{schemaVersion:1,blocks:Array.from({length:12},(_,i)=>({id:'c'+i,type:'concept',title:'Concept '+(i+1),text:'The interpretation must remain separate from the source evidence. '.repeat(12),citations:[{label:'Abstract'},{label:'Source text'}]}))}}:{})};
+  const paper={id:'source-citation-fixture',title:'Source citation navigation',authors:[],source:'web',createdAt:version.createdAt,abstract:source,text:body,tags:[],readingVersions:[version],activeReadingId:version.id,translations:{'zh-CN':{abstract:{markdown:'已保存的中文摘要。',language:'zh-CN'}}}};
+  let writes=0;
+  await page.route('**/api/**',async route=>{const path=new URL(route.request().url()).pathname.slice(4);if(route.request().method()!=='GET')writes++;let json:any={};if(path==='/settings')json={provider:'openai',baseUrl:'',model:'',apiKeyConfigured:false,modelConfigured:false};else if(path==='/papers')json={papers:[paper]};else if(path===`/papers/${paper.id}`)json={paper};else if(path==='/chats')json={messages:[{role:'assistant',content:'Check the limitation in [Abstract].'}],conversationId:'local-fixture'};else if(path==='/conversations')json={conversations:[]};else if(path.endsWith('/activities'))json={activities:[]};else if(path.endsWith('/annotations'))json={annotations:[]};await route.fulfill({json});});
+  await page.goto('/zh/?paper='+paper.id);
+  const close=page.getByRole('button',{name:'关闭助手',exact:true});if(await close.isVisible())await close.click();
+  const citations=page.locator('.reading-prose');
+  const selected=citations.getByRole('button',{name:'原始摘要',exact:true}).nth(7);await selected.scrollIntoViewIfNeeded();
+  const before=await selected.evaluate(el=>el.getBoundingClientRect().top);
+  await selected.click();
+  await expect(page.locator('.abstract-text')).toHaveText(source);
+  await expect.poll(()=>page.locator('.abstract-section').evaluate(el=>el.getBoundingClientRect().top)).toBeLessThan(160);
+  await expect(page.getByLabel('阅读语言',{exact:true})).toHaveValue('zh-CN');
+  await page.getByRole('button',{name:'返回阅读位置',exact:true}).click();
+  await expect(page.locator('.abstract-text')).toHaveText('已保存的中文摘要。');
+  await expect.poll(async()=>Math.abs(await selected.evaluate(el=>el.getBoundingClientRect().top)-before)).toBeLessThan(3);
+  const sourceText=citations.getByRole('button',{name:'来源正文',exact:true}).nth(7);await sourceText.click();
+  await expect(page.locator('.text-reader')).toContainText(body);
+  await page.getByRole('button',{name:'返回阅读位置',exact:true}).click();
+  await expect(citations).toBeVisible();
+  await expect.poll(async()=>Math.abs(await selected.evaluate(el=>el.getBoundingClientRect().top)-before)).toBeLessThan(3);
+  await page.getByRole('button',{name:'打开悬浮助手',exact:true}).click();
+  await page.locator('.messages').getByRole('button',{name:'原始摘要',exact:true}).click();
+  await expect(page.locator('.abstract-text')).toHaveText(source);
+  await page.getByRole('button',{name:'返回阅读位置',exact:true}).click();
+  await expect(page.getByRole('button',{name:'关闭助手',exact:true})).toBeVisible();
+  expect(writes).toBe(0);
+});

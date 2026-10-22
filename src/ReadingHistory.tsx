@@ -37,7 +37,7 @@ export default function ReadingHistory({
   onConversation: (id: string) => void;
   onVersion: (id: string) => void;
   onPage: (page: number, quote?: string) => void;
-  onOverview: () => void;
+  onOverview: (activity?:Activity) => void;
   onSaveActivity?: (activity: Activity) => Promise<void>;
 }) {
   const { locale, t } = useLocale();
@@ -59,7 +59,7 @@ export default function ReadingHistory({
     : activity.page ? pageLabel(activity.page,activity.pages) : t("原文选文", "Source text");
   const returnToSource = (activity: Activity) => {
     if (activity.sourceScope === "reading" && activity.readingId) onVersion(activity.readingId);
-    else if (activity.sourceScope === "abstract" || !activity.page) onOverview();
+    else if (activity.sourceScope === "abstract" || !activity.page) onOverview(activity);
     else { const quote=activity.quote || activity.text; onPage(activity.page, (activity.pages?.length || 0)<=1 && quote && quote.length<=500 ? quote : undefined); }
   };
   const entries = activities.filter((a) =>

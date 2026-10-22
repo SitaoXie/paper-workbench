@@ -86,10 +86,11 @@ export function prepareVisionInput(body, paper, figureId) {
     throw new ApiError("Figure images are limited to 12,000 pixels per side and 24 megapixels.");
   return {
     figure,
+    ...(paper.pdfRevision ? { pdfRevision: paper.pdfRevision } : {}),
     image: { mimeType: image.mimeType, data: image.data },
     imageHash: createHash("sha256").update(buffer).digest("hex"),
     ...size, focus: (body.focus || "").trim(),
-    sourceFingerprint: JSON.stringify({ contentHash: paper.contentHash || "", filePath: paper.filePath, id: figure.id, page: figure.page, crop: figure.crop }),
+    sourceFingerprint: JSON.stringify({ contentHash: paper.contentHash || "", pdfRevision: paper.pdfRevision || "", filePath: paper.filePath, id: figure.id, page: figure.page, crop: figure.crop }),
   };
 }
 
@@ -97,10 +98,14 @@ export function visualEvidenceRecord(input, markdown, language, model) {
   return {
     id: randomUUID(), figureId: input.figure.id, page: input.figure.page,
     crop: { ...input.figure.crop }, caption: input.figure.caption,
+    ...(input.pdfRevision ? { pdfRevision: input.pdfRevision } : {}),
     markdown, language, focus: input.focus, imageHash: input.imageHash,
     mimeType: input.image.mimeType, width: input.width, height: input.height,
     createdAt: new Date().toISOString(), source: { kind: "model", model: model.model, profileId: model.id },
     pixelsProvided: true, analysisMethod: "vision-model", modelUnverified: true,
+    // Saving a crop or receiving a model response does not authorize feeding
+    // that interpretation into future synthesis. Existing records are not migrated.
+    excluded: true,
     binding: "client-rendered-pdf-crop",
     limitations: [
       "Pixels were submitted to the explicitly configured vision model; model conclusions are not independently verified.",
@@ -132,8 +137,21 @@ export function visualEvidenceContext(paper) {
 
 export function visualEvidenceMatches(paper, evidence) {
   const figure = paper.figures?.find(item => item.id === evidence.figureId);
+  const revision = paper.pdfRevision || (paper.source === "pdf" ? paper.contentHash : undefined);
+  if (evidence.sourceRevisionChanged || (revision && evidence.pdfRevision && revision !== evidence.pdfRevision) ||
+      (revision && figure?.source?.pdfRevision && revision !== figure.source.pdfRevision) ||
+      (evidence.pdfRevision && figure?.source?.pdfRevision && evidence.pdfRevision !== figure.source.pdfRevision)) return false;
   return Boolean(paper.filePath && figure?.crop && figure.page === evidence.page &&
     ["x", "y", "width", "height"].every(key => Math.abs(figure.crop[key] - (evidence.crop?.[key] ?? -1)) <= 0.000001));
+}
+
+/** Inclusion is a reversible context choice, never scientific verification. */
+export function assertVisualEvidenceIncludable(paper, evidence) {
+  const latest = paper.visualEvidence?.findLast(item => item.figureId === evidence.figureId);
+  if (!latest || latest !== evidence)
+    throw new ApiError("A newer observation exists for this figure. Review the latest observation before using it in later readings or answers.", 409);
+  if (!evidence.pixelsProvided || evidence.analysisMethod !== "vision-model" || !visualEvidenceMatches(paper, evidence))
+    throw new ApiError("This observation no longer matches the current PDF or figure crop. Analyze the current source before using visual evidence in later readings or answers.", 409);
 }
 
 export function visualContextProvenance(paper, context) {

@@ -43,11 +43,14 @@ import {
 import Mark from "./Markdown";
 import AnnotationLayer from "./AnnotationLayer";
 import { selectedPdfText } from "./pdf-selection-text";
+import { capturePdfSelectionAnchor, restorePdfSelectionAnchor, type PdfSelectionAnchor } from "./pdf-selection-anchor";
 import AgentSelectionBridge from "./AgentSelectionBridge";
 import { selectionBindingKey } from "./selection-agent-task";
 import { readSelectionExecution, saveSelectionExecution, type SelectionExecution } from "./selection-execution";
 import { resolvePdfDestination } from "./pdf-destination";
-import type { PdfReadingPosition } from "./reading-position";
+import { pdfLinkText, pdfLinkLabel } from "./pdf-link-label";
+import PdfReferencePreview, { type PdfReferenceRequest } from "./PdfReferencePreview";
+import { validPdfPosition, type PdfReadingPosition } from "./reading-position";
 import PdfSearchBar from "./PdfSearchBar";
 import PdfOutline from "./PdfOutline";
 import PdfPageNumber from "./PdfPageNumber";
@@ -80,10 +83,12 @@ type Props = {
   page: number;
   onPage?: (page: number) => void;
   active?: boolean;
-  navigation?: { page: number; nonce: number; fromOverview?: boolean; quote?: string };
+  navigation?: { page: number; nonce: number; fromOverview?: boolean; quote?: string; position?: PdfReadingPosition };
   onReturnToOverview?: () => void;
+  onManageFigures?: (page:number) => void;
   initialPosition?: PdfReadingPosition;
   onPositionChange?: (position: PdfReadingPosition) => void;
+  capturePosition?: { current: (() => void) | undefined };
   onAskSelection?: (selection: PdfSelection) => Promise<boolean>;
   annotations?: Annotation[];
   onCreateAnnotation?: (draft: AnnotationDraft) => Promise<Annotation | void>;
@@ -99,6 +104,7 @@ type Props = {
   annotationFocus?: { id: string; nonce: number; page?: number };
 };
 type SelectionMenu = {
+  anchor?: PdfSelectionAnchor;
   text: string;
   tooLong?: boolean;
   page: number;
@@ -181,6 +187,7 @@ function RenderedPage({
   language,
   searchMatch,
   onSearchLocated,
+  paperColors,
 }: {
   document: PDFDocumentProxy;
   number: number;
@@ -199,6 +206,7 @@ function RenderedPage({
   language: string;
   searchMatch: PdfSearchMatch | null;
   onSearchLocated: (match: PdfSearchMatch, rect: DOMRect) => void;
+  paperColors: "theme" | "original";
 }) {
   const t = (zh: string, en: string) => (language.startsWith("en") ? en : zh);
   const surface = useRef<HTMLDivElement>(null);
@@ -210,6 +218,16 @@ function RenderedPage({
   const [retry, setRetry] = useState(0);
   const [textRevision, setTextRevision] = useState(0);
   const [searchRects, setSearchRects] = useState<PdfSearchRect[]>([]);
+  const [reference, setReference] = useState<PdfReferenceRequest>();
+  const referenceTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const closeReference = useCallback(() => { clearTimeout(referenceTimer.current); setReference(undefined); }, []);
+  const leaveReference = useCallback(() => { clearTimeout(referenceTimer.current); referenceTimer.current = setTimeout(() => setReference(current => current?.pinned ? current : undefined), 180); }, []);
+  useEffect(() => { if (!active) closeReference(); return () => clearTimeout(referenceTimer.current); }, [active, closeReference]);
+  useEffect(() => {
+    const opened = (event: Event) => { if (!surface.current?.contains((event as CustomEvent<Node>).detail)) closeReference(); };
+    window.document.addEventListener("pw-pdf-reference-open", opened);
+    return () => window.document.removeEventListener("pw-pdf-reference-open", opened);
+  }, [closeReference]);
   const searchLocated = useRef(onSearchLocated); searchLocated.current = onSearchLocated;
   useLayoutEffect(() => {
     const container = surface.current?.querySelector<HTMLElement>(".pdf-text-layer[data-rendered='true']");
@@ -299,6 +317,8 @@ function RenderedPage({
         if (disposed) return;
         const layer = window.document.createElement("div");
         layer.className = "pdf-annotation-layer";
+        let referenceIndex = 0;
+        const surfaceBounds = element.getBoundingClientRect();
         for (const annotation of annotations) {
           if (annotation.subtype !== "Link" || !Array.isArray(annotation.rect))
             continue;
@@ -320,14 +340,24 @@ function RenderedPage({
           link.style.width = `${Math.abs(coordinates[2] - coordinates[0])}px`;
           link.style.height = `${Math.abs(coordinates[3] - coordinates[1])}px`;
           if (annotation.dest) {
-            link.href = "#pdf-reference";
-            link.title = t("跳转到论文引用位置", "Go to paper reference");
-            link.setAttribute(
-              "aria-label",
-              t("跳转到论文引用位置", "Go to paper reference"),
-            );
+            const left = Math.min(coordinates[0], coordinates[2]) + surfaceBounds.left;
+            const top = Math.min(coordinates[1], coordinates[3]) + surfaceBounds.top;
+            const width = Math.abs(coordinates[2] - coordinates[0]);
+            const height = Math.abs(coordinates[3] - coordinates[1]);
+            const text = pdfLinkText(textContainer, {left,top,right:left+width,bottom:top+height,width,height});
+            const index = referenceIndex++;
+            link.href = `#pdf-reference-${number}-${index+1}`;
+            link.setAttribute("aria-label", pdfLinkLabel(text, number, index, language.startsWith("en")));
+            link.dataset.referenceText = text;
+            const openPreview = (pinned: boolean) => { clearTimeout(referenceTimer.current); window.document.dispatchEvent(new CustomEvent("pw-pdf-reference-open", {detail:link})); setReference({anchor:link,destination:annotation.dest,label:text || t("论文引用", "Paper reference"),pinned}); };
+            link.onpointerenter = event => { if (event.pointerType !== "touch") { clearTimeout(referenceTimer.current); referenceTimer.current = setTimeout(() => openPreview(false), 350); } };
+            link.onpointerleave = leaveReference;
+            const isCitation = typeof annotation.dest === "string" && /(?:^|[._-])(?:cite|citation|bib|footnote|fn)(?:[._-]|$)/i.test(annotation.dest);
+            if (isCitation) link.setAttribute("aria-haspopup", "dialog");
             link.onclick = (event) => {
               event.preventDefault();
+              if (isCitation) { openPreview(true); return; }
+              closeReference();
               void (async () => {
                 const destination = await resolvePdfDestination(document, annotation.dest);
                 if (!disposed && destination) navigateRef.current(destination.page, destination);
@@ -367,6 +397,7 @@ function RenderedPage({
     });
     return () => {
       disposed = true;
+      closeReference();
       renderTask?.cancel();
       textLayer?.cancel();
       // Release backing stores as soon as a page leaves the rendering window.
@@ -389,6 +420,7 @@ function RenderedPage({
         ref={surface}
         style={{ width, height }}
       />
+      {active && reference && <PdfReferencePreview document={document} request={reference} language={language} paperColors={paperColors} onClose={closeReference} onNavigate={onNavigate} onPointerEnter={() => clearTimeout(referenceTimer.current)} onPointerLeave={leaveReference}/>}
       {active && searchMatch && <div className="pdf-search-highlights" aria-hidden="true">{searchRects.map((rect, index) => <span key={index} className="pdf-search-highlight" style={{left:`${rect.x * 100}%`, top:`${rect.y * 100}%`, width:`${rect.width * 100}%`, height:`${rect.height * 100}%`}} />)}</div>}
       {active && (
         <AnnotationLayer
@@ -443,8 +475,10 @@ export default function PdfReader({
   active = true,
   navigation,
   onReturnToOverview,
+  onManageFigures,
   initialPosition,
   onPositionChange,
+  capturePosition: capturePositionRef,
   onAskSelection,
   annotations = [],
   onCreateAnnotation,
@@ -571,6 +605,35 @@ export default function PdfReader({
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenu | null>(
     null,
   );
+  const selectionPopup = useRef<HTMLDivElement>(null), inlinePopup = useRef<HTMLDivElement>(null), notePopup = useRef<HTMLDivElement>(null);
+  const draftChip = useRef<HTMLDivElement>(null), selectionInput = useRef<HTMLInputElement>(null);
+  const [draftFolded, setDraftFolded] = useState(false), [draftRestoring, setDraftRestoring] = useState(false);
+  const [draftLocationUnavailable, setDraftLocationUnavailable] = useState(false);
+  const [draftChipPosition, setDraftChipPosition] = useState({top: 12, left: 12});
+  const restoringDraft = useRef(false), draftRestoreToken = useRef(0), draftRestoreFrame = useRef(0);
+  const draftSelection = inlineResult?.selection || noteEditor || selectionMenu;
+  const draftState = useRef({selection: draftSelection, folded: draftFolded, preserve: false});
+  draftState.current = {selection: draftSelection, folded: draftFolded, preserve: !!selectionQuestion.trim() || !!inlineResult || !!noteEditor || selectionAsking};
+  const clearSelectionDraft = () => {
+    draftRestoreToken.current++; cancelAnimationFrame(draftRestoreFrame.current); restoringDraft.current=false;
+    inlineRequest.current++; askingSelection.current=false; setSelectionAsking(false);
+    dismissedSelection.current=lastSelection.current; setSelectionMenu(null); setInlineResult(null); setNoteEditor(null);
+    setSelectionQuestion(""); setDraftFolded(false); setDraftRestoring(false); setDraftLocationUnavailable(false); setAnnotationError("");
+  };
+  useEffect(() => { clearSelectionDraft(); }, [url, paperId, language, active]);
+  useEffect(() => () => { draftRestoreToken.current++; cancelAnimationFrame(draftRestoreFrame.current); }, []);
+  const updateDraftChip = () => {
+    const element=host.current;if(!element)return;
+    const view=element.getBoundingClientRect(), viewport=window.visualViewport;
+    const top=Math.max((viewport?.offsetTop || 0)+8,Math.min(view.top+8,(viewport?.offsetTop || 0)+(viewport?.height || window.innerHeight)-60));
+    const left=Math.max(12,Math.min(view.left+12,window.innerWidth-Math.min(300,window.innerWidth-24)-12));
+    setDraftChipPosition(old=>old.top===top&&old.left===left?old:{top,left});
+  };
+  const minimizeDraft = () => {
+    draftRestoreToken.current++;cancelAnimationFrame(draftRestoreFrame.current);restoringDraft.current=false;setDraftRestoring(false);
+    updateDraftChip();setDraftFolded(true);
+    draftRestoreFrame.current=requestAnimationFrame(()=>draftChip.current?.querySelector<HTMLButtonElement>('button')?.focus({preventScroll:true}));
+  };
   const [viewportHeight, setViewportHeight] = useState<number>();
   const onPageRef = useRef(onPage);
   onPageRef.current = onPage;
@@ -643,18 +706,10 @@ export default function PdfReader({
     if (!element) return;
     let frame = 0;
     const inspect = () => {
-      if (!activeRef.current) return;
+      if (!activeRef.current || restoringDraft.current || askingSelection.current) return;
+      if (window.document.activeElement?.closest(".pdf-selection-menu, .pdf-inline-assist, .pdf-note-editor, .pdf-selection-draft-chip")) return;
       const selected = window.getSelection();
-      if (!selected || selected.isCollapsed || !selected.rangeCount) {
-        if (
-          window.document.activeElement?.closest(
-            ".pdf-selection-menu, .pdf-inline-assist, .pdf-note-editor",
-          )
-        )
-          return;
-        setSelectionMenu(null);
-        return;
-      }
+      if (!selected || selected.isCollapsed || selected.rangeCount !== 1) return;
       const range = selected.getRangeAt(0);
       const start =
         range.startContainer.nodeType === Node.ELEMENT_NODE
@@ -671,32 +726,23 @@ export default function PdfReader({
         !element.contains(end) ||
         !start.closest(".pdf-text-layer") ||
         !end.closest(".pdf-text-layer")
-      ) {
-        setSelectionMenu(null);
-        return;
-      }
+      ) return;
       const rawText = selectedPdfText(range, element), text = rawText.slice(0, 12000);
-      if (text === dismissedSelection.current) {
-        setSelectionMenu(null);
-        return;
-      }
-      if (text !== lastSelection.current) {
+      // A transient one-character Range is not a new usable source selection.
+      if (text.trim().length < 2 || text === dismissedSelection.current) return;
+      const savedAnchor = capturePdfSelectionAnchor(range, element);
+      const previousAnchor = draftState.current.selection?.anchor;
+      if (previousAnchor && savedAnchor && previousAnchor.start.page===savedAnchor.start.page && previousAnchor.start.offset===savedAnchor.start.offset && previousAnchor.end.page===savedAnchor.end.page && previousAnchor.end.offset===savedAnchor.end.offset && previousAnchor.text===savedAnchor.text) return;
+      if (text !== lastSelection.current || savedAnchor !== previousAnchor) {
         lastSelection.current = text;
         setSelectionQuestion("");
-        setInlineResult(null);
+        setInlineResult(null); setNoteEditor(null); setAnnotationError(""); setDraftFolded(false); setDraftLocationUnavailable(false);
         inlineRequest.current += 1;
-      }
-      if (text.length < 2) {
-        setSelectionMenu(null);
-        return;
       }
       const bounds = range.getBoundingClientRect();
       const view = element.getBoundingClientRect();
       const viewportBottom = Math.min(window.innerHeight, view.bottom);
-      if (bounds.bottom < view.top || bounds.top > viewportBottom) {
-        setSelectionMenu(null);
-        return;
-      }
+      if (bounds.bottom < view.top || bounds.top > viewportBottom) return;
       const menuWidth = Math.min(420, window.innerWidth - 24);
       const left = Math.max(
         12,
@@ -738,6 +784,7 @@ export default function PdfReader({
             : [];
         });
       setSelectionMenu({
+        anchor: savedAnchor,
         text,
         tooLong: rawText.length > 12000,
         page: sourcePage,
@@ -753,19 +800,24 @@ export default function PdfReader({
       frame = requestAnimationFrame(inspect);
     };
     const startSelection = (event: PointerEvent) => {
-      if (element.contains(event.target as Node)) {
-        dismissedSelection.current = "";
-        setSelectionMenu(null);
+      const target=event.target;
+      if(!(target instanceof Element) || target.closest('.pdf-selection-menu,.pdf-inline-assist,.pdf-note-editor,.pdf-selection-draft-chip'))return;
+      const sourceGesture=element.contains(target)&&!!target.closest('.pdf-text-layer');
+      if(draftState.current.selection){
+        // A pointer down is not yet a new selection: keep questions, notes,
+        // agent tasks and responses until another valid Range is captured.
+        if(draftState.current.preserve){updateDraftChip();setDraftFolded(true);}
+        else clearSelectionDraft();
       }
+      if(sourceGesture){dismissedSelection.current="";if(!draftState.current.preserve)lastSelection.current="";}
     };
     const dismiss = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        dismissedSelection.current = lastSelection.current;
         cancelAnimationFrame(frame);
-        setSelectionMenu(null);
-        setNoteEditor(null);
-        setInlineResult(null);
-        inlineRequest.current += 1;
+        if(!draftState.current.preserve){clearSelectionDraft();return;}
+        const focused=window.document.activeElement;
+        if(selectionPopup.current?.contains(focused)||inlinePopup.current?.contains(focused)||notePopup.current?.contains(focused))minimizeDraft();
+        else {updateDraftChip();setDraftFolded(true);}
       }
     };
     window.document.addEventListener("pointerdown", startSelection);
@@ -775,7 +827,7 @@ export default function PdfReader({
     window.document.addEventListener("keyup", schedule);
     window.document.addEventListener("keydown", dismiss);
     window.addEventListener("resize", schedule);
-    window.addEventListener("scroll", schedule, true);
+
     return () => {
       cancelAnimationFrame(frame);
       window.document.removeEventListener("pointerdown", startSelection);
@@ -785,7 +837,7 @@ export default function PdfReader({
       window.document.removeEventListener("keyup", schedule);
       window.document.removeEventListener("keydown", dismiss);
       window.removeEventListener("resize", schedule);
-      window.removeEventListener("scroll", schedule, true);
+
     };
   }, [!!onAskSelection, !!onCreateAnnotation, !!onInlineAssist, url]);
 
@@ -930,6 +982,20 @@ export default function PdfReader({
     if (initialPositionApplied.current && sheet?.offsetHeight) positionChanged.current?.({page:nearest,fraction:(element.scrollTop-sheet.offsetTop)/sheet.offsetHeight,left:horizontalAnchor.current.left,zoom:zoomRef.current});
   }, [document]);
 
+  useLayoutEffect(() => {
+    if (!capturePositionRef) return;
+    const capture = () => {
+      if (!activeRef.current || !document || !initialPositionApplied.current || !host.current) return;
+      // A browser Back can precede the pending scroll animation frame. Read
+      // the current DOM while it still belongs to the departing history entry.
+      cancelAnimationFrame(scrollFrame.current);
+      recordHorizontalScroll();
+      updateVisiblePages();
+    };
+    capturePositionRef.current = capture;
+    return () => { if (capturePositionRef.current === capture) capturePositionRef.current = undefined; };
+  }, [capturePositionRef, document, updateVisiblePages]);
+
   useLayoutEffect(() => () => {
     const element = host.current;
     const sheet = element?.querySelector<HTMLElement>(`[data-pdf-page="${currentPage.current}"]`);
@@ -991,19 +1057,24 @@ export default function PdfReader({
   }, [active, document, width, zoom, navigation?.nonce]);
   useLayoutEffect(() => {
     if (!active || !navigation || appliedNavigation.current === navigation.nonce || !document || !width || !host.current) return;
-    const next = Math.max(1, Math.min(document.numPages, navigation.page));
+    const position = validPdfPosition(navigation.position) ? navigation.position : undefined;
+    // Browser history carries an exact reading position. Apply the requested
+    // zoom before using page geometry, and never create another PDF jump.
+    if (position && zoom !== position.zoom) { anchor.current = null; setZoom(position.zoom); return; }
+    const next = Math.max(1, Math.min(document.numPages, position?.page ?? navigation.page));
     const sheet = host.current.querySelector<HTMLElement>(`[data-pdf-page="${next}"]`);
     if (!sheet) return;
-    if (navigation.fromOverview) setNavigationHistory([]);
+    if (navigation.fromOverview || position) setNavigationHistory([]);
     else if (reportedPage.current) rememberJump();
     appliedNavigation.current = navigation.nonce;
     anchor.current = null;
-    host.current.scrollTop = Math.max(0, sheet.offsetTop - 16);
+    host.current.scrollTop = position ? sheet.offsetTop + position.fraction * sheet.offsetHeight : Math.max(0, sheet.offsetTop - 16);
+    if (position) setHorizontal(position.left);
     reportedPage.current = next;
     currentPage.current = next;
     setVisiblePage(next);
     updateVisiblePages();
-  }, [navigation?.nonce, active, document, width]);
+  }, [navigation?.nonce, active, document, width, zoom]);
 
   useEffect(() => {
     if (!active || !document || !navigation) return;
@@ -1012,7 +1083,7 @@ export default function PdfReader({
     const request = ++citationRequest.current;
     setCitationMatch(null); setCitationStatus(null);
     const quote = navigation?.quote?.trim();
-    if (!quote || quote.length > 500) return;
+    if (navigation.position || !quote || quote.length > 500) return;
     let disposed = false, finished = false;
     setSearchOpen(false); setSearchMatch(null); setCitationStatus("loading");
     const pageNumber = navigation.page;
@@ -1037,6 +1108,7 @@ export default function PdfReader({
   useLayoutEffect(() => {
     const element = host.current;
     if (!active || !element || !document || !width) return;
+    if (navigation && appliedNavigation.current !== navigation.nonce) return;
     const safePage = Math.max(
       1,
       Math.min(Number.isFinite(page) ? Math.trunc(page) : 1, document.numPages),
@@ -1190,10 +1262,10 @@ export default function PdfReader({
         pages: [...new Set(selection.segments.map(segment => segment.page))].sort((a,b)=>a-b),
         intent: "ask", question: selectionQuestion.trim() || undefined });
       if (request !== inlineRequest.current) return;
-      if (accepted) dismissSelection(selection);
+      if (accepted) clearSelectionDraft();
       else setAnnotationError(t('未能创建提问会话，选文与问题已保留，请重试。','Could not create a question session. Your selection and question are preserved; try again.'));
     } catch (reason) { if(request === inlineRequest.current) setAnnotationError(reason instanceof Error ? reason.message : t('创建会话失败，请重试。','Could not create a session. Try again.')); }
-    finally { askingSelection.current = false; setSelectionAsking(false); }
+    finally { if (request === inlineRequest.current) { askingSelection.current = false; setSelectionAsking(false); } }
   };
   const saveAnnotation = async (
     kind: "highlight" | "underline" | "note",
@@ -1463,6 +1535,76 @@ export default function PdfReader({
     };
   };
 
+  const restoreSelectionDraft = () => {
+    const selection=draftState.current.selection, element=host.current;
+    if(!selection || !element || restoringDraft.current)return;
+    const token=++draftRestoreToken.current, origin={top:element.scrollTop,left:element.scrollLeft};
+    restoringDraft.current=true;setDraftRestoring(true);setDraftLocationUnavailable(false);
+    const finish=(range?:Range)=>{
+      if(token!==draftRestoreToken.current)return;
+      setDraftLocationUnavailable(!range);setDraftFolded(false);setDraftRestoring(false);
+      if(!range){element.scrollTop=origin.top;setHorizontal(origin.left);updateVisiblePages();}
+      const position=floatingPosition(selection);setSelectionMenu(current=>current?{...current,...position}:current);
+      draftRestoreFrame.current=requestAnimationFrame(()=>{
+        if(token!==draftRestoreToken.current)return;
+        const input=selectionInput.current;
+        if(input && !input.disabled)input.focus({preventScroll:true});
+        else (inlinePopup.current || notePopup.current || selectionPopup.current)?.focus({preventScroll:true});
+        if(range){const selected=window.getSelection();selected?.removeAllRanges();selected?.addRange(range);}
+        draftRestoreFrame.current=requestAnimationFrame(()=>{if(token===draftRestoreToken.current)restoringDraft.current=false;});
+      });
+    };
+    const anchor=selection.anchor;
+    if(!anchor || selectionTooLong(selection)){finish();return;}
+    const checked=restorePdfSelectionAnchor(anchor,element);
+    if(checked.status==='changed'){finish();return;}
+    const sheet=element.querySelector<HTMLElement>(`[data-pdf-page="${selection.page}"]`), rect=selection.rects[0];
+    if(!sheet || !rect){finish();return;}
+    // Source geometry belongs to the original rotated PDF viewport, not a
+    // possibly disconnected Range. Existing zoom and horizontal intent survive.
+    element.scrollTop=Math.max(0,sheet.offsetTop+rect.y*sheet.offsetHeight-Math.min(100,element.clientHeight*.22));
+    const left=sheet.offsetLeft+rect.x*sheet.offsetWidth, right=left+rect.width*sheet.offsetWidth;
+    if(left<element.scrollLeft+16 || right>element.scrollLeft+element.clientWidth-16)setHorizontal(Math.max(0,left-24));
+    updateVisiblePages();
+    const deadline=performance.now()+6000;
+    const attempt=()=>{
+      if(token!==draftRestoreToken.current || !activeRef.current)return;
+      const restored=restorePdfSelectionAnchor(anchor,element);
+      if(restored.status==='ready'){finish(restored.range);return;}
+      if(restored.status==='changed' || performance.now()>deadline){finish();return;}
+      draftRestoreFrame.current=requestAnimationFrame(attempt);
+    };
+    draftRestoreFrame.current=requestAnimationFrame(attempt);
+  };
+  useEffect(()=>{
+    if(!active || !draftSelection)return;
+    let frame=0;
+    const update=()=>{
+      frame=0;if(restoringDraft.current || !host.current)return;
+      updateDraftChip();
+      const element=host.current, view=element.getBoundingClientRect(), viewport=window.visualViewport;
+      const top=Math.max(view.top,viewport?.offsetTop || 0), bottom=Math.min(view.bottom,(viewport?.offsetTop || 0)+(viewport?.height || window.innerHeight));
+      const left=Math.max(view.left,viewport?.offsetLeft || 0),right=Math.min(view.right,(viewport?.offsetLeft || 0)+(viewport?.width || window.innerWidth));
+      const selection=draftState.current.selection;
+      if(!selection)return;
+      const visible=selection.segments.some(segment=>{
+        const sheet=element.querySelector<HTMLElement>(`[data-pdf-page="${segment.page}"]`)?.getBoundingClientRect();
+        return sheet && segment.rects.some(rect=>sheet.top+(rect.y+rect.height)*sheet.height>top && sheet.top+rect.y*sheet.height<bottom && sheet.left+(rect.x+rect.width)*sheet.width>left && sheet.left+rect.x*sheet.width<right);
+      });
+      if(!visible)setDraftFolded(true);
+      // Never auto-open a preserved draft when its source or response returns.
+    };
+    const schedule=(event:Event)=>{
+      if(event.target instanceof Element && event.target.closest('.pdf-selection-menu,.pdf-inline-assist,.pdf-note-editor,.pdf-selection-draft-chip'))return;
+      if(!frame)frame=requestAnimationFrame(update);
+    };
+    window.document.addEventListener('scroll',schedule,true);window.addEventListener('resize',schedule);
+    window.visualViewport?.addEventListener('resize',schedule);window.visualViewport?.addEventListener('scroll',schedule);
+    const observer=new ResizeObserver(()=>{if(!frame)frame=requestAnimationFrame(update);});if(host.current)observer.observe(host.current);
+    return()=>{cancelAnimationFrame(frame);observer.disconnect();window.document.removeEventListener('scroll',schedule,true);window.removeEventListener('resize',schedule);window.visualViewport?.removeEventListener('resize',schedule);window.visualViewport?.removeEventListener('scroll',schedule);};
+  },[active,!!draftSelection,url,language]);
+  const draftStatus=draftRestoring?t("正在返回原文…","Returning to source…"):selectionAsking?t("正在创建会话","Creating session"):inlineResult?.loading?t("处理中","Processing"):(inlineResult?.error || annotationError)?t("处理未完成","Needs attention"):inlineResult?.text?t("结果已保留","Result preserved"):selectionQuestion?t("问题已保留","Question preserved"):t("选文已保留","Selection preserved");
+
   return (
     <section
       className="pdf-reader"
@@ -1540,6 +1682,7 @@ export default function PdfReader({
             </label>
             <span className="pdf-theme-color-notice">{t("深色显示会调整图色，核对图表请选「原始颜色」。", "Dark display adjusts figure colors. Choose Original colors to verify charts.")}</span>
         <div className="pdf-source-actions">
+          {onManageFigures && <button className="text-button" onClick={() => {setToolsOpen(false);onManageFigures(currentPage.current);}}>{t("核对图表裁切", "Review figure crops")}</button>}
           <a
             href={url}
             target="_blank"
@@ -1733,10 +1876,11 @@ export default function PdfReader({
                 scale={scale}
                 width={size.width * scale}
                 height={size.height * scale}
-                active={active && index + 1 >= visible.first && index + 1 <= visible.last}
+                active={active && ((index + 1 >= visible.first && index + 1 <= visible.last) || (!!draftSelection && !selectionTooLong(draftSelection) && (draftRestoring || !draftFolded) && draftSelection.segments.some(segment => segment.page === index + 1)))}
                 onNavigate={navigateToPage}
                 searchMatch={searchMatch?.page === index + 1 ? searchMatch : citationMatch?.page === index + 1 ? citationMatch : null}
                 onSearchLocated={locateSearchText}
+                paperColors={paperColors}
                 annotations={annotations.flatMap(annotation => annotationSegments(annotation).filter(segment => segment.page === index + 1).map(segment => ({...annotation,...segment})))}
                 drawing={drawing}
                 annotationColor={inkColor}
@@ -1764,6 +1908,10 @@ export default function PdfReader({
         <button aria-label={t("关闭引用定位提示", "Dismiss citation status")} onClick={() => setCitationStatus(null)}><X size={13}/></button>
       </div>}
       {active && (navigationHistory.length > 0 || onReturnToOverview) && <button className="pdf-reading-return" onClick={returnToReading}><ArrowLeft size={15} /><span>{navigationHistory.length ? t("回到上次阅读位置", "Back to previous position") : t("返回摘要阅读位置", "Back to overview position")}</span></button>}
+      {active && draftSelection && draftFolded && createPortal(<div className="pdf-selection-draft-chip" ref={draftChip} role="region" aria-label={t("PDF选文草稿","PDF selection draft")} style={draftChipPosition}>
+        <button className="pdf-draft-restore" disabled={draftRestoring} onClick={restoreSelectionDraft} aria-label={t("返回选文草稿","Return to selected draft")}><ArrowLeft size={17}/><span><strong>{t("返回选文草稿","Return to selected draft")}</strong><small role="status">{draftStatus} · p.{draftSelection.page}</small></span></button>
+        <button className="pdf-draft-discard" aria-label={t("丢弃选文草稿","Discard selection draft")} onClick={clearSelectionDraft}><X size={16}/></button>
+      </div>,window.document.body)}
       {active && selectionMenu &&
         !drawing &&
         !inlineResult &&
@@ -1771,6 +1919,7 @@ export default function PdfReader({
         createPortal(
           <div
             className="pdf-selection-menu"
+            ref={selectionPopup} hidden={draftFolded} tabIndex={-1}
             role="dialog"
             aria-label={t("选中文字操作", "Selected text actions")}
             style={{ left: selectionMenu.left, top: selectionMenu.top, maxHeight: `calc(100dvh - ${selectionMenu.top + 12}px)` }}
@@ -1789,6 +1938,7 @@ export default function PdfReader({
               </span>
               {onAskSelection && (
                 <input
+                  ref={selectionInput}
                   aria-label={t(
                     "针对选中文字的问题",
                     "Question about selected text",
@@ -1811,14 +1961,16 @@ export default function PdfReader({
                   }}
                 />
               )}
+              <button className="pdf-popover-close" aria-label={t("收起选文草稿", "Minimize selection draft")} onClick={minimizeDraft}><Minus size={14}/></button>
               <button
                 className="pdf-popover-close"
                 aria-label={t("关闭选区菜单", "Close selection menu")}
-                onClick={() => dismissSelection(selectionMenu)}
+                onClick={clearSelectionDraft}
               >
                 <X size={14} />
               </button>
             </div>
+            {draftLocationUnavailable && <p className="pdf-draft-location-notice" role="status">{t("原选文位置已变化，无法精确恢复。草稿已保留，请重新选择原文以定位。", "The source location has changed and cannot be restored precisely. Your draft is preserved; select the source again to relocate it.")}</p>}
             <label className="pdf-selection-language">{t("结果语言", "Result language")}
               <select aria-label={t("选文结果语言", "Selection result language")} value={selectionLanguage.startsWith("en") ? "en" : "zh-CN"} onChange={event => setSelectionLanguage(event.target.value)}>
                 <option value="zh-CN">中文</option><option value="en">English</option>
@@ -1903,6 +2055,7 @@ export default function PdfReader({
         createPortal(
           <div
             className="pdf-note-editor"
+            ref={notePopup} hidden={draftFolded} tabIndex={-1}
             role="dialog"
             aria-label={t("添加笔记", "Add note")}
             style={floatingPosition(noteEditor)}
@@ -1912,13 +2065,15 @@ export default function PdfReader({
                 <StickyNote size={15} />
                 {t("笔记", "Note")} · {annotationPageLabel(selectionAnchors(noteEditor))}
               </strong>
+              <button aria-label={t("收起选文草稿", "Minimize selection draft")} onClick={minimizeDraft}><Minus size={16}/></button>
               <button
                 aria-label={t("关闭笔记编辑", "Close note editor")}
-                onClick={() => setNoteEditor(null)}
+                onClick={clearSelectionDraft}
               >
                 <X size={16} />
               </button>
             </header>
+            {draftLocationUnavailable && <p className="pdf-draft-location-notice" role="status">{t("原选文位置已变化，无法精确恢复。草稿已保留，请重新选择原文以定位。", "The source location has changed and cannot be restored precisely. Your draft is preserved; select the source again to relocate it.")}</p>}
             <blockquote>{noteEditor.text}</blockquote>
             <textarea
               autoFocus
@@ -1959,6 +2114,7 @@ export default function PdfReader({
         createPortal(
           <div
             className="pdf-inline-assist"
+            ref={inlinePopup} hidden={draftFolded} tabIndex={-1}
             role="dialog"
             aria-label={t("就地阅读助手", "Inline reading assistant")}
             style={floatingPosition(inlineResult.selection)}
@@ -1992,18 +2148,17 @@ export default function PdfReader({
                   <option value="zh-CN">中文</option>
                   <option value="en">English</option>
                 </select>
+                <button aria-label={t("收起选文草稿", "Minimize selection draft")} onClick={minimizeDraft}><Minus size={16}/></button>
                 <button
                   aria-label={t("关闭就地助手", "Close inline assistant")}
-                  onClick={() => {
-                    setInlineResult(null);
-                    inlineRequest.current += 1;
-                  }}
+                  onClick={clearSelectionDraft}
                 >
                   <X size={16} />
                 </button>
               </div>
             </header>
             <div className="pdf-inline-scroll">
+              {draftLocationUnavailable && <p className="pdf-draft-location-notice" role="status">{t("原选文位置已变化，无法精确恢复。草稿已保留，请重新选择原文以定位。", "The source location has changed and cannot be restored precisely. Your draft is preserved; select the source again to relocate it.")}</p>}
               {paperId && <label className="selection-execution">{t('处理方式','Process with')}<select aria-label={t('就地处理方式','Inline processing method')} value={useSelectionAgent?'agent':'api'} onChange={event=>{const value=event.target.value as SelectionExecution;setSelectionExecution(value);saveSelectionExecution(value);void runInline(inlineResult.kind,inlineResult.selection,inlineResult.language,value);}}><option value="api" disabled={!modelReady}>{t('模型 API','Model API')}</option><option value="agent">Codex / Claude</option></select></label>}
               <details>
                 <summary>{t("原文", "Original text")}</summary>

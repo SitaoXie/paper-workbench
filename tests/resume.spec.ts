@@ -64,7 +64,7 @@ test('library re-entry restores PDF page, zoom and within-page position while ex
   await expect(page.getByLabel('PDF 页码',{exact:true})).toHaveValue('3');
   await expect.poll(async()=>(await pdfPosition(page)).fraction).toBeCloseTo(before.fraction,2);
   await expect.poll(async()=>(await pdfPosition(page)).left).toBeCloseTo(before.left,0);
-  await expect(page).toHaveURL(/paper=resume-a$/);
+  expect(new URL(page.url()).searchParams.get('paper')).toBe('resume-a');
   await page.reload();
   await expect(page.getByLabel('PDF 页码',{exact:true})).toHaveValue('3');
   await expect.poll(async()=>(await pdfPosition(page)).fraction).toBeCloseTo(before.fraction,2);
@@ -74,7 +74,7 @@ test('library re-entry restores PDF page, zoom and within-page position while ex
   await expect.poll(async()=>(await pdfPosition(page)).fraction).toBeCloseTo(0,2);
   await page.getByLabel('PDF 页码',{exact:true}).fill('4');
   await page.getByLabel('PDF 页码',{exact:true}).press("Enter");
-  await expect(page).toHaveURL(/paper=resume-a&page=5$/);
+  expect(new URL(page.url()).searchParams.get('paper')).toBe('resume-a');expect(new URL(page.url()).searchParams.get('page')).toBe('5');
 });
 
 test('overview positions are per paper and reset when version, language or source content differs',async({page})=>{

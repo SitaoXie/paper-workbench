@@ -24,11 +24,13 @@ test('copying a citation must not claim the subscription task has been copied',a
  await setup(page);await page.getByRole('button',{name:'“ 引用',exact:true}).click();
  await page.getByRole('button',{name:'复制 BibTeX',exact:true}).click();await page.getByRole('button',{name:'关闭引用',exact:true}).click();await open(page);
  expect(await page.evaluate(()=>(window as any).__copied)).toMatch(/^@misc/);
- expect(await page.locator('.subscription-chat').getAttribute('aria-label')).toBe('用 Codex / Claude 订阅回答 · 复制任务');
+ await expect(page.getByRole('button',{name:'准备订阅任务',exact:true})).toBeVisible();
+ await expect(page.getByRole('region',{name:'订阅问答任务',exact:true})).toHaveCount(0);
 });
 
 async function selectQuestion(page:Page,question:string){
  const prose=page.locator('.reading-prose p').first();
+ await prose.scrollIntoViewIfNeeded();
  await prose.evaluate(el=>{const range=document.createRange();range.selectNodeContents(el);const selection=window.getSelection()!;selection.removeAllRanges();selection.addRange(range);document.dispatchEvent(new Event('selectionchange'));});
  const dialog=page.getByRole('dialog',{name:'选文操作',exact:true});await expect(dialog).toBeVisible();
  await dialog.getByLabel('针对摘要选文的问题',{exact:true}).fill(question);
@@ -86,10 +88,15 @@ test('a failed model switch unlocks every selector without claiming the unsaved 
 });
 
 test('a copied subscription task does not mark BibTeX or a changed question as copied',async({page})=>{
- await setup(page);await open(page);await page.getByLabel('向研究助手提问',{exact:true}).fill('Question one');await page.locator('.subscription-chat').click();
- await expect(page.locator('.subscription-chat')).toHaveAttribute('aria-label','任务已复制 · 在代理会话中粘贴');
+ await setup(page);await open(page);await page.getByLabel('向研究助手提问',{exact:true}).fill('Question one');await page.getByRole('button',{name:'准备订阅任务',exact:true}).click();
+ const task=page.getByRole('region',{name:'订阅问答任务',exact:true});
+ await expect(task.getByRole('button',{name:'已复制任务',exact:true})).toBeVisible();
  expect(await page.evaluate(()=>(window as any).__copied)).toContain('Question one');
- await page.getByLabel('向研究助手提问',{exact:true}).fill('Question two');expect(await page.locator('.subscription-chat').getAttribute('aria-label')).toBe('用 Codex / Claude 订阅回答 · 复制任务');
+ await page.getByLabel('向研究助手提问',{exact:true}).fill('Question two');
+ await expect(page.getByRole('button',{name:'准备订阅任务',exact:true})).toBeEnabled();
+ await task.getByRole('button',{name:'显示任务文本',exact:true}).click();
+ await expect(task.getByLabel('订阅问答任务文本',{exact:true})).toHaveValue(/Question one/);
+ await expect(task.getByLabel('订阅问答任务文本',{exact:true})).not.toHaveValue(/Question two/);
  await page.getByRole('button',{name:'关闭助手',exact:true}).click();await page.getByRole('button',{name:'“ 引用',exact:true}).click();
  await expect(page.getByRole('button',{name:'复制 BibTeX',exact:true})).toBeVisible();
 });

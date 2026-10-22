@@ -108,17 +108,35 @@ test('subscription CLI preserves version identity, separate notes/activities, an
   assert.equal(ranged.text,undefined);
   assert.equal(ranged.figuresPartial,true);
   assert.deepEqual(ranged.figures.map(f=>f.id),['first']);
-  assert.match(ranged.sourceNotice,/complete paper.figures list/);
+  assert.match(ranged.sourceNotice,/figure to save one reviewed crop/);
+  assert.match(ranged.sourceNotice,/preserve unrelated entries/);
   const derived=await cli(['source',pdf.id,'--include-derived']);
   assert.equal(derived.text,pdfFull.text);
   const rangeDerived=await cli(['source',pdf.id,'--pages','1','--include-derived']);
   assert.equal(rangeDerived.text,'[p.1]\n'+pdfFull.pages[0].text);
   assert.equal(rangeDerived.figuresPartial,true);
-  const pdfBundle=await cli(['export',pdf.id,'--out',join(directory,'pdf-bundle')]);
+  const pdfBundle=await cli(['export',pdf.id,'--out',join(directory,'pdf-bundle'),'--annotated-pdf']);
+  assert.ok((await readFile(pdfBundle.annotatedPdf)).subarray(0,8).includes(Buffer.from('%PDF-')));
+  assert.match(pdfBundle.annotationNotice,/saved annotations/);
+  assert.deepEqual(await readFile(pdfBundle.pdf),outlinePdf());
   const archived=JSON.parse(await readFile(pdfBundle.source,'utf8'));
   assert.equal(archived.text,pdfFull.text);
   assert.deepEqual(archived.pages,pdfFull.pages);
   assert.equal(archived.figures.length,2);
+
+  // Single-figure imports retain unrelated entries and fail stale revisions rather than rebasing silently.
+  const collection = await cli(['figures',pdf.id]);
+  const reviewed = {pdfRevision:collection.pdfRevision,expectedFiguresRevision:collection.figuresRevision,figure:{page:2,crop:{x:.1,y:.1,width:.7,height:.2},caption:'A verified second-page crop',label:'Figure 2'},source:{method:'manual',reviewed:true}};
+  const added = await cli(['figure',pdf.id,'-'], reviewed);
+  assert.equal(added.figures.length,3);
+  assert.deepEqual(added.figures.slice(0,2).map(item=>item.id),['first','last']);
+  await assert.rejects(cli(['figure',pdf.id,'-'],reviewed),/HTTP 409/);
+  const changed = await cli(['figure',pdf.id,'-','--figure',added.figure.id],{...reviewed,expectedFiguresRevision:added.figuresRevision,figure:{caption:'Corrected source caption'}});
+  assert.equal(changed.figure.id,added.figure.id);
+  assert.equal(changed.figures.length,3);
+  assert.equal(changed.figure.caption,'Corrected source caption');
+  assert.deepEqual(changed.figure.crop,reviewed.figure.crop);
+  await assert.rejects(cli(['figure',pdf.id,'-','--model','invalid'],reviewed),/not supported/);
 
   const bundle = await cli(['export',paper.id,'--out',join(directory,'bundle')]);
   const notes = JSON.parse(await readFile(bundle.annotations,'utf8'));

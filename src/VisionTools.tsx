@@ -10,8 +10,16 @@ import {
 import Mark from "./Markdown";
 import { api, type Paper, type Settings, type VisualEvidence } from "./types";
 import { cropPdfToPng } from "./pdf-crop";
+import { sourceFigureLabel } from "./reading-figures";
 import "./vision-tools.css";
 const PdfFigure = lazy(() => import("./PdfFigure"));
+
+// Exact allowlist: external/model-authored limitations remain visibly in their original language.
+const systemLimitations = new Map([
+  ["Pixels were submitted to the explicitly configured vision model; model conclusions are not independently verified.", "图像像素已发送给明确配置的视觉模型；模型结论未经独立核验。"],
+  ["The client supplied the PDF crop pixels. The server validated the source reference, image type and dimensions, not pixel-level correspondence to the PDF.", "客户端提供了 PDF 裁切图像。服务端校验了来源引用、图像类型和尺寸，但未逐像素核验它与 PDF 是否一致。"],
+  ["A crop may omit labels, legends or context. Do not infer unreadable values or treat a model description as a verified measurement.", "裁切图可能遗漏标签、图例或上下文。不要推测无法读清的数值，也不要把模型描述视为已核验的测量结果。"],
+]);
 
 type Props = {
   paper: Paper;
@@ -45,6 +53,9 @@ export default function VisionTools({
   const detailsRef = useRef<HTMLDetailsElement>(null);
   const [error, setError] = useState("");
   const [changingEvidence, setChangingEvidence] = useState("");
+  const [revealedId, setRevealedId] = useState("");
+  const [openResults, setOpenResults] = useState<Set<string>>(new Set());
+  const resultRefs = useRef(new Map<string, HTMLDetailsElement>());
   const [stage, setStage] = useState<"crop" | "analyze">("crop");
   const controller = useRef<AbortController | null>(null);
   const request = useRef(0);
@@ -62,9 +73,23 @@ export default function VisionTools({
     profile.modelCapabilities?.[visionModel] === "vision"
   );
   const source = paper.localPdfUrl || paper.pdfUrl;
-  const evidence = [...(paper.visualEvidence || [])].sort((a, b) =>
-    b.createdAt.localeCompare(a.createdAt),
-  );
+  // Array order is the server's append order, including equal timestamps.
+  const evidence = [...(paper.visualEvidence || [])].reverse();
+  const latestByFigure = new Map<string, string>();
+  for (const item of evidence) if (!latestByFigure.has(item.figureId)) latestByFigure.set(item.figureId, item.id);
+  useEffect(() => {
+    if (!expanded || !revealedId || !evidence.some(item => item.id === revealedId)) return;
+    const result = resultRefs.current.get(revealedId);
+    if (!result) return;
+    result.open = true;
+    // Reveal completion inside the panel, without reopening a panel the reader closed.
+    const frame = requestAnimationFrame(() => {
+      const panel = detailsRef.current?.querySelector<HTMLElement>('.vision-tools-body');
+      if (compact && panel) panel.scrollTop += result.getBoundingClientRect().top - panel.getBoundingClientRect().top - 14;
+      setRevealedId("");
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [expanded, revealedId, paper.visualEvidence, compact]);
   useEffect(() => {
     if (!compact) return;
     const outside = (event: PointerEvent) => { if (detailsRef.current?.open && !detailsRef.current.contains(event.target as Node)) detailsRef.current.open = false; };
@@ -79,6 +104,8 @@ export default function VisionTools({
     setError("");
     setFocus("");
     setSelectedId("");
+    setRevealedId("");
+    setOpenResults(new Set());
     return () => {
       request.current += 1;
       controller.current?.abort();
@@ -115,7 +142,10 @@ export default function VisionTools({
           }),
         },
       );
-      if (request.current === revision) onUpdated(response.paper);
+      if (request.current === revision) {
+        onUpdated(response.paper);
+        setRevealedId(response.evidence.id);
+      }
     } catch (reason) {
       if (request.current === revision && !control.signal.aborted)
         setError(
@@ -129,6 +159,7 @@ export default function VisionTools({
   }
   async function toggleEvidence(item: VisualEvidence) {
     if (changingEvidence) return;
+    if (item.excluded && (item.stale || latestByFigure.get(item.figureId) !== item.id)) return;
     setChangingEvidence(item.id); setError("");
     const revision = request.current;
     try {
@@ -161,8 +192,8 @@ export default function VisionTools({
         <p className="vision-evidence-boundary">
           {evidence.length
             ? t(
-                "图像已交给所选模型；模型的解释仍可能出错，不等于独立核验。视觉分析单独保存，不会改写当前解读。",
-                "The selected model received image pixels. Its interpretation may be wrong and is not independent verification. Image analyses are saved separately from the reading.",
+                "模型解释可能出错。新分析先单独保存，主动纳入后才用于后续解读和问答；现有解读保持不变。图表本身仍可正常阅读与引用。",
+                "Model interpretations may be wrong. New analyses are saved separately until you include them in future readings and questions. Existing readings stay unchanged; source figures remain available.",
               )
             : t(
                 "目前没有模型读取图像的记录。文字或图注解读不能代替检查图中内容；你可以主动发送下方裁切图。",
@@ -200,6 +231,7 @@ export default function VisionTools({
             <select
               id={`vision-figure-${paper.id}`}
               value={selected?.id || ""}
+              title={selected?.id}
               disabled={busy}
               onChange={(event) => {
                 setSelectedId(event.target.value);
@@ -208,7 +240,7 @@ export default function VisionTools({
             >
               {figures.map((figure) => (
                 <option key={figure.id} value={figure.id}>
-                  {figure.id} · p.{figure.page} · {figure.caption}
+                  {sourceFigureLabel(figure, language)}
                 </option>
               ))}
             </select>
@@ -220,6 +252,7 @@ export default function VisionTools({
                     page={selected.page}
                     crop={selected.crop}
                     caption={selected.caption}
+                    captionIsOriginal
                     onOpenPage={onPage}
                   />
                 </Suspense>
@@ -243,8 +276,8 @@ export default function VisionTools({
             <div className="vision-submit">
               <span>
                 {t(
-                  "仅发送选中裁切图及相关文字；不会自动调用模型。",
-                  "Only the selected crop and related text are sent. No automatic model calls.",
+                  "仅发送选中裁切图及相关文字。新分析默认不参与后续解读和问答。",
+                  "Sends only this crop and related text. New analyses are not used in future readings or questions until you include them.",
                 )}
               </span>
               <button
@@ -269,8 +302,8 @@ export default function VisionTools({
         ) : (
           <p className="vision-empty">
             {t(
-              "尚无可发送的图表裁切。请先导入 PDF，并通过论文 skill 标记真实图表区域。整页预览不会冒充图表发送。",
-              "No source figure crops are available. Import a PDF and identify actual figure regions with the paper skill first. Full-page previews are not sent as figures.",
+              "尚无可发送的图表裁切。可在「管理图表裁切」中从原 PDF 框选并核对图表，也可用论文 skill 保存裁切。整页预览不会作为图表发送。",
+              "No source figure crops are available. Use Manage figure crops to select and review regions from the source PDF, or save them with the paper skill. Full-page previews are not sent as figures.",
             )}
           </p>
         )}
@@ -281,17 +314,25 @@ export default function VisionTools({
         )}
         {!!evidence.length && (
           <div className="vision-results">
-            {evidence.map((item) => (
-              <details key={item.id} className="vision-result">
+            {evidence.map((item, index) => {
+              const historical = latestByFigure.get(item.figureId) !== item.id;
+              const eligible = !historical && !item.stale && !item.excluded;
+              const currentFigure = figures.find(figure => figure.id === item.figureId);
+              const figureLabel = sourceFigureLabel({page:item.page, label:item.stale ? undefined : currentFigure?.label, caption:item.caption || (item.stale ? undefined : currentFigure?.caption)}, language);
+              const createdAt = new Date(item.createdAt);
+              const timestamp = Number.isNaN(createdAt.getTime()) ? t("时间未知", "Time unknown") : createdAt.toLocaleString(english ? "en" : "zh-CN", {year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false});
+              return (
+              <details key={item.id} className="vision-result" data-evidence-id={item.id}
+                ref={element => { if (element) resultRefs.current.set(item.id, element); else resultRefs.current.delete(item.id); }}
+                onToggle={event => { const open = event.currentTarget.open; setOpenResults(previous => { const next = new Set(previous); if (open) next.add(item.id); else next.delete(item.id); return next; }); }}>
                 <summary>
-                  <span>
-                    {item.figureId} · {t("视觉分析", "Image analysis")}
+                  <span className="vision-result-heading">
+                    {figureLabel}
+                    <small className={`vision-use-badge ${eligible ? 'is-included' : ''}`}>{historical ? t("历史", "Historical") : item.stale ? t("来源已变化", "Source changed") : eligible ? t("已纳入 · 未核验", "Included · Unverified") : t("未纳入", "Not included")}</small>
                   </span>
-                  <span>
-                    {item.language.startsWith("en") ? "English" : "中文"} ·{" "}
-                    {new Date(item.createdAt).toLocaleDateString(
-                      english ? "en" : "zh-CN",
-                    )}
+                  <span className="vision-result-time">
+                    <span>{t("记录", "Record")} {evidence.length - index} · {item.language.startsWith("en") ? "English" : "中文"}</span>
+                    <time dateTime={Number.isNaN(createdAt.getTime()) ? undefined : item.createdAt}>{timestamp}</time>
                   </span>
                 </summary>
                 <div className="vision-result-content">
@@ -307,19 +348,17 @@ export default function VisionTools({
                   {item.stale && (
                     <p className="vision-stale" role="status">
                       {t(
-                        "图表裁切已更新，此分析对应旧裁切。请重新分析当前图像。",
-                        "The figure crop has changed. This analysis describes the previous crop; analyze the current image again.",
+                        "原 PDF 或图表裁切已更新，此分析对应旧来源。请重新分析当前图像。",
+                        "The source PDF or crop has changed. This analysis describes an earlier source; analyze the current image again.",
                       )}
                     </p>
                   )}
                   <p className="vision-result-status">
                     {t(
-                      "模型已收到图像；模型结论未经独立核验。",
-                      "The model received image pixels; its conclusions have not been independently verified.",
+                      "模型图像解读 · 未经独立核验",
+                      "Model image analysis · Not independently verified",
                     )}
                   </p>
-                  {item.excluded && <p className="vision-stale" role="status">{t("已排除：后续解读不会使用这条模型观察。历史记录仍保留。", "Excluded from future readings. This observation remains in history.")}</p>}
-                  <button className="text-button" disabled={!!changingEvidence} onClick={()=>void toggleEvidence(item)}>{item.excluded ? t("恢复用于后续解读", "Use in future readings") : t("不用于后续解读", "Exclude from future readings")}</button>
                   {item.focus && (
                     <p className="vision-result-focus">
                       {t("侧重点：", "Focus: ")}
@@ -329,6 +368,18 @@ export default function VisionTools({
                   <div className="vision-markdown">
                     <Mark onPage={onPage}>{item.markdown}</Mark>
                   </div>
+                  <p className="vision-use-status" role="status">{historical
+                    ? t("已有更新分析，这条记录仅供历史查阅。", "A newer analysis exists. This record is kept for reference only.")
+                    : item.stale ? t("来源已变化，不参与后续解读和问答。", "Source changed; not used in future readings or questions.")
+                    : item.excluded ? t("尚未纳入后续解读和问答。可对照原图后主动纳入，或继续只在此阅读。", "Not included in future readings or questions. Compare with the source, then include it if useful, or keep it here for reference.")
+                    : t("将用于后续解读和问答，仍未经独立核验。已生成版本不会被改写。", "Included in future readings and questions, still unverified. Existing versions remain unchanged.")}</p>
+                  {!historical && !item.stale && <button type="button" className="text-button" disabled={!!changingEvidence} onClick={()=>void toggleEvidence(item)}>{item.excluded ? t("纳入后续解读和问答", "Use in future readings") : t("不用于后续解读和问答", "Exclude from future readings")}</button>}
+                  {!item.stale && source && openResults.has(item.id) && <details className="vision-source-comparison">
+                    <summary>{t("对照原图与图注", "Compare source figure and caption")}</summary>
+                    <Suspense fallback={<p>{t("正在加载原文图表…", "Loading source figure…")}</p>}>
+                      <PdfFigure url={source} page={item.page} crop={item.crop} caption={item.caption || figures.find(figure => figure.id === item.figureId)?.caption} captionIsOriginal onOpenPage={onPage}/>
+                    </Suspense>
+                  </details>}
                   <details className="vision-limitations">
                     <summary>
                       {t("来源与限制", "Provenance and limitations")}
@@ -339,10 +390,13 @@ export default function VisionTools({
                         "Source: a browser-rendered PDF crop at the recorded page and coordinates. The server records an image hash, not the uploaded image.",
                       )}
                     </p>
+                    <p className="vision-source-id">{t("图表 ID：", "Source figure ID: ")}<code>{item.figureId}</code></p>
                     {item.limitations?.length ? (
                       <ul>
                         {item.limitations.map((limit, index) => (
-                          <li key={index}>{limit}</li>
+                          <li key={index}>{systemLimitations.has(limit)
+                            ? english ? limit : systemLimitations.get(limit)
+                            : <><span className="vision-original-limitation">{t("原文说明：", "Original note: ")}</span>{limit}</>}</li>
                         ))}
                       </ul>
                     ) : null}
@@ -352,7 +406,7 @@ export default function VisionTools({
                   </details>
                 </div>
               </details>
-            ))}
+            );})}
           </div>
         )}
       </div>

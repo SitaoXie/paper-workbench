@@ -33,6 +33,16 @@ import { markReadingTranslationApplied, startReadingTranslation, translationSour
 import { figureCaption, missingFigureCaptions } from "./figure-captions";
 import { portableReadingMarkdown } from "./portable-answer";
 import { positionHash, type OverviewReadingContext } from "./reading-position";
+import ReadingTranslationBridge from './ReadingTranslationBridge';
+import {buildReadingTranslationTask,resolveReadingTranslationTaskMode} from './reading-translation-task';
+import ReadingInteractiveBridge from './ReadingInteractiveBridge';
+import {buildReadingInteractiveTask} from './reading-interactive-task';
+
+type SubscriptionTranslationMode='translation'|'captions'|'interactive';
+type SubscriptionTranslation={paperId:string;readingId:string;language:string;mode:SubscriptionTranslationMode;source:string;task:string};
+type SubscriptionInteractive={paperId:string;sourceReadingId:string;expectedSourceRevision:string;agentTaskId:string;source:string;task:string;resultId?:string;stale?:boolean;dismissed?:boolean};
+const interactiveTaskSource=(version:ReadingVersion,paper:Paper)=>JSON.stringify([version.markdown,version.language||'en',version.style,version.focus,version.title,version.figures||paper.figures||[],version.createdAt,version.source,version.pdfRevision,version.figuresRevision]);
+const matchesInteractiveTask=(version:ReadingVersion,binding:SubscriptionInteractive)=>version.agentTaskId===binding.agentTaskId&&version.derivedFromReadingId===binding.sourceReadingId&&version.derivedSourceRevision===binding.expectedSourceRevision&&version.format==='interactive'&&version.interactive?.schemaVersion===1&&version.interactive.blocks.length>0;
 
 export function readingVersions(paper: Paper): ReadingVersion[] {
   if (paper.readingVersions?.length) return [...paper.readingVersions].sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
@@ -92,16 +102,19 @@ export default function ReadingOverview({
   onConfigure,
   onUpdated,
   onPage,
+  onSource,
   onError,
   onBusy,
   onAskSelection,
   initialPresentation,
+  historyNavigation,
   positionContext,
   onReadingContextChange,
   onManageFigures,
 }: {
   active?: boolean;
   initialPresentation?: "article" | "interactive";
+  historyNavigation?: {readingId?:string;presentation:'article'|'interactive';revision:number};
   positionContext?: string;
   onReadingContextChange?: (context: OverviewReadingContext) => void;
   onManageFigures?: () => void;
@@ -113,6 +126,7 @@ export default function ReadingOverview({
   onConfigure: () => void;
   onUpdated: (paper: Paper) => void;
   onPage: (page: number, quote?: string) => void;
+  onSource?: (source:'abstract'|'text') => void;
   onError: (message: string) => void;
   onBusy?: (value: boolean) => void;
   onAskSelection: (text: string, label: string, question?: string, source?: {sourceScope:'reading'|'abstract';readingId?:string}) => Promise<boolean>;
@@ -164,15 +178,37 @@ export default function ReadingOverview({
   const selectedRef = useRef(selected);
   // A late failed write must not roll back a newer read-only source navigation.
   const selectionIntent = useRef(0);
+  // A restored fixed version is a local reading choice. A later detail/poll
+  // response may update the library's active version without replacing it.
+  const restoredVersionChoice = useRef(false);
   const [configure, setConfigure] = useState(!versions.length);
   const [format, setFormat] = useState<"article"|"interactive">("article");
   const [presentation, setPresentation] = useState<"article"|"interactive">(initialPresentation || (versions.find(v=>v.id===(paper.activeReadingId || versions[0]?.id))?.format === "interactive" ? "interactive" : "article"));
   const presentationVersion = useRef(paper.activeReadingId || versions[0]?.id);
+  useLayoutEffect(()=>{
+    if(!historyNavigation||parseReadingSectionLocation(location.href,paper.id))return;
+    selectionIntent.current+=1;
+    setSectionIntent(undefined);
+    const id=historyNavigation.readingId;
+    if(id&&versions.some(version=>version.id===id)){
+      restoredVersionChoice.current=true;
+      selectedRef.current=id;setSelected(id);presentationVersion.current=id;
+    }
+    setPresentation(historyNavigation.presentation);
+  },[historyNavigation?.revision]);
   const [exporting, setExporting] = useState(false);
   const [style, setStyle] = useState<ReadingStyle>("quick");
   const [focus, setFocus] = useState("");
   const [copied, setCopied] = useState(false);
   const [agentTask, setAgentTask] = useState("");
+  const [translationTasks,setTranslationTasks]=useState<Record<string,SubscriptionTranslation>>({});
+  const [interactiveTasks,setInteractiveTasks]=useState<Record<string,SubscriptionInteractive>>({});
+  const [preparingInteractive,setPreparingInteractive]=useState<Set<string>>(new Set());
+  const interactiveTaskRef=useRef(interactiveTasks);interactiveTaskRef.current=interactiveTasks;
+  const interactivePreparations=useRef(new Map<string,number>());
+  const interactiveRefreshes=useRef(new Map<string,number>());
+  const latestPaper=useRef(paper);latestPaper.current=paper;
+  const translationRefreshes=useRef(new Map<string,number>());
   const [error, setError] = useState("");
   const mounted = useRef(true);
   const previousLanguage = useRef(language);
@@ -184,10 +220,14 @@ export default function ReadingOverview({
     };
   }, []);
   useEffect(() => {
-    if (paper.activeReadingId && !sectionIntent) { setSelected(paper.activeReadingId); selectedRef.current = paper.activeReadingId; }
+    if (paper.activeReadingId && !sectionIntent && !restoredVersionChoice.current) { setSelected(paper.activeReadingId); selectedRef.current = paper.activeReadingId; }
   }, [paper.activeReadingId]);
   const version = versions.find((v) => v.id === selected) || versions[0];
   const sourceFigures = version?.figures || paper.figures || [];
+  const translationTaskKey=JSON.stringify([paper.id,version?.id,language]);
+  const subscriptionTranslation=translationTasks[translationTaskKey];
+  const interactiveTaskKey=JSON.stringify([paper.id,version?.id]);
+  const subscriptionInteractive=interactiveTasks[interactiveTaskKey];
   const sourceIdentity = version ? translationSource({ ...version, figures: version.figures || paper.figures }) : "";
   const storedJob = useReadingTranslationJob(paper.id, version?.id || "", language);
   const translationJob = storedJob?.source === sourceIdentity ? storedJob : undefined;
@@ -235,7 +275,7 @@ export default function ReadingOverview({
     if (!version) return;
     selectionIntent.current += 1;
     const destination = readingSectionUrl(location.href, paper.id, version.id, index);
-    if (destination !== location.href) history.pushState({}, "", destination);
+    if (destination !== location.href) history.pushState({...history.state,paperWorkbench:history.state?.paperWorkbench?{...history.state.paperWorkbench,entryId:crypto.randomUUID(),tab:'summary'}:undefined}, "", destination);
     setSectionNoticeDismissed(false);
     setSectionIntent(previous => ({ readingId: version.id, section: index, revision: (previous?.revision || 0) + 1 }));
   }, [version?.id, paper.id]);
@@ -295,7 +335,7 @@ export default function ReadingOverview({
     const previous = selected;
     setSectionIntent(undefined);
     if (parseReadingSectionLocation(location.href, paper.id)) {
-      const url = new URL(location.href); url.hash = ""; history.replaceState({}, "", url.href);
+      const url = new URL(location.href); url.hash = ""; history.replaceState(history.state, "", url.href);
     }
     selectedRef.current = id;
     setSelected(id);
@@ -340,11 +380,8 @@ export default function ReadingOverview({
       );
       publish(response.paper);
       if (mounted.current) {
-        setSelected(
-          response.paper.activeReadingId ||
-            readingVersions(response.paper)[0]?.id ||
-            "",
-        );
+        const generatedId=response.paper.activeReadingId||readingVersions(response.paper)[0]?.id||"";
+        selectedRef.current=generatedId;setSelected(generatedId);
         setConfigure(false);
       }
     } catch (e) {
@@ -357,7 +394,7 @@ export default function ReadingOverview({
   function translate(interactiveOnly = false) {
     if (!version || translating) return;
     if (!modelReady) {
-      onConfigure();
+      prepareSubscriptionTranslation(interactiveOnly?'interactive':needsTranslation?'translation':'captions');
       return;
     }
     if (interactiveOnly) setPresentation("interactive");
@@ -380,9 +417,43 @@ export default function ReadingOverview({
       return result;
     } });
   }
+  function prepareSubscriptionTranslation(mode:SubscriptionTranslationMode){
+    if(!version)return;
+    const cache=version.translations?.[language];
+    const hasValidTargetArticle=!!cache?.markdown?.trim()&&!cache.stale;
+    const resolvedMode=resolveReadingTranslationTaskMode({mode,language,sourceLanguage:version.language,hasValidTargetArticle});
+    const task=buildReadingTranslationTask({origin:location.origin,paperId:paper.id,readingId:version.id,language,locale:language,mode:resolvedMode,sourceLanguage:version.language,sourceCreatedAt:version.createdAt,hasValidTargetArticle});
+    setTranslationTasks(current=>({...current,[translationTaskKey]:{paperId:paper.id,readingId:version.id,language,mode:resolvedMode,source:sourceIdentity,task}}));
+  }
+  async function refreshSubscriptionTranslation(binding:SubscriptionTranslation){
+    const key=JSON.stringify([binding.paperId,binding.readingId,binding.language]);
+    const epoch=(translationRefreshes.current.get(key)||0)+1;
+    translationRefreshes.current.set(key,epoch);
+    const initial=latestPaper.current;
+    const initialTranslation=JSON.stringify(readingVersions(initial).find(item=>item.id===binding.readingId)?.translations?.[binding.language]);
+    const response=await api<{paper:Paper}>(`/papers/${encodeURIComponent(binding.paperId)}`);
+    const current=latestPaper.current;
+    if(!mounted.current||current.id!==binding.paperId||translationRefreshes.current.get(key)!==epoch)return;
+    if(response.paper.id!==binding.paperId)throw new Error(t('结果与论文不匹配，请重试。','The result does not match this paper. Please retry.'));
+    const returned=readingVersions(response.paper).find(item=>item.id===binding.readingId);
+    const selected=readingVersions(current).find(item=>item.id===binding.readingId);
+    if(!returned||!selected||translationSource({...returned,figures:returned.figures||response.paper.figures})!==binding.source||translationSource({...selected,figures:selected.figures||current.figures})!==binding.source)
+      throw new Error(t('原解读已变化，请为当前版本重新复制翻译任务。','The source reading changed. Copy a new task for the current version.'));
+    // A concurrent provider job or another refresh may already have updated
+    // this target. A snapshot fetched before that change must not replace it.
+    if(JSON.stringify(selected.translations?.[binding.language])!==initialTranslation)return;
+    const result=returned.translations?.[binding.language];
+    if(!result||result.stale)return;
+    // Refresh only this translation. An old task must not switch the active
+    // reading, replace figures/notes, or erase another language's late result.
+    if(['legacy-summary','legacy-report'].includes(binding.readingId)){
+      const target=binding.readingId==='legacy-summary'?'summary':'report';
+      onUpdated({...current,translations:{...current.translations,[binding.language]:{...current.translations?.[binding.language],[target]:result}}});
+    }else onUpdated({...current,readingVersions:current.readingVersions?.map(item=>item.id===binding.readingId?{...item,translations:{...item.translations,[binding.language]:result}}:item)});
+  }
   async function makeInteractive() {
     if (!version || generating || translating) return;
-    if (!modelReady) { onConfigure(); return; }
+    if (!modelReady) { await prepareSubscriptionInteractive(); return; }
     setGenerating(true); onBusy?.(true); setError("");
     try {
       const response = await api<{paper: Paper}>(`/papers/${paper.id}/report`, {
@@ -395,6 +466,69 @@ export default function ReadingOverview({
       }
     } catch (reason) { if (mounted.current) setError((reason as Error).message); }
     finally { if (mounted.current) setGenerating(false); onBusy?.(false); }
+  }
+  async function prepareSubscriptionInteractive(newTask=false) {
+    if(!version)return;
+    const paperId=paper.id,sourceId=version.id,key=JSON.stringify([paperId,sourceId]);
+    if(interactivePreparations.current.has(key))return;
+    const existing=interactiveTaskRef.current[key];
+    if(existing&&!newTask){setInteractiveTasks(current=>({...current,[key]:{...current[key],dismissed:false}}));return;}
+    const identity=interactiveTaskSource(version,paper),epoch=Date.now();
+    interactivePreparations.current.set(key,epoch);setPreparingInteractive(current=>new Set(current).add(key));setError('');
+    try{
+      let source=version;
+      if(newTask||!source.derivationRevision||!/^[a-f0-9]{64}$/.test(source.derivationRevision)){
+        const response=await api<{paper:Paper}>(`/papers/${encodeURIComponent(paperId)}`);
+        const fresh=readingVersions(response.paper).find(item=>item.id===sourceId);
+        if(response.paper.id!==paperId||!fresh||interactiveTaskSource(fresh,response.paper)!==identity)
+          throw new Error(t('固定原版已变化，请重新打开论文并核对该版本后创建任务。','The fixed original changed. Reopen the paper and review that version before creating a task.'));
+        source=fresh;
+      }
+      const current=latestPaper.current,currentSource=readingVersions(current).find(item=>item.id===sourceId);
+      if(!mounted.current||current.id!==paperId||interactivePreparations.current.get(key)!==epoch)return;
+      if(!currentSource||interactiveTaskSource(currentSource,current)!==identity)throw new Error(t('原版来源已变化，请重新核对后创建任务。','The original source changed. Review it before creating a task.'));
+      if(!source.derivationRevision||!/^[a-f0-9]{64}$/.test(source.derivationRevision))throw new Error(t('服务端尚未提供固定版本校验信息，请更新服务后重试。','The server did not provide a fixed-version revision. Update the service and retry.'));
+      if(currentSource.derivationRevision&&currentSource.derivationRevision!==source.derivationRevision)throw new Error(t('原版校验信息已变化，请重新打开论文后重试。','The source revision changed. Reopen the paper and retry.'));
+      const binding:SubscriptionInteractive={paperId,sourceReadingId:sourceId,expectedSourceRevision:source.derivationRevision,agentTaskId:crypto.randomUUID(),source:identity,task:''};
+      binding.task=buildReadingInteractiveTask({origin:location.origin,...binding,locale:language});
+      interactiveTaskRef.current={...interactiveTaskRef.current,[key]:binding};
+      setInteractiveTasks(current=>({...current,[key]:binding}));
+    }catch(reason){if(mounted.current&&latestPaper.current.id===paperId)setError((reason as Error).message);}
+    finally{interactivePreparations.current.delete(key);if(mounted.current)setPreparingInteractive(current=>{const next=new Set(current);next.delete(key);return next;});}
+  }
+  async function refreshSubscriptionInteractive(binding:SubscriptionInteractive){
+    const key=JSON.stringify([binding.paperId,binding.sourceReadingId]),epoch=(interactiveRefreshes.current.get(binding.agentTaskId)||0)+1;
+    interactiveRefreshes.current.set(binding.agentTaskId,epoch);
+    const response=await api<{paper:Paper}>(`/papers/${encodeURIComponent(binding.paperId)}`);
+    const current=latestPaper.current;
+    if(!mounted.current||current.id!==binding.paperId||interactiveRefreshes.current.get(binding.agentTaskId)!==epoch||interactiveTaskRef.current[key]?.agentTaskId!==binding.agentTaskId)return;
+    if(response.paper.id!==binding.paperId)throw new Error(t('互动结果与论文不匹配。','The interactive result does not match this paper.'));
+    const returned=readingVersions(response.paper),currentVersions=readingVersions(current);
+    const source=returned.find(item=>item.id===binding.sourceReadingId),currentSource=currentVersions.find(item=>item.id===binding.sourceReadingId);
+    if(!source||!currentSource||source.derivationRevision!==binding.expectedSourceRevision||interactiveTaskSource(source,response.paper)!==binding.source||interactiveTaskSource(currentSource,current)!==binding.source||(currentSource.derivationRevision&&currentSource.derivationRevision!==binding.expectedSourceRevision)){
+      setInteractiveTasks(tasks=>tasks[key]?.agentTaskId===binding.agentTaskId?{...tasks,[key]:{...tasks[key],stale:true}}:tasks);
+      throw new Error(t('原版来源已变化，未合并旧任务结果。请核对来源后创建新任务。','The original source changed; the old task result was not merged. Review the source before creating a new task.'));
+    }
+    const results=returned.filter(item=>item.agentTaskId===binding.agentTaskId);
+    if(!results.length)return;
+    const result=results[0];
+    if(results.length!==1||!matchesInteractiveTask(result,binding)||result.markdown!==source.markdown||(result.language||'en')!==(source.language||'en')||result.style!==source.style||result.focus!==source.focus||result.title!==source.title||JSON.stringify(result.figures||[])!==JSON.stringify(source.figures||response.paper.figures||[]))
+      throw new Error(t('互动结果的固定版本或原文图表绑定不一致，未导入。','The interactive result does not preserve the fixed source or its figures; it was not imported.'));
+    const existing=currentVersions.find(item=>item.id===result.id);
+    const sameTask=currentVersions.filter(item=>item.agentTaskId===binding.agentTaskId);
+    if((existing&&!matchesInteractiveTask(existing,binding))||sameTask.some(item=>item.id!==result.id))throw new Error(t('本地已有冲突的任务结果，未覆盖任何版本。','A conflicting local task result already exists. No version was overwritten.'));
+    // Existing versions (including their newer translations) always win over
+    // the fetched snapshot. Only this task's newly saved version is added.
+    if(!existing){
+      const merged={...current,readingVersions:[...(current.readingVersions||currentVersions),result]};
+      latestPaper.current=merged;onUpdated(merged);
+    }
+    setInteractiveTasks(tasks=>tasks[key]?.agentTaskId===binding.agentTaskId?{...tasks,[key]:{...tasks[key],resultId:result.id,stale:false}}:tasks);
+  }
+  function openSubscriptionInteractive(binding:SubscriptionInteractive){
+    const current=latestPaper.current,result=readingVersions(current).find(item=>item.id===binding.resultId);
+    if(current.id!==binding.paperId||!result||!matchesInteractiveTask(result,binding)){setError(t('互动版暂不可用，请先刷新结果。','The interactive version is unavailable. Refresh its result first.'));return;}
+    void choose(result.id);
   }
   async function copy(text: string) {
     try {
@@ -591,14 +725,19 @@ export default function ReadingOverview({
             <button aria-pressed={visiblePresentation === "article"} onClick={()=>setPresentation("article")}>{t("文章", "Article")}</button>
             <button aria-pressed={visiblePresentation === "interactive"} onClick={()=>setPresentation("interactive")} disabled={!interactive}>{t("交互阅读", "Interactive")}</button>
           </div>}
-          {!version.interactive && version.mode !== "extractive" && <button className="reading-tool-button reading-interactive-convert" disabled={generating || translating} onClick={()=>void makeInteractive()} aria-label={t("将此版本转为互动导读", "Create an interactive version from this reading")} title={t("将此版本转为互动导读", "Create an interactive version from this reading")}>
-            {generating ? <Loader2 size={15} className="spin"/> : <Sparkles size={15}/>}<span>{t("互动导读", "Interactive")}</span>
-          </button>}
+          {!version.interactive && version.mode !== "extractive" && <>
+            <button className="reading-tool-button reading-interactive-convert" disabled={generating || translating || preparingInteractive.has(interactiveTaskKey)} onClick={()=>void makeInteractive()} aria-label={t("将此版本转为互动导读", "Create an interactive version from this reading")} title={t("将此版本转为互动导读", "Create an interactive version from this reading")}>
+              {generating||preparingInteractive.has(interactiveTaskKey) ? <Loader2 size={15} className="spin"/> : modelReady?<Sparkles size={15}/>:<Code2 size={15}/>}<span>{t("互动导读", "Interactive")}</span>
+            </button>
+            {modelReady&&<button className="reading-tool-button reading-interactive-subscription" disabled={preparingInteractive.has(interactiveTaskKey)} aria-label={t('用订阅制作互动版','Create an interactive version with a subscription')} title={t('用订阅制作互动版','Create an interactive version with a subscription')} onClick={()=>void prepareSubscriptionInteractive()}><Code2 size={15}/><span>{t('用订阅','Subscription')}</span></button>}
+          </>}
           <button className="reading-tool-button reading-offline-export" disabled={exporting} aria-label={t("下载离线网页", "Download offline website")} title={t("下载离线网页", "Download offline website")} onClick={()=>void exportWebsite()}>{exporting ? <Loader2 size={15} className="spin"/> : <Globe2 size={15}/>}<span>{t("离线网页", "Offline website")}</span></button>
           <details className="reading-version-details" ref={detailsRef} onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus({preventScroll:true}); } }}>
             <summary aria-label={t("版本详情", "Version details")} title={t("版本详情", "Version details")}><Info size={15}/><span>{t("版本详情", "Version details")}</span></summary>
             <div className="reading-version-detail-body">
-              <dl><div><dt>{t("阅读方式", "Reading style")}</dt><dd>{styleLabel(version.style)}</dd></div><div><dt>{t("生成来源", "Created with")}</dt><dd>{source}</dd></div><div><dt>{t("生成时间", "Created")}</dt><dd>{new Date(version.createdAt).toLocaleString(language)}</dd></div><div><dt>{t("原始语言", "Original language")}</dt><dd>{sourceLanguage}</dd></div></dl>
+              <dl><div><dt>{t("阅读方式", "Reading style")}</dt><dd>{styleLabel(version.style)}</dd></div>
+                {version.derivedFromReadingId&&<div><dt>{t("原文章来源", "Original article")}</dt><dd>{version.articleSource?.agent||version.articleSource?.model||t("来源未记录", "Source not recorded")}</dd></div>}
+                <div><dt>{version.derivedFromReadingId?t("互动内容来源", "Interactive companion"):t("生成来源", "Created with")}</dt><dd>{source}</dd></div><div><dt>{t("生成时间", "Created")}</dt><dd>{new Date(version.createdAt).toLocaleString(language)}</dd></div><div><dt>{t("原始语言", "Original language")}</dt><dd>{sourceLanguage}</dd></div></dl>
               {version.mode === "extractive" && <p>{t("原文摘录 · 未调用模型，不是独立分析。", "Source excerpts · No model used; this is not an independent analysis.")}</p>}
               {version.focus && <div className="reading-focus-record"><strong>{t("本版关注点", "Focus for this version")}</strong><p>{version.focus}</p></div>}
             </div>
@@ -624,6 +763,7 @@ export default function ReadingOverview({
       )}
       {version ? (
         <>
+          {subscriptionInteractive&&!subscriptionInteractive.dismissed&&<ReadingInteractiveBridge key={subscriptionInteractive.agentTaskId} task={subscriptionInteractive.task} target={`${t('固定原版','Fixed original')} v${versions.length-versions.findIndex(item=>item.id===subscriptionInteractive.sourceReadingId)} · ${version.language||'en'}`} resultReady={!!subscriptionInteractive.resultId&&versions.some(item=>item.id===subscriptionInteractive.resultId&&matchesInteractiveTask(item,subscriptionInteractive))} opening={choosing} stale={!!subscriptionInteractive.stale} onRefresh={()=>refreshSubscriptionInteractive(subscriptionInteractive)} onOpen={()=>openSubscriptionInteractive(subscriptionInteractive)} onClose={()=>setInteractiveTasks(tasks=>({...tasks,[interactiveTaskKey]:{...tasks[interactiveTaskKey],dismissed:true}}))} onNewTask={()=>void prepareSubscriptionInteractive(true)}/>}
           {version.interactiveGenerationError && <div className="reading-inline-error" role="status"><span>{t("文章已保存，互动版暂未完成。可以只重试互动转换，无需重新研读。", "The article was saved, but the interactive version did not finish. Retry just the conversion without regenerating the reading.")}</span></div>}
           {needsTranslation && (
             <div className="translation-missing">
@@ -646,19 +786,21 @@ export default function ReadingOverview({
                 {translating
                   ? t("正在翻译当前版本…", "Translating this version…")
                   : translationJob?.status === "error" ? t("重试翻译", "Retry translation")
-                  : t("翻译此版本", "Translate this version")}
+                  : modelReady ? t("翻译此版本", "Translate this version") : t("用订阅翻译此版本", "Translate this version with a subscription")}
               </button>
+              {modelReady&&<button className="text-button" onClick={()=>prepareSubscriptionTranslation('translation')}><Code2 size={13}/>{t('用 Codex / Claude','Use Codex / Claude')}</button>}
             </div>
           )}
-          {needsInteractiveTranslation && <div className="translation-missing" role="status"><span>{t("文章译文已保存，互动卡片尚未完成翻译；当前显示文章译文。", "The article translation is saved. Interactive cards are not yet translated; showing the article.")}</span><button className="text-button" disabled={translating} onClick={() => translate(true)}>{translating ? t("正在翻译互动卡片…", "Translating interactive cards…") : t("仅重试互动翻译", "Retry interactive translation")}</button></div>}
-          {needsCaptionTranslation && !needsTranslation && !needsInteractiveTranslation && <div className="reading-presentation-actions">{translated?.captionTranslationError && !translating && <span className="muted-label" role="status">{t("图注翻译未完成。", "Caption translation is unfinished.")}</span>}<button className="text-button" disabled={translating} onClick={() => translate()} title={translated?.captionTranslationError || t("复用当前解读，只补译图注；图内文字保留原样。", "Reuse this reading and translate missing captions; text inside figures stays unchanged.")}>{translating ? t("正在翻译图注…", "Translating figure captions…") : translated?.captionTranslationError || translationJob?.status === "error" ? t("重试图注翻译", "Retry caption translation") : t("补译图注", "Translate figure captions")}</button></div>}
+          {needsInteractiveTranslation && <div className="translation-missing" role="status"><span>{t("文章译文已保存，互动卡片尚未完成翻译；当前显示文章译文。", "The article translation is saved. Interactive cards are not yet translated; showing the article.")}</span><button className="text-button" disabled={translating} onClick={() => translate(true)}>{translating ? t("正在翻译互动卡片…", "Translating interactive cards…") : modelReady?t("仅重试互动翻译", "Retry interactive translation"):t('用订阅翻译互动卡片','Translate cards with a subscription')}</button>{modelReady&&<button className="text-button" onClick={()=>prepareSubscriptionTranslation('interactive')}><Code2 size={13}/>{t('用 Codex / Claude','Use Codex / Claude')}</button>}</div>}
+          {needsCaptionTranslation && !needsTranslation && !needsInteractiveTranslation && <div className="reading-presentation-actions">{translated?.captionTranslationError && !translating && <span className="muted-label" role="status">{t("图注翻译未完成。", "Caption translation is unfinished.")}</span>}<button className="text-button" disabled={translating} onClick={() => translate()} title={translated?.captionTranslationError || t("复用当前解读，只补译图注；图内文字保留原样。", "Reuse this reading and translate missing captions; text inside figures stays unchanged.")}>{translating ? t("正在翻译图注…", "Translating figure captions…") : !modelReady?t('用订阅补译图注','Translate captions with a subscription'):translated?.captionTranslationError || translationJob?.status === "error" ? t("重试图注翻译", "Retry caption translation") : t("补译图注", "Translate figure captions")}</button>{modelReady&&<button className="text-button" onClick={()=>prepareSubscriptionTranslation('captions')}><Code2 size={13}/>{t('用 Codex / Claude','Use Codex / Claude')}</button>}</div>}
+          {subscriptionTranslation&&<ReadingTranslationBridge key={subscriptionTranslation.task} task={subscriptionTranslation.task} target={`${t('固定版本','Fixed version')} v${versions.length-versions.findIndex(item=>item.id===subscriptionTranslation.readingId)} · ${subscriptionTranslation.language.startsWith('zh')?'中文':'English'} · ${subscriptionTranslation.mode==='captions'?t('图注','Captions'):subscriptionTranslation.mode==='interactive'?t('互动卡片','Interactive cards'):t('正文与图注','Article and captions')}`} ready={!!translated&&!translated.stale&&(subscriptionTranslation.mode==='interactive'?!!interactive:subscriptionTranslation.mode==='captions'?!needsCaptionTranslation:!needsInteractiveTranslation&&!needsCaptionTranslation)} onRefresh={()=>refreshSubscriptionTranslation(subscriptionTranslation)} onClose={()=>setTranslationTasks(current=>{const next={...current};delete next[translationTaskKey];return next;})}/>}
           {(needsTranslation || needsInteractiveTranslation || needsCaptionTranslation) && translationJob?.status === "error" && <div className="reading-inline-error" role="alert"><span>{needsInteractiveTranslation ? t("互动翻译失败：", "Interactive translation failed: ") : needsCaptionTranslation && !needsTranslation ? t("图注翻译失败：", "Caption translation failed: ") : t("当前版本翻译失败：", "Translation failed for this version: ")}{translationJob.error}</span></div>}
           {needsInteractiveTranslation && translated?.interactiveTranslationError && translationJob?.status !== "error" && !translating && <p className="muted-label">{translated.interactiveTranslationError}</p>}
           {sectionIntent && (!sectionVersionAvailable || !sectionExists) && !sectionNoticeDismissed && <div className="reading-section-notice" role="status"><span>{!sectionVersionAvailable ? t("链接指向的解读版本不存在，当前显示已有版本。", "The linked reading version is unavailable; showing an existing version.") : t("链接指向的章节不存在，请从目录选择。", "The linked section is unavailable. Choose one from the contents.")}</span><button className="icon-button" aria-label={t("关闭章节提示", "Dismiss section notice")} onClick={() => setSectionNoticeDismissed(true)}><X size={13}/></button></div>}
           {visiblePresentation === "article" && <ReadingSections active={active} paperId={paper.id} readingId={version.id} contextKey={readingContextKey} sections={sections} contentRef={proseRef} intent={sectionVersionAvailable && sectionExists ? sectionIntent : undefined} onNavigate={navigateSection} onError={onError}/>}
           <div ref={proseRef} className={`reading-prose ${visiblePresentation === "interactive" ? "" : "prose"}`} data-reading-id={version.id}>
             <SelectionTools active={active} paperId={paper.id} readingId={version.id} scope="reading" language={language} model={settings.model} modelReady={!!modelReady} onAsk={onAskSelection}>
-              {visiblePresentation === "interactive" && interactive ? <InteractiveReading interactive={interactive} figures={sourceFigures} pdfUrl={paper.localPdfUrl || paper.pdfUrl} onPage={onPage} language={translated ? language : sourceLanguage} {...captionPresentation}/> : <Mark sectionNavigation={sectionNavigation} onPage={onPage} figures={sourceFigures} pdfUrl={paper.localPdfUrl || paper.pdfUrl} {...captionPresentation}>{markdown}</Mark>}
+              {visiblePresentation === "interactive" && interactive ? <InteractiveReading interactive={interactive} figures={sourceFigures} pdfUrl={paper.localPdfUrl || paper.pdfUrl} onPage={onPage} onSource={onSource} language={translated ? language : sourceLanguage} {...captionPresentation}/> : <Mark sectionNavigation={sectionNavigation} onPage={onPage} onSource={onSource} figures={sourceFigures} pdfUrl={paper.localPdfUrl || paper.pdfUrl} {...captionPresentation}>{markdown}</Mark>}
             </SelectionTools>
           </div>
           {version.stages && version.stages.length > 1 && (
@@ -677,7 +819,7 @@ export default function ReadingOverview({
                         ? t("研究者 · 初稿", "Researcher · draft")
                         : t("质疑者 · 审阅", "Skeptic · review")}
                     </h3>
-                    <Mark onPage={onPage}>{s.content}</Mark>
+                    <Mark onPage={onPage} onSource={onSource}>{s.content}</Mark>
                   </div>
                 ))}
             </details>

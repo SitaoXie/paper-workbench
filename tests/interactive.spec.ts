@@ -13,7 +13,7 @@ test('interactive reading exports the selected translated version with offline c
     { id: 'figure', type: 'figure', figureId: 'source-figure', explanation: 'Two measured groups, within the stated conditions.', citations: [{ page: 2 }] },
     { id: 'question', type: 'question', question: 'Does this prove universal generalization?', answer: 'No. Independent replication is still needed.', explanation: '</details><script>window.__injected=true</script>', citations: [{ page: 2 }] },
   ];
-  const latest: any = { id: 'interactive-latest', style: 'deep', format: 'interactive', language: 'zh-CN', markdown: '## 原始解读\n原文版本保留。', mode: 'agent', createdAt: '2026-10-22T08:00:00Z', figures, interactive: { schemaVersion: 1, blocks: [{ ...blocks[0], title: '原始概念', text: '原始中文概念。' }] }, translations: { en: { language: 'en', markdown: '## Complete translated reading\nThis is the cached English text for the selected version.', interactive: { schemaVersion: 1, blocks } } } };
+  const latest: any = { derivedFromReadingId:'original-article',articleSource:{kind:'agent',agent:'Original reading agent'},source:{kind:'agent',agent:'Interactive companion agent'}, id: 'interactive-latest', style: 'deep', format: 'interactive', language: 'zh-CN', markdown: '## 原始解读\n原文版本保留。', mode: 'agent', createdAt: '2026-10-22T08:00:00Z', figures, interactive: { schemaVersion: 1, blocks: [{ ...blocks[0], title: '原始概念', text: '原始中文概念。' }] }, translations: { en: { language: 'en', markdown: '## Complete translated reading\nThis is the cached English text for the selected version.', interactive: { schemaVersion: 1, blocks } } } };
   const older = { id: 'interactive-older', style: 'quick', format: 'interactive', language: 'en', markdown: '## Prior complete reading\nThis is the earlier version.', mode: 'agent', createdAt: '2026-10-21T08:00:00Z', figures: [], interactive: { schemaVersion: 1, blocks: [{ ...blocks[0], id: 'prior-concept', title: 'Prior version concept', text: 'Earlier evidence remains available.' }] } };
   const paper: any = { id: 'interactive-fixture', title: 'Offline evidence </title><script>window.__injected=true</script>', authors: [], source: 'pdf', createdAt: latest.createdAt, abstract: 'Evidence requires replication.', text: 'Evidence requires replication.', tags: [], pageCount: 2, url: 'https://papers.example.org/paper?token=secret-export-token&q=evidence', localPdfUrl: '/interactive-source.pdf', figures, readingVersions: [latest, older], activeReadingId: latest.id, apiKey: 'fake-private-api-key', localPath: '/Users/private-user/papers' };
   const writes: string[] = [];
@@ -43,6 +43,11 @@ test('interactive reading exports the selected translated version with offline c
   await page.keyboard.press('Space');
   await expect(answer).toBeHidden();
   await expect(page.getByLabel('Reading version', { exact: true })).toHaveValue(latest.id);
+  await page.getByLabel('Version details',{exact:true}).click();
+  const attribution=page.locator('.reading-version-detail-body');
+  await expect(attribution).toContainText('Original article');await expect(attribution).toContainText('Original reading agent');
+  await expect(attribution).toContainText('Interactive companion');await expect(attribution).toContainText('Interactive companion agent');
+  await page.getByLabel('Version details',{exact:true}).press('Escape');
   const latestDownloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Download offline website', exact: true }).click();
   const latestDownload = await latestDownloadPromise;
@@ -52,11 +57,17 @@ test('interactive reading exports the selected translated version with offline c
   expect(html).toContain('cached English text for the selected version');
   expect(html).toContain('Evidence in this version');
   expect(html).toContain('Reading version: interactive-latest');
+  expect(html).toContain('Original article: Original reading agent');expect(html).toContain('Interactive companion: Interactive companion agent');
   expect(html).not.toContain('原始中文概念');
   expect(html).not.toContain('Prior version concept');
   expect(html).toContain('data:image/png;base64,');
   expect(html).not.toMatch(/<script\b/i);
   for (const privateValue of ['secret-export-token', 'fake-private-api-key', '/Users/private-user']) expect(html).not.toContain(privateValue);
+  await page.getByRole('group',{name:'View format',exact:true}).getByRole('button',{name:'Article',exact:true}).click();
+  const articleDownloadPromise=page.waitForEvent('download');await page.getByRole('button',{name:'Download offline website',exact:true}).click();
+  const articleHtml=await readFile((await(await articleDownloadPromise).path())!,'utf8');
+  expect(articleHtml).toContain('Original article: Original reading agent');expect(articleHtml).toContain('Interactive companion: Interactive companion agent');
+  expect(articleHtml).toContain('cached English text for the selected version');
   await page.getByLabel('Reading version', { exact: true }).selectOption(older.id);
   await expect(interactive).toContainText('Prior version concept');
   const priorDownloadPromise = page.waitForEvent('download');

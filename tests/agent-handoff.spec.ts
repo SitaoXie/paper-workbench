@@ -36,8 +36,19 @@ async function copied(page:Page){return await page.evaluate(()=>(window as any).
 
 test('subscription copy fixes one session and both entry points reuse the same binding',async({page})=>{
   const{creations}=await setup(page);await page.goto('/zh/?paper=alpha');await openAssistant(page);
+  // The mode control and primary action each retain their own hit area.
+  const mode=page.getByLabel('问答处理方式',{exact:true});
+  const bounds=await mode.evaluate(select=>{
+    const rect=(element:Element)=>{const r=element.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width};};
+    const wrapper=select.parentElement!;
+    return {mode:rect(select),previous:rect(wrapper.previousElementSibling!),next:rect(wrapper.nextElementSibling!)};
+  });
+  expect(bounds.mode.left).toBeGreaterThanOrEqual(bounds.previous.right);
+  expect(bounds.mode.right).toBeLessThanOrEqual(bounds.next.left);
+  expect(bounds.mode.width).toBeGreaterThan(100);
+  await expect(mode).toHaveValue('agent');
   await composer(page).fill('请继续比较经验结果，不要保存笔记。');
-  await page.locator('.subscription-chat').click();
+  await page.getByRole('button',{name:'准备订阅任务',exact:true}).click();
   await expect.poll(async()=> (await copied(page)).length).toBe(1);
   expect(creations).toHaveLength(1);
   let task=(await copied(page))[0];
@@ -45,7 +56,7 @@ test('subscription copy fixes one session and both entry points reuse the same b
   expect(task).toContain(`PAPER_WORKBENCH_URL='${new URL(page.url()).origin}'`);
   expect(task).toContain("conversation 'alpha' 'created-1'");
   expect(task).toContain('请继续比较经验结果，不要保存笔记。');
-  await page.locator('.subscription-chat').click();
+  await page.getByRole('button',{name:'准备订阅任务',exact:true}).click();
   expect(creations).toHaveLength(1);
   await closeAssistant(page);
   await page.locator('.reading-tools').getByRole('button',{name:'用 Codex / Claude',exact:true}).click();
@@ -66,7 +77,7 @@ test('subscription copy fixes one session and both entry points reuse the same b
 
 test('a late session creation cannot copy a task over another paper or replace its draft',async({page})=>{
   const{creations}=await setup(page,{deferCreation:true});await page.goto('/zh/?paper=alpha');await openAssistant(page);
-  await composer(page).fill('Pending alpha question');await page.locator('.subscription-chat').click();
+  await composer(page).fill('Pending alpha question');await page.getByRole('button',{name:'准备订阅任务',exact:true}).click();
   await expect.poll(()=>creations.length).toBe(1);
   await closeAssistant(page);
   const menu=page.getByRole('button',{name:'展开导航',exact:true});if(await menu.isVisible())await menu.click();
@@ -74,7 +85,7 @@ test('a late session creation cannot copy a task over another paper or replace i
   await page.locator('.paper-card-main').filter({hasText:'Handoff paper beta'}).click();await openAssistant(page);
   await composer(page).fill('Do not replace this beta draft');
   await creations[0].route.fulfill({json:{conversationId:'created-1',messages:[]}});
-  await expect(page.locator('.subscription-chat')).toBeEnabled();
+  await expect(page.getByRole('button',{name:'准备订阅任务',exact:true})).toBeEnabled();
   await expect(composer(page)).toHaveValue('Do not replace this beta draft');
   expect(await copied(page)).toHaveLength(0);
   await closeAssistant(page);await page.locator('.reading-tools').getByRole('button',{name:'用 Codex / Claude',exact:true}).click();

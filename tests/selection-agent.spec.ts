@@ -14,6 +14,9 @@ async function selectPdf(page:Page,crossPage=false) {
   // Start a fresh gesture in the page margin. Clicking an existing highlighted
   // passage would correctly open its note before this programmatic range.
   await page.getByRole('region',{name:'Paper PDF reader',exact:true}).getByLabel('Continuous paper pages',{exact:true}).click({position:{x:4,y:4}});
+  // The new gesture starts on source text; a margin click alone is only a
+  // focus reset and intentionally does not reopen a dismissed identical quote.
+  await first.dispatchEvent('pointerdown',{pointerId:1,pointerType:'mouse',isPrimary:true});
   if(crossPage)await expect(page.locator('[data-pdf-page="2"] .pdf-text-layer span').filter({hasText:'Unobserved routes'}).first()).toBeAttached();
   await first.evaluate((element,cross)=>{const last=cross?Array.from(document.querySelectorAll('[data-pdf-page="2"] .pdf-text-layer span')).find(el=>el.textContent?.includes('Unobserved routes'))!:element;const range=document.createRange();range.setStart(element.firstChild!,0);range.setEnd(last.firstChild!,last.firstChild!.textContent!.length);const selection=getSelection()!;selection.removeAllRanges();selection.addRange(range);document.dispatchEvent(new Event('selectionchange'));},crossPage);
   await expect(page.getByRole('dialog',{name:'Selected text actions',exact:true})).toBeVisible();
@@ -57,7 +60,7 @@ test('overview subscription results require exact version, language and quote bi
     else if(path.endsWith('/activities')){if(url.searchParams.has('agentTaskId')&&deferred===true){deferred=route;return;}json={activities:returned};}
     else if(path.endsWith('/annotations'))json={annotations:[]};else if(path==='/chats')json={messages:[],conversationId:null};else if(path==='/conversations')json={conversations:[]};
     await route.fulfill({json});});
-  await page.goto(`/en/?paper=${paper.id}`);const prose=page.locator('.reading-prose p').first();await expect(prose).toBeVisible();
+  await page.goto(`/en/?paper=${paper.id}`);const prose=page.locator('.reading-prose p').first();await expect(prose).toBeVisible();await prose.scrollIntoViewIfNeeded();
   await prose.evaluate(element=>{const range=document.createRange();range.selectNodeContents(element);const selection=getSelection()!;selection.removeAllRanges();selection.addRange(range);document.dispatchEvent(new Event('selectionchange'));});
   const dialog=page.getByRole('dialog',{name:'Selection actions',exact:true});await dialog.getByRole('button',{name:'Explain',exact:true}).click();
   const {binding}=await selectionTask(dialog);expect(binding).toMatchObject({paperId:paper.id,sourceScope:'reading',readingId:reading.id,kind:'explanation'});expect(binding.page).toBeUndefined();

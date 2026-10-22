@@ -1,5 +1,7 @@
 import { ApiRequestError } from "./selection-errors";
 export type Report = {
+  figuresRevision?: string;
+  pdfRevision?: string;
   requestedFormat?: ReadingFormat;
   interactiveGenerationError?: string;
   derivedFromReadingId?: string;
@@ -12,8 +14,12 @@ export type Report = {
   stages?: { role: string; content: string }[];
   language?: string;
   source?: { kind?: string; agent?: string; model?: string };
+  /** Original article attribution, distinct from a derived interactive companion. */
+  articleSource?: { kind?: string; agent?: string; model?: string };
 };
 export type Insight = {
+  figuresRevision?: string;
+  pdfRevision?: string;
   interactive?: InteractiveData;
   interactiveTranslationError?: string;
   figureCaptions?: Record<string, string>;
@@ -28,6 +34,9 @@ export type Figure = {
   id: string;
   page: number;
   caption: string;
+  label?: string;
+  largeCrop?: boolean;
+  source?: {kind?:string;method?:string;reviewed?:boolean;pdfRevision?:string;reviewedAt?:string};
   crop?: { x: number; y: number; width: number; height: number };
 };
 export type VisionSettings = {
@@ -37,6 +46,10 @@ export type VisionSettings = {
 };
 export type ModelCapability = "text" | "vision";
 export type VisualEvidence = {
+  /** Server-derived eligibility, evaluated before any CLI page filtering. */
+  eligibleForContext?: boolean;
+  pdfRevision?: string;
+  sourceRevisionChanged?: boolean;
   id: string;
   excluded?: boolean;
   updatedAt?: string;
@@ -62,6 +75,10 @@ export type VisualEvidence = {
 };
 export type ReadingStyle = "quick" | "deep" | "critical";
 export type ReadingVersion = Report & {
+  /** Server token binding the original article and figure snapshot for derived interactive imports. */
+  derivationRevision?: string;
+  derivedSourceRevision?: string;
+  agentTaskId?: string;
   format?: ReadingFormat;
   interactive?: InteractiveData;
   id: string;
@@ -98,6 +115,7 @@ export type Conversation = {
   source?: {kind?:string;conversationId?:string;messageId?:string;action?:string};
 };
 export type Paper = {
+  pdfRevision?: string;
   id: string;
   title: string;
   authors: string[];

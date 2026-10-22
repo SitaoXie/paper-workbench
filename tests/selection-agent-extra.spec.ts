@@ -34,6 +34,7 @@ async function fixture(page: Page, { long = false, failSession = false, clipboar
 
 async function selectOverview(page: Page) {
   const prose = page.locator('.reading-prose p').first(); await expect(prose).toBeVisible();
+  await prose.scrollIntoViewIfNeeded();
   await prose.evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); const selection = getSelection()!; selection.removeAllRanges(); selection.addRange(range); document.dispatchEvent(new Event('selectionchange')); });
   return page.getByRole('dialog', { name: 'Selection actions', exact: true });
 }

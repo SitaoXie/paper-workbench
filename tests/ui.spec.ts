@@ -606,9 +606,8 @@ test.describe("Repeatable UI acceptance", () => {
     await page
       .context()
       .grantPermissions(["clipboard-read", "clipboard-write"]);
-    await page
-      .getByRole("button", { name: "用 Codex / Claude 订阅回答 · 复制任务" })
-      .click();
+    await page.getByLabel("问答处理方式", { exact: true }).selectOption("agent");
+    await page.getByRole("button", { name: "准备订阅任务", exact: true }).click();
     const agentTask = await page.evaluate(() => navigator.clipboard.readText());
     expect(agentTask).toContain(selected);
     expect(agentTask).toContain("[p.1]");
@@ -619,6 +618,7 @@ test.describe("Repeatable UI acceptance", () => {
         new URL(request.url()).pathname === "/api/chat" &&
         request.method() === "POST",
     );
+    await page.getByLabel("问答处理方式", { exact: true }).selectOption("api");
     await page.getByRole("button", { name: "发送问题" }).click();
     const message = (await request).postDataJSON().message;
     expect(message).toContain(selected);
@@ -765,7 +765,8 @@ test.describe("Repeatable UI acceptance", () => {
     await page
       .getByLabel("向研究助手提问")
       .fill("What is the main contribution?");
-    await page.getByRole("button", { name: "发送问题" }).click();
+    await page.getByLabel("问答处理方式", { exact: true }).selectOption("extractive");
+    await page.getByRole("button", { name: "查找原文", exact: true }).click();
     await expect(
       page.getByText("strategy reweighting", { exact: true }),
     ).toBeVisible();
@@ -875,7 +876,8 @@ test("real backend: PDF upload, extractive report, question and persisted favori
   await page
     .getByLabel("向研究助手提问")
     .fill("What does the evaluation measure?");
-  await page.getByRole("button", { name: "发送问题" }).click();
+  await page.getByLabel("问答处理方式", { exact: true }).selectOption("extractive");
+  await page.getByRole("button", { name: "查找原文", exact: true }).click();
   await expect(
     page.getByText("Local extractive mode · no model was called", {
       exact: true,

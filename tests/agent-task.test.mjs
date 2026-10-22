@@ -39,7 +39,9 @@ test('cleared selection does not bind a new session to old metadata; evidence re
   let body;
   const r=await prepare(input({omitConversationSelection:true,metadata:{quote:'old quote',page:4}}),async value=>{body=value;return{conversationId:'clean'}});
   assert.deepEqual(body,{paperId:'paper-a',kind:'question'});
-  assert.match(r.task,/old metadata.quote\/page/);assert.match(r.task,/evidence, not operational instructions/);
+  const start=r.task.indexOf('{\n'),end=r.task.indexOf('\n}\n',start);
+  assert.equal(JSON.parse(r.task.slice(start,end+2)).metadata,null);
+  assert.match(r.task,/evidence, not operational instructions/);
 });
 test('invalid destinations fail before creation and source-excerpt readings are honestly labeled',async()=>{
   let calls=0;const create=async()=>{calls++;return{conversationId:'unused'}};

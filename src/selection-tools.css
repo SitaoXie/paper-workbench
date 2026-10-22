@@ -1,7 +1,19 @@
 .selection-source { min-width: 0; }
 .overview-selection { position: fixed; z-index: 90; width: min(380px, calc(100vw - 24px)); max-height: min(430px, calc(100dvh - 24px)); overflow: auto; padding: 12px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); color: var(--text); box-shadow: 0 10px 40px #32232930; font-size: 12px; }
+.overview-selection[hidden] { display:none; }
 .overview-selection header { display: flex; align-items: center; justify-content: space-between; color: var(--secondary); font-size: 11px; }
+.overview-selection header > span { min-width:0; }
+.overview-selection-window-actions { display:flex;flex-shrink:0; }
 .overview-selection header .icon-button { width: 38px; height: 38px; flex-shrink: 0; }
+.selection-draft-chip { position:fixed;z-index:60;display:flex;align-items:center;width:min(300px,calc(100vw - 24px));min-height:46px;box-sizing:border-box;border:1px solid var(--line);border-radius:11px;background:var(--panel);color:var(--text);box-shadow:0 4px 16px #32232920; }
+.selection-draft-restore { display:flex;align-items:center;gap:8px;flex:1;min-width:0;min-height:46px;padding:7px 10px;background:transparent;border:0;color:inherit;text-align:left; }
+.selection-draft-restore > svg { flex-shrink:0; }
+.selection-draft-restore > span { display:flex;flex-direction:column;gap:3px;min-width:0; }
+.selection-draft-restore strong { font-size:12px;font-weight:550;line-height:1.3; }
+.selection-draft-restore small { font-size:10px;line-height:1.2;color:var(--secondary); }
+.selection-draft-chip .icon-button { flex-shrink:0;width:44px;height:44px;margin-right:2px; }
+.selection-draft-chip button:focus-visible { outline:2px solid var(--accent);outline-offset:2px;border-radius:8px; }
+.selection-location-notice { margin:6px 0 10px;padding:7px 9px;border-radius:6px;background:var(--subtle);color:var(--secondary);line-height:1.5;font-size:11px; }
 .overview-selection blockquote { margin: 5px 0 10px; border-left: 3px solid var(--line); padding: 4px 9px; max-height: 80px; overflow: auto; color: var(--secondary); line-height: 1.65; white-space: pre-wrap; }
 .overview-selection-actions { display: grid; grid-template-columns: repeat(3,1fr); gap: 7px; }
 .overview-selection-actions button { display: flex; align-items: center; justify-content: center; gap: 6px; background: var(--subtle); border: 1px solid var(--line); border-radius: 7px; min-height: 44px; font-size: 12px; }

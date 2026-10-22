@@ -252,6 +252,11 @@ test("external translations preserve immutable versions and flag stale legacy tr
   expect(changed.readingVersions.find((version: any) => version.id === firstVersion).translations.en.markdown).toContain("First English reading");
   expect(changed.activeReadingId).not.toBe(firstVersion);
   await page.reload();
+  // Reload restores the fixed reading the reader was viewing; a newer external
+  // version must not silently replace it. Switch explicitly to inspect the new one.
+  await expect(page.getByLabel("Reading version")).toHaveValue(firstVersion);
+  await expect(page.getByRole("heading", { name: "First English reading" })).toBeVisible();
+  await page.getByLabel("Reading version").selectOption(changed.activeReadingId);
   await expect(page.getByRole("heading", { name: "修订后的中文解读" })).toBeVisible();
   await expect(page.locator(".reading-overview .translation-missing")).toContainText("This version has no translation in the selected language");
   await expect(page.getByRole("heading", { name: "First English reading" })).toHaveCount(0);
@@ -296,9 +301,8 @@ test("external subscription answer is persisted and visible without API key", as
       exact: false,
     }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: /用 Codex \/ Claude 订阅回答/ }),
-  ).toBeVisible();
+  await expect(page.getByLabel("问答处理方式")).toHaveValue("agent");
+  await expect(page.getByRole("button", { name: "准备订阅任务", exact: true })).toBeVisible();
   const chat = await (
     await request.get(`/api/chats?paperId=${paper.id}`)
   ).json();

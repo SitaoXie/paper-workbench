@@ -89,3 +89,21 @@ test('an old pending answer never moves another paper conversation and is unread
  await paper(page,'alpha');await expect(scroller(page)).toContainText('The arriving answer');await samePosition(page,alpha);
  await expect(page.getByRole('button',{name:'有新消息，跳到最新消息',exact:true})).toBeVisible();
 });
+
+
+test('an old focus refresh cannot erase an API answer that finishes while its chat snapshot is pending',async({page})=>{
+ const f=await setup(page);await page.goto('/zh/?paper=alpha');await open(page);
+ const oldMessages=structuredClone(f.conversations.alpha.find(session=>session.id==='established').messages);
+ const pending:Route[]=[];
+ await page.route('**/api/chats?**',route=>{pending.push(route);});
+ await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+ await expect.poll(()=>pending.length).toBe(1);
+ await composer(page).fill('A question sent after the old refresh began.');
+ await page.getByRole('button',{name:'发送问题',exact:true}).click();await expect.poll(()=>f.calls.length).toBe(1);
+ await f.reply();await expect(page.locator('.messages')).toContainText('The arriving answer gives new evidence.');
+ const pollFinished=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/papers/alpha/annotations');
+ await pending[0].fulfill({json:{conversationId:'established',messages:oldMessages}});await pollFinished;
+ await expect(page.locator('.messages')).toContainText('The arriving answer gives new evidence.');
+ await expect(page.locator('.messages')).toContainText('A question sent after the old refresh began.');
+ await expect(composer(page)).toHaveValue('');expect(f.calls).toHaveLength(1);
+});

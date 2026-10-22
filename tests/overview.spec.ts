@@ -20,7 +20,7 @@ test('overview selection translates in place and asks in a separate session with
   });
   await page.goto('/zh/?paper='+paper.id);
   const prose=page.locator('.reading-prose p').first();
-  await expect(prose).toBeVisible();
+  await expect(prose).toBeVisible();await prose.scrollIntoViewIfNeeded();
   await prose.evaluate(el=>{ const range=document.createRange(); range.selectNodeContents(el); const selection=window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); document.dispatchEvent(new Event('selectionchange')); });
   const dialog=page.getByRole('dialog',{name:'选文操作',exact:true});
   await expect(dialog).toBeVisible();
@@ -32,7 +32,12 @@ test('overview selection translates in place and asks in a separate session with
   expect(writes.some(w=>w.path==='/chats/new'||w.path==='/chat')).toBeFalsy();
   await dialog.getByLabel('针对摘要选文的问题',{exact:true}).fill('为什么有限采样不能说明策略不存在？');
   await page.mouse.wheel(0,300);
-  await expect(dialog.getByLabel('针对摘要选文的问题',{exact:true})).toBeVisible();
+  await expect(async()=>{
+    const restore=page.getByRole('button',{name:'返回选文草稿',exact:true});
+    if(await restore.isVisible())await restore.click();
+    await expect(dialog.getByLabel('针对摘要选文的问题',{exact:true})).toBeVisible({timeout:500});
+  }).toPass({timeout:5000});
+  await expect(dialog.getByLabel('针对摘要选文的问题',{exact:true})).toHaveValue('为什么有限采样不能说明策略不存在？');
   await dialog.getByRole('button',{name:'提问',exact:true}).click();
   await expect(page.getByTestId('assistant-dock')).toBeVisible();
   const question=writes.find(w=>w.path==='/chats/new')!;
@@ -211,14 +216,14 @@ test('image observations can be excluded and restored without calling the model 
   await expect(tools.locator('.vision-markdown')).toContainText('A retained model observation');
   expect(writes).toEqual([]);
   await tools.getByRole('button',{name:'Exclude from future readings',exact:true}).click();
-  await expect(tools.locator('.vision-result').getByRole('status')).toHaveText('Excluded from future readings. This observation remains in history.');
+  await expect(tools.locator('.vision-use-status')).toContainText('Not included in future readings or questions.');
   await expect(tools.getByRole('button',{name:'Use in future readings',exact:true})).toBeVisible();
   await expect(tools.locator('.vision-result')).toHaveCount(1);
   await expect(tools.locator('.vision-markdown')).toContainText('A retained model observation');
   await expect(page.getByLabel('Reading version',{exact:true})).toHaveValue(reading.id);
   await tools.getByRole('button',{name:'Use in future readings',exact:true}).click();
   await expect(tools.getByRole('button',{name:'Exclude from future readings',exact:true})).toBeVisible();
-  await expect(tools.locator('.vision-result').getByRole('status')).toHaveCount(0);
+  await expect(tools.locator('.vision-use-status')).toContainText('Included in future readings and questions, still unverified.');
   await expect(tools.locator('.vision-result')).toHaveCount(1);
   await expect(tools.locator('.vision-markdown')).toContainText('A retained model observation');
   expect(writes).toEqual([

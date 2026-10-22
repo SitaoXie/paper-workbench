@@ -21,6 +21,7 @@ export default function ReadingSections({ active, paperId, readingId, contextKey
   const run = useRef(0);
   const pending = useRef<(() => void) | undefined>(undefined);
   const lastIntent = useRef<number | undefined>(undefined);
+  const externalNavigationUntil = useRef(0);
   const elementFor = (index: number) => index === 0 ? contentRef.current : document.getElementById(readingSectionId(readingId, index));
   const topOffset = () => (document.querySelector('.paper-toolbar')?.getBoundingClientRect().height || 68) + (host.current?.getBoundingClientRect().height || 38) + 14;
   function jump(index: number, offset = topOffset(), progress?: number) {
@@ -52,6 +53,17 @@ export default function ReadingSections({ active, paperId, readingId, contextKey
     pending.current = stop;
   }
   useEffect(() => () => { pending.current?.(); lastIntent.current = undefined; }, []);
+  useEffect(()=>{
+    const sourceNavigation=(event:Event)=>{
+      const detail=(event as CustomEvent<{paperId?:string;navigation?:string}>).detail;
+      if(detail?.paperId!==paperId||detail.navigation!=='source')return;
+      pending.current?.();externalNavigationUntil.current=performance.now()+1500;
+    };
+    const userNavigation=()=>{externalNavigationUntil.current=0;};
+    window.addEventListener(READING_SECTION_EVENT,sourceNavigation);
+    for(const event of ['wheel','pointerdown','touchstart','keydown'])window.addEventListener(event,userNavigation,{passive:true});
+    return()=>{window.removeEventListener(READING_SECTION_EVENT,sourceNavigation);for(const event of ['wheel','pointerdown','touchstart','keydown'])window.removeEventListener(event,userNavigation);};
+  },[paperId]);
   useEffect(() => {
     if (!active) { setOpen(false); pending.current?.(); return; }
     let frame = 0;
@@ -80,6 +92,7 @@ export default function ReadingSections({ active, paperId, readingId, contextKey
       jump(intent.section); return;
     }
     if (before.paperId !== paperId || before.readingId !== readingId) return;
+    if(performance.now()<externalNavigationUntil.current)return;
     if (before.contextKey !== contextKey && currentRef.current.index > 0 && compatibleSectionStructure(before.sections, sections)) jump(currentRef.current.index, currentRef.current.offset, currentRef.current.progress);
   }, [active, paperId, readingId, contextKey, sections, intent]);
   useEffect(() => {
