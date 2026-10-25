@@ -1,3 +1,4 @@
+import {registerCollections} from './collections.mjs';
 import express from "express";
 import { UsageLedger, withUsage, usageOperation } from "./usage.mjs";
 import packageMetadata from "../package.json" with { type: "json" };
@@ -136,6 +137,7 @@ export async function createApp({
   app.use("/api/papers/:id/insights", express.json({ limit: "256kb", verify: (_request, _response, buffer) => assertUniqueJsonKeys(buffer.toString("utf8")) }));
   app.use(express.json({ limit: "256kb" }));
   app.use((request, _response, next) => withUsage(usage, usageOperation(request), next));
+  registerCollections(app,store,wrap);
   app.get("/api/usage", wrap(async (request, response) => response.json(await usage.summary(request.query))));
   const paperById = (id) => {
     const paper = store.paper(id);
@@ -442,6 +444,7 @@ export async function createApp({
       store.data.papers = store.data.papers.filter(
         (item) => item.id !== paper.id,
       );
+      store.data.collections = store.data.collections.map(folder => ({...folder,paperIds:folder.paperIds.filter(id=>id!==paper.id)}));
       store.data.chats = store.data.chats.filter(
         (item) => item.paperId !== paper.id,
       );

@@ -24,6 +24,19 @@ Classification edits accept at most 30 tags, each a non-empty single-line string
 
 Public paper metadata includes an opaque `recommendationSourceRevision`, also in library listings. Clients use it to invalidate visible question suggestions when source text or title changes without replacing the PDF. It excludes ordinary generated reading versions, notes and tags; included visual evidence that enters model context is part of the source identity.
 
+## Library folders
+
+Folders and labels are separate. `paper.tags` remains a flat list of labels. `GET /api/collections` returns `{ collections }`; every entry has `id`, `name`, `kind`, `parentId`, `paperIds`, and `createdAt`. Three built-in `kind: "status"` folders have stable IDs `status-want-to-read`, `status-reading`, and `status-completed`. Status memberships may overlap, and do not imply assignment to a custom folder. Custom folder names are user content; the client translates only built-in status names.
+
+- `POST /api/collections`: `{ "name": "Research topic", "parentId": null }` creates a custom folder. Names are single-line, 1–100 characters; sibling names must be unique after Unicode/case normalization.
+- `PATCH /api/collections/:id`: partial `{ "name": "New name", "parentId": "parent-folder-id" }` renames or relocates a custom folder. `parentId: null` moves it to the root. Cycles, nesting under status folders and trees deeper than eight levels are rejected before mutation.
+- `DELETE /api/collections/:id`: deletes a custom folder and its memberships, never its papers or notes. Nonempty membership is permitted, but existing subfolders cause a 409; relocate/delete those first. Built-in status folders cannot be renamed, relocated or deleted.
+- `POST /api/collection-memberships`: `{ "paperIds": ["paper-id"], "addTo": ["folder-id"], "removeFrom": [] }` changes memberships atomically. Up to 500 existing papers and 100 folders in each operation are accepted. All references are validated before mutation. A folder cannot appear in both lists. An add deduplicates membership; an explicit move (add + remove) removes source membership even when the paper already exists in the destination. Other memberships and all paper data are preserved.
+
+Every successful mutation returns the updated `{ collections }`. Paper deletion removes its memberships. Collection responses omit deleted paper IDs. These endpoints never invoke models. Legacy labels are not automatically turned into folders; create folders and assign memberships explicitly through the UI or API.
+
+The information architecture is informed by [alphaXiv's public library tool documentation](https://www.alphaxiv.org/docs/mcp): folders/subfolders, overlapping paper memberships and reading-status folders. This does not imply visual parity or integration with alphaXiv accounts.
+
 ## Recommended questions
 
 This optional feature is off by default. Select a separate saved connection/model through a partial settings update:

@@ -1,3 +1,4 @@
+import {defaultCollections} from './collections.mjs';
 import { mkdir, readFile, writeFile, rename, chmod } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID, createHash } from "node:crypto";
@@ -88,6 +89,7 @@ export class Store {
       this.data.activeConversations ||= {};
       this.data.annotations ||= [];
       this.data.activities ||= [];
+      this.data.collections ||= defaultCollections();
       for (const conversation of this.data.conversations) conversation.kind ||= "question";
     } catch (error) {
       if (error.code !== "ENOENT")
@@ -102,6 +104,7 @@ export class Store {
         activeConversations: {},
         annotations: [],
         activities: [],
+        collections: defaultCollections(),
         settings: normalizeProfiles(defaultSettings),
       };
       await this.save();

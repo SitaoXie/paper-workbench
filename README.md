@@ -57,7 +57,11 @@ In model settings, enable **Suggested questions** and choose its dedicated conne
 
 Saved recommendations are reused for the same paper content, language and model configuration. **New questions** explicitly refreshes them. Chinese and English have separate cached results. Generation appears under recommendations in API usage; requests already started may still consume tokens after closing or disabling the feature. Questions are model suggestions and may contain mistaken premises, so check them against the source. This feature uses a configured API, not an agent subscription.
 
-Library and saved-paper views also support filtering by locally stored category tags. Tags and paper metadata stay in the runtime data directory.
+## Library folders and labels
+
+The library has a folder navigator, nested custom folders, and independent Want to read / Reading / Completed folders. A paper can belong to multiple folders. Create, rename or relocate folders; select papers to add, move or remove memberships in bulk. The Unfiled view finds papers outside custom folders, regardless of reading status. Folder cards count unique papers across their subtree; opening a folder shows its immediate subfolders and directly assigned papers.
+
+Existing tags are preserved as **labels**, independently of folders. Search titles, authors and labels within a folder, filter by label, or sort by title and addition time. A paper's overview also provides a folder-membership checklist. Removing a membership or deleting a folder never deletes the paper, readings or notes. A folder with children must have those children moved or removed first. All folders and memberships persist in the ignored local data directory; no model API is involved.
 
 ## Figure understanding
 

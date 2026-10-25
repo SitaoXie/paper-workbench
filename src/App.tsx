@@ -78,6 +78,7 @@ import UsagePage from "./UsagePage";
 import ResearchWelcome from "./ResearchWelcome";
 import PaperRecommendations from "./PaperRecommendations";
 import LibraryTagFilter from "./LibraryTagFilter";
+import LibraryWorkspace,{PaperFolderButton} from "./LibraryWorkspace";
 import { filterLibraryTag } from "./library-tags";
 import AssistantDock, { defaultAssistantWidth } from "./AssistantDock";
 import { readCompanionMode, saveCompanionMode, type CompanionMode } from "./assistant-layout";
@@ -1841,6 +1842,7 @@ export default function App() {
                       >
                         <BookOpen size={15} /> {t("阅读论文")}
                       </button>
+                      <PaperFolderButton key={paper.id} paperId={paper.id}/>
                       {paper.url && (
                         <a
                           className="soft-button"
@@ -2067,7 +2069,7 @@ export default function App() {
               ) : null}
             </div>
           </>
-        ) : view === "usage" ? <UsagePage/> : view === "research" ? (
+        ) : view === "library" ? <LibraryWorkspace papers={papers} onOpen={openPaper} onFavorite={favorite} onImport={()=>setShowImport(true)}/> : view === "usage" ? <UsagePage/> : view === "research" ? (
           <div className="research-page">
             <header className="page-header">
               <div className="breadcrumb">
@@ -2227,7 +2229,7 @@ export default function App() {
                   </button>
                 </div>
               )}
-              {(view === 'library' || view === 'saved') && <LibraryTagFilter papers={unfilteredList} selected={libraryTag} onSelect={setLibraryTag}/>}
+              {view === 'saved' && <LibraryTagFilter papers={unfilteredList} selected={libraryTag} onSelect={setLibraryTag}/>}
               <section className="papers-section">
                 <div className="section-heading">
                   <h2>
@@ -2362,14 +2364,14 @@ export default function App() {
                       </span>
                     </div>
                     <h3>
-                      {(view === 'library' || view === 'saved') && libraryTag ? t('这个分类下还没有论文', 'No papers in this category') : results !== null
+                      {view === 'saved' && libraryTag ? t('没有匹配此标签的论文', 'No papers with this label') : results !== null
                         ? t("还没有找到相关论文")
                         : view === "saved"
                           ? t("把值得记住的论文留在这里")
                           : t("你的下一篇好论文，在这里。")}
                     </h3>
                     <p>
-                      {(view === 'library' || view === 'saved') && libraryTag ? t('换一个分类，或清除筛选查看全部论文。', 'Choose another category or clear the filter to see all papers.') : results !== null
+                      {view === 'saved' && libraryTag ? t('换一个标签，或清除筛选查看全部论文。', 'Choose another label or clear the filter to see all papers.') : results !== null
                         ? t("换个关键词，或选择其他搜索来源再试一次。")
                         : view === "saved"
                           ? t("在论文页面点击收藏，即可加入这份阅读清单。")
