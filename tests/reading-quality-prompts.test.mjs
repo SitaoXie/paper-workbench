@@ -115,37 +115,25 @@ async function captureReadingRequests({ language, style, maxOutputTokens = 1536,
 // shared contract, which legitimately describes both languages and all styles.
 const roleInstructions = request => request.messages.find(message => message.role === 'user').content.split('<reading_focus>')[0];
 
-test('deep draft and editor use output-language planning units without restoring the old 900-word cap or raising token limits', async t => {
-  const cases = [
-    { language: 'zh-CN', maxOutputTokens: 512, range: /2,?000[–-]3,?500\s+Chinese characters/, ceiling: /4,?500\s+Chinese characters/ },
-    { language: 'zh-TW', maxOutputTokens: 1536, range: /2,?000[–-]3,?500\s+Chinese characters/, ceiling: /4,?500\s+Chinese characters/ },
-    { language: 'en-US', maxOutputTokens: 6144, range: /1,?200[–-]2,?000\s+words/, ceiling: /2,?400\s+words/ },
-  ];
-  for (const entry of cases) await t.test(entry.language, async () => {
-    const focus = 'Explain the controlled comparison, not just the headline score.';
-    const { calls, report } = await captureReadingRequests({ ...entry, style: 'deep', focus });
-    assert.equal(report.language, entry.language);
-    assert.equal(report.style, 'deep');
-    assert.equal(report.focus, focus);
-    for (const index of [0, 2]) {
-      const instructions = roleInstructions(calls[index]);
-      assert.match(instructions, entry.range);
-      assert.match(instructions, entry.ceiling);
-      assert.doesNotMatch(instructions, /\b900\s+(?:English\s+)?words\b/i);
-      if (entry.language.startsWith('zh')) {
-        assert.match(instructions, /characters, not\s+whitespace-delimited words/);
-        assert.doesNotMatch(instructions, /1,?200[–-]2,?000\s+words/);
-      } else assert.doesNotMatch(instructions, /2,?000[–-]3,?500\s+Chinese characters/);
-    }
-    for (const request of calls) {
-      const user = request.messages.find(message => message.role === 'user').content;
-      assert.equal(user.match(/<reading_focus>\n([\s\S]*?)\n<\/reading_focus>/)[1], focus);
-      const system = request.messages[0].content;
-      assert.match(system, /planning range is not a minimum quota/i);
-      assert.match(system, /short excerpts need a concise reading/i);
-      assert.doesNotMatch(system, /\b900\s+(?:English\s+)?words\b/i);
-    }
-  });
+const numericLengthQuota = /\b\d[\d,]*(?:[–-]\d[\d,]*)?\s+(?:Chinese characters|English words|words)\b/i;
+
+test('every reading style uses purpose and evidence instead of word quotas across output languages and all roles', async t => {
+  for (const language of ['zh-CN', 'zh-TW', 'en-US']) for (const style of ['quick', 'deep', 'critical']) {
+    await t.test(language + ' ' + style, async () => {
+      const focus = 'Explain the controlled comparison, not just the headline score.';
+      const { calls, report } = await captureReadingRequests({ language, style, maxOutputTokens: 65536, focus });
+      assert.equal(report.language, language); assert.equal(report.style, style); assert.equal(report.focus, focus);
+      for (const request of calls) {
+        const system = request.messages[0].content;
+        assert.match(system, /reading purpose, focus, source complexity and available evidence/);
+        assert.match(system, /not a word or character count/);
+        assert.match(system, /short excerpts need a concise reading/);
+        assert.doesNotMatch(system, numericLengthQuota);
+        assert.doesNotMatch(roleInstructions(request), numericLengthQuota);
+      }
+      for (const index of [0, 2]) assert.match(roleInstructions(calls[index]), new RegExp('Write a ' + style + ' reading'));
+    });
+  }
 });
 
 test('deep review identifies source-located explanation gaps and the editor preserves supported explanations and evidence', async () => {
@@ -164,17 +152,6 @@ test('deep review identifies source-located explanation gaps and the editor pres
   assert.match(system, /non-monotonic findings/);
 });
 
-test('quick and critical retain their own draft and editor limits in Chinese and English', async t => {
-  for (const language of ['zh-CN', 'en']) for (const [style, limit] of [['quick', 250], ['critical', 800]]) {
-    await t.test(`${language} ${style}`, async () => {
-      const { calls, report } = await captureReadingRequests({ language, style });
-      assert.equal(report.style, style);
-      for (const index of [0, 2]) {
-        const instructions = roleInstructions(calls[index]);
-        assert.match(instructions, new RegExp(`within ${limit} words`));
-        assert.doesNotMatch(instructions, /plan roughly|ceiling of|\b900\s+words/);
-        assert.match(instructions, new RegExp(`Write a ${style} reading`));
-      }
-    });
-  }
+test('explicit smaller token budgets still reach each reading role unchanged', async () => {
+  for (const maxOutputTokens of [512, 1536, 8192]) await captureReadingRequests({ language: 'zh-CN', style: 'deep', maxOutputTokens });
 });

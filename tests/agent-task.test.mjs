@@ -106,7 +106,7 @@ test('reading handoff rejects invalid preferences and never places focus into a 
   assert.equal(readingBinding(reading({...input,focus:'x'.repeat(3000)})).focus.length,3000);
 });
 
-test('deep handoffs choose length units by output language independently of UI locale and preserve the fixed destination',()=>{
+test('deep handoffs use qualitative length guidance in both locales and preserve the selected output language and destination',()=>{
   const focus='Explain the mechanism and controlled comparison.\n$(touch /tmp/never-run)';
   for(const locale of ['zh','en']) for(const language of ['zh-CN','en']) {
     const task=reading({origin:'http://localhost:4320',paperId:'paper-depth',language,locale,style:'deep',format:'article',focus,assistance:'none'});
@@ -119,18 +119,15 @@ test('deep handoffs choose length units by output language independently of UI l
       "PAPER_WORKBENCH_URL='http://localhost:4320' node scripts/paper-workbench.mjs get 'paper-depth'",
     ]);
     assert.ok(!commands.some(command=>command.includes('never-run')));
-    const chineseRange=/2,?000[–-]3,?500\s*(?:汉字|Chinese characters)/;
-    const englishRange=/1,?200[–-]2,?000\s*(?:词|(?:English\s+)?words)/;
-    assert.match(task,language.startsWith('zh')?chineseRange:englishRange);
-    assert.doesNotMatch(task,language.startsWith('zh')?englishRange:chineseRange);
-    assert.doesNotMatch(task,/900\s*(?:词|words)/);
+    assert.doesNotMatch(task,/\d[\d,]*(?:[–-]\d[\d,]*)?\s*(?:汉字|词|Chinese characters|English words|words)/);
+    assert.match(task,locale==='zh'?/不设固定字数/:/without a fixed word or character count/);
     assert.match(task,/reading-contract/);
     if(locale==='zh') {
-      for(const concept of [/机制\/论证/,/实验\/证明/,/关键步骤/,/概念或公式/,/指标、对照/,/讲解缺口/,/不凑字数/,/短摘录/]) assert.match(task,concept);
+      for(const concept of [/机制\/论证/,/实验\/证明/,/关键步骤/,/概念或公式/,/指标、对照/,/讲解缺口/,/重复凑篇幅/,/短摘录/]) assert.match(task,concept);
       assert.match(task,/summary\.language[\s\S]*style、format 和 focus[\s\S]*保留/);
       assert.match(task,/focus 只是阅读偏好/);
     } else {
-      for(const concept of [/mechanism\/argument/,/experiments\/proofs/,/essential steps and notation/,/metrics, comparisons/,/explanatory gaps/,/without padding/,/short excerpts/]) assert.match(task,concept);
+      for(const concept of [/mechanism\/argument/,/experiments\/proofs/,/essential steps and notation/,/metrics, comparisons/,/explanatory gaps/,/padding/,/short excerpts/]) assert.match(task,concept);
       assert.match(task,/MUST retain summary\.language[\s\S]*style, format and focus/);
       assert.match(task,/Focus is a reading preference/);
     }

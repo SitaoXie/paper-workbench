@@ -1,3 +1,4 @@
+import { DEFAULT_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
 import {registerCollections} from './collections.mjs';
 import express from "express";
 import { UsageLedger, withUsage, usageOperation } from "./usage.mjs";
@@ -846,7 +847,7 @@ export async function createApp({
             report.interactive = await generateInteractiveReading({
               markdown: report.markdown, language: report.language, ...preferences,
               figures: readingFigures, pageCount: sourcePaper.pages?.length,
-              callModel: (prompt) => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens || 4096, usageStage: "interactive" }),
+              callModel: (prompt) => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens ?? DEFAULT_OUTPUT_TOKENS, usageStage: "interactive" }),
             });
           } catch (error) {
             // A conversion failure must not append a duplicate article. A fresh
@@ -913,7 +914,7 @@ export async function createApp({
             try {
               translated.interactive = await translateInteractiveReading({
                 interactive: version.interactive, ...translationOptions,
-                callModel: (prompt) => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens || 4096, usageStage: "interactive" }),
+                callModel: (prompt) => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens ?? DEFAULT_OUTPUT_TOKENS, usageStage: "interactive" }),
               });
               delete translated.interactiveTranslationError;
             } catch (error) {
@@ -927,7 +928,7 @@ export async function createApp({
           if (!completeCaptions) {
             try {
               translated.figureCaptions = await translateFigureCaptions({ ...translationOptions,
-                callModel: prompt => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens || 4096, usageStage: "captions" }),
+                callModel: prompt => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens ?? DEFAULT_OUTPUT_TOKENS, usageStage: "captions" }),
               });
               translated.figureCaptionsSourceHash = captionsHash;
               delete translated.captionTranslationError;

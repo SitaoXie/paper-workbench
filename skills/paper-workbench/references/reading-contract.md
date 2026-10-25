@@ -1,6 +1,6 @@
 # Paper Workbench reading contract
 
-Policy version: 2
+Policy version: 3
 
 This is the application's own reading contract. The API loads the relevant sections verbatim; subscription agents follow the same sections. It does not execute or redistribute a third-party skill. Optional external collaboration and its licensing boundaries are described in [external skills](external-skills.md).
 
@@ -32,7 +32,7 @@ Connect each major result to its question, comparison, metric, data split and im
 
 Select figures by their explanatory roles. For substantial deep readings, a mechanism figure and a distinct evidence figure/table are often useful; use additional panels only when they answer another important question. This is not a fixed image quota. Read the relevant caption and surrounding source; inspect pixels before proposing or changing crops. Put each eligible crop next to the paragraph it explains, and explain the comparison and takeaway there. If suitable crops are unavailable, use source-grounded prose or a small comparison table and disclose the visual limitation; do not substitute full pages or fabricate image IDs.
 
-For a typical substantial paper with methods and results available, a useful planning range is about 2,000–3,500 Chinese characters or 1,200–2,000 English words. These are language-specific guides, not equivalent counts or minimum quotas. Respect an explicit shorter/longer request, source availability and the configured output budget. More source coverage, a reconstructed argument, explained evidence and useful figure placement matter more than length. Avoid repeated takeaways, boilerplate background and repeated caveats added only to reach a count. Quick readings remain compact; critical readings remain selective.
+Determine length from the reading purpose, requested focus, source complexity and available evidence. Do not impose a fixed word/character target or ceiling. Honor explicit reader preferences and the configured output-token budget. A quick reading should help the reader decide whether to investigate further; a deep reading should develop the reasoning needed to understand the contribution; a critical reading should explain the concerns that could affect its conclusions. Complete the explanation at that depth without repeating takeaways, boilerplate background or caveats to inflate its length. Short sources warrant a narrower scope, not invented detail.
 
 ### Review for usefulness as well as correctness
 

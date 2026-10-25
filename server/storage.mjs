@@ -1,4 +1,5 @@
 import {defaultCollections} from './collections.mjs';
+import { DEFAULT_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
 import { mkdir, readFile, writeFile, rename, chmod } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID, createHash } from "node:crypto";
@@ -16,7 +17,7 @@ export const defaultSettings = {
   apiKey: "",
   extraBody: {},
   contextChars: 44000,
-  maxOutputTokens: 4096,
+  maxOutputTokens: DEFAULT_OUTPUT_TOKENS,
   requestTimeoutSeconds: 90,
 };
 
@@ -36,6 +37,7 @@ export function normalizeProfiles(settings = defaultSettings) {
           },
         ];
   for (const profile of profiles) {
+    profile.maxOutputTokens ??= DEFAULT_OUTPUT_TOKENS;
     profile.modelCapabilities = Object.fromEntries((profile.models || [profile.model]).map(model => [model, profile.modelCapabilities?.[model] === "vision" ? "vision" : "text"]));
     profile.requestTimeoutSeconds ??= defaultSettings.requestTimeoutSeconds;
   }

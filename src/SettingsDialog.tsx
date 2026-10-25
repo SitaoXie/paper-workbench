@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { DEFAULT_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
 import { useModelSelection, writeWorkspaceSettings } from "./model-selection";
 import { t, useLocale } from "./i18n";
 import "./locale-polish.css";
@@ -605,10 +606,10 @@ export default function SettingsDialog({
           <input disabled={!!busy || sharedWrite.pending}
             id="max-output"
             type="number"
-            min="512"
-            max="16384"
+            min={MIN_OUTPUT_TOKENS}
+            max={MAX_OUTPUT_TOKENS}
             step="512"
-            value={draft.maxOutputTokens || 4096}
+            value={draft.maxOutputTokens ?? DEFAULT_OUTPUT_TOKENS}
             onChange={(e) =>
               update({ maxOutputTokens: Number(e.target.value) })
             }

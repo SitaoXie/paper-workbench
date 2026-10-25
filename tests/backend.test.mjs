@@ -986,8 +986,8 @@ test("output budget is validated and used by all report stages and chat while co
       );
     },
   });
-  assert.equal((await api("/api/settings")).data.maxOutputTokens, 4096);
-  for (const maxOutputTokens of [511, 16385, 800.5, "8192", null])
+  assert.equal((await api("/api/settings")).data.maxOutputTokens, 65536);
+  for (const maxOutputTokens of [511, 65537, 800.5, "65536", null])
     assert.equal(
       (await api("/api/settings", { method: "PUT", body: { maxOutputTokens } }))
         .status,
@@ -995,13 +995,13 @@ test("output budget is validated and used by all report stages and chat while co
     );
   const saved = await api("/api/settings", {
     method: "PUT",
-    body: { maxOutputTokens: 8192, apiKey: "test-key" },
+    body: { maxOutputTokens: 65536, apiKey: "test-key" },
   });
-  assert.equal(saved.data.maxOutputTokens, 8192);
+  assert.equal(saved.data.maxOutputTokens, 65536);
   assert.equal(
     (await createApp({ dataDir: directory })).locals.store.publicSettings()
       .maxOutputTokens,
-    8192,
+    65536,
   );
   await api("/api/settings/test", { method: "POST", body: {} });
   const paper = (
@@ -1030,7 +1030,7 @@ test("output budget is validated and used by all report stages and chat while co
   );
   assert.deepEqual(
     calls.map((call) => call.max_tokens),
-    [30, 8192, 8192, 8192, 8192],
+    [30, 65536, 65536, 65536, 65536],
   );
 });
 
@@ -2020,7 +2020,8 @@ test("reading generation honors style and focus, translates selected revisions, 
   assert.deepEqual(generated.data.report.source.readingPolicy, readingPolicyIdentity);
   assert.match(calls[0].messages[0].content, /quick reading overview/);
   assert.match(calls[0].messages[1].content, /Focus on baselines/);
-  assert.match(calls[2].messages[1].content, /(?:at most|within) 250 words/);
+  assert.match(calls[2].messages[1].content, /quick reading overview/);
+  assert.doesNotMatch(calls[2].messages[1].content, /\d+ words/);
   await api(`${route}/report`, { method: "POST", body: { style: "deep", language: "en", adversarial: false } });
   const translated = await api(`${route}/translate`, { method: "POST", body: { target: "reading", readingId: version.id, language: "zh-cn" } });
   assert.equal(translated.status, 200);
