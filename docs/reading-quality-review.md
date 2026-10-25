@@ -81,3 +81,37 @@ Following independent interface review, **new** visual observations are now excl
 The latest-per-figure rule remains: a new excluded observation does not silently revive an older result. Historical observations remain inspectable, but enabling a non-latest observation returns 409. The server also rejects inclusion when the crop or actual PDF bytes no longer match. This is enforced by the API, not only by a disabled interface control. Readers can still inspect or copy an observation without automatically supplying it to another model; taking a note does not enable it. Existing readings and in-flight context snapshots are not rewritten.
 
 HTTP regressions inspect the actual outbound report and question packets before and after explicit inclusion, retain legacy inclusion behavior, verify that a pending latest observation suppresses the older one, and confirm that historical readings remain unchanged. Stale-crop, changed-byte, missing-PDF and non-latest inclusion attempts are rejected. These tests establish propagation controls, **not scientific correctness**. The model errors above remain failures; an included observation is still unverified secondary evidence.
+
+## Deep-reading comparison, 2026-10-25
+
+A comparison of three existing Chinese deep readings with the public alphaXiv AI Overview text found a coverage problem, not merely a formatting problem. The old local readings had short conclusions and caveats, but frequently skipped the intervening mechanism and experimental reasoning. Public overview text was inspected for organization only; no alphaXiv prose or images were copied into the application. New readings were independently written from the locally imported original PDFs in Codex sessions.
+
+| Paper and public reference | Useful structure in the reference | Gap repaired in the local deep reading |
+| --- | --- | --- |
+| [ResNet](https://www.alphaxiv.org/abs/1512.03385) | Connects the optimization problem, residual block, matched-depth comparisons and shortcut variants, using both mechanism and result figures. | Explains residual notation and dimension changes, plain/residual controls, A/B/C projections, bottlenecks and the different evaluation protocols. Includes the 1,202-layer negative result. |
+| [Transformer](https://www.alphaxiv.org/abs/1706.03762) | Relates parallel training to autoregressive inference and pairs the mechanism with benchmark and component comparisons. | Walks through input to output, Q/K/V and scaling, masking, heads and positions. Distinguishes test/dev protocols and interprets non-monotonic head counts and label-smoothing results. |
+| [CLIP](https://www.alphaxiv.org/abs/2103.00020) | Connects paired training to language-defined classifiers and heterogeneous transfer evidence. | Explains both directions of the contrastive loss, text-generated classifiers and objective comparisons; separates zero-shot, few-shot, linear-probe and robustness protocols. |
+
+The sources for the new content were [ResNet v1](https://arxiv.org/abs/1512.03385v1), [Transformer v7](https://arxiv.org/abs/1706.03762v7), and the imported ICML version of [CLIP](https://arxiv.org/abs/2103.00020). Citations refer to each local PDF's pages, which need not match the currently hosted alphaXiv revision. In particular, the Transformer v7 abstract/table report 41.8 for English–French while its section 6.1 says 41.0; the reading retains that discrepancy instead of silently choosing one.
+
+| Local Chinese reading | Previous Han characters | New Han characters | Previous/new embedded figures or tables |
+| --- | ---: | ---: | ---: |
+| ResNet | 580 | 2,379 | 1 / 3 |
+| Transformer | 774 | 2,585 | 1 / 2 |
+| CLIP | 823 | 2,357 | 1 / 2 |
+
+Counts include Chinese text in Markdown and captions written into the article, excluding separately stored figure captions. These are descriptive before/after measurements, not a quality score or an English/Chinese length equivalence. The local drafts also used selected reading focuses; this is not a controlled model benchmark.
+
+### Contract changes
+
+The shared reading contract is now version 2. Deep reading means a self-contained guided explanation: inspect relevant source sections, explain important steps and notation, interpret a meaningful comparison or ablation, and place figures according to their explanatory roles. It does not impose a fixed figure count or a generic experimental template on every paper. With substantial methods/results available, the planning guide is about 2,000–3,500 Chinese characters or 1,200–2,000 English words. Short sources and explicit reader preferences take precedence over padding.
+
+The earlier universal “concise” skill instruction and API deep-mode 900-word ceiling encouraged compressed outlines. The portable skill, copied agent task and API now share the deeper expectation. The API's reviewer checks source-supported explanatory gaps as well as factual errors; the final editor is told to preserve useful explanations and comparisons. Configured output-token limits remain unchanged. Quick and critical retain their own scope. Copied task instructions select length units from the output language independently of the interface locale.
+
+### Evidence and remaining limits
+
+An independent agent compared all three new readings with the original text and actually viewed their relevant PDF crops. Review led to widening the ResNet bottleneck crop and completing the Transformer output-stage explanation. New versions and their Chinese figure-caption maps were saved through the local API. Exact readback checks preserve all three previous versions for each paper, resolve every figure marker, check citation page bounds and parse all math with KaTeX. These checks supplement source review; they cannot certify scientific correctness by themselves.
+
+A same-provider, same-source, old/new prompt experiment was attempted twice. Both paired attempts failed before producing a response because the configured provider hostname could not be resolved. No successful live API comparison is claimed, and unknown provider usage is not reported as zero. The three completed outputs demonstrate the revised subscription-agent workflow, not every API model's compliance. No browser-based presentation acceptance was performed in this comparison.
+
+Validation completed: 404 unit/integration tests passed, the production build passed, and the skill validator accepted the portable skill. Regression coverage includes Chinese/English output units across interface locales, all three model stages respecting the configured token budget, short-source scoping, and quick/critical isolation. One older test matched the exact wording “at most 250 words”; it was updated to accept the equivalent “within 250 words” while retaining the same bound. Independent saved-data review confirmed all nine old versions unchanged, all seven embedded figure references resolved, and all eighteen figure-caption entries present across the three new snapshots.

@@ -1,6 +1,6 @@
 # Paper Workbench reading contract
 
-Policy version: 1
+Policy version: 2
 
 This is the application's own reading contract. The API loads the relevant sections verbatim; subscription agents follow the same sections. It does not execute or redistribute a third-party skill. Optional external collaboration and its licensing boundaries are described in [external skills](external-skills.md).
 
@@ -22,7 +22,23 @@ Choose the explanation from the actual contribution, allowing mixed or uncertain
 
 A quick read should help someone decide whether to read further: the central idea, strongest supported result and main caveat, in a few short paragraphs. A deep read should make the method or argument understandable and connect it to specific evidence. A critical read should prioritize concerns that could change the conclusion; distinguish demonstrated problems from questions requiring more evidence. Do not manufacture criticisms to fill a quota or score a paper's scientific merit from writing style.
 
-During review, check source support and readability separately. Retain helpful figure placements and supported findings. Resolve disagreements against the original evidence; do not treat agreement between model roles as independent verification. An interactive version may add grounded concept cards or self-checks, but must not invent simulations, measurements or a competing article.
+### Depth is explanatory coverage
+
+A deep reading is a self-contained guided reading, not a slightly longer abstract. Before drafting, identify the central question, the mechanism or argument that answers it, and the source evidence needed to judge that answer. Inspect the relevant complete sections, including experiments or proofs, before treating the coverage as sufficient. If only excerpts are available, narrow the scope explicitly instead of padding it to resemble a full-paper explanation.
+
+Build a causal or logical explanation at the level the source supports: what enters the method, what happens in each important step, what comes out, and why the design differs from the relevant alternative. Introduce essential notation and explain the purpose of an equation before or after showing it; unexplained equations and lists of module names do not count as method coverage. A small illustrative example may help, but identify invented examples as explanation, not reported evidence. For non-method papers, use the corresponding design, construction or proof argument rather than forcing an architecture tutorial.
+
+Connect each major result to its question, comparison, metric, data split and important budget or setting, then explain what it supports. Cover a mechanism-specific test, ablation, robustness check or proof condition when the source actually provides one; do not stop at the best headline number. Preserve informative negative or non-monotonic findings. When useful, summarize selected measurements in a compact attributed comparison table rather than transcribing a source table wholesale. A checklist of limitations cannot replace explaining the method and its evidence.
+
+Select figures by their explanatory roles. For substantial deep readings, a mechanism figure and a distinct evidence figure/table are often useful; use additional panels only when they answer another important question. This is not a fixed image quota. Read the relevant caption and surrounding source; inspect pixels before proposing or changing crops. Put each eligible crop next to the paragraph it explains, and explain the comparison and takeaway there. If suitable crops are unavailable, use source-grounded prose or a small comparison table and disclose the visual limitation; do not substitute full pages or fabricate image IDs.
+
+For a typical substantial paper with methods and results available, a useful planning range is about 2,000–3,500 Chinese characters or 1,200–2,000 English words. These are language-specific guides, not equivalent counts or minimum quotas. Respect an explicit shorter/longer request, source availability and the configured output budget. More source coverage, a reconstructed argument, explained evidence and useful figure placement matter more than length. Avoid repeated takeaways, boilerplate background and repeated caveats added only to reach a count. Quick readings remain compact; critical readings remain selective.
+
+### Review for usefulness as well as correctness
+
+In a deep-reading review, also locate substantive explanatory gaps: an undefined central concept, an omitted method step, an unexamined supplied control, or an important result with no interpretation. Name the missing explanation and its original source location. Absence from the draft is not absence from the paper. Check whether a reader could explain the mechanism and distinguish the main evidence from its limits after reading the article.
+
+During review, check source support and readability separately. Retain helpful figure placements, worked explanations and supported findings. The final editor must repair supported gaps and preserve useful depth instead of compressing a deep draft into a short verdict. Resolve disagreements against the original evidence; do not treat agreement between model roles as independent verification. An interactive version may add grounded concept cards or self-checks, but must not invent simulations, measurements or a competing article.
 
 ## Paper question
 

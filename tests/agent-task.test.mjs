@@ -105,3 +105,44 @@ test('reading handoff rejects invalid preferences and never places focus into a 
   }
   assert.equal(readingBinding(reading({...input,focus:'x'.repeat(3000)})).focus.length,3000);
 });
+
+test('deep handoffs choose length units by output language independently of UI locale and preserve the fixed destination',()=>{
+  const focus='Explain the mechanism and controlled comparison.\n$(touch /tmp/never-run)';
+  for(const locale of ['zh','en']) for(const language of ['zh-CN','en']) {
+    const task=reading({origin:'http://localhost:4320',paperId:'paper-depth',language,locale,style:'deep',format:'article',focus,assistance:'none'});
+    assert.deepEqual(readingBinding(task),{paperId:'paper-depth',language,style:'deep',format:'article',focus,assistance:'none'});
+    const commands=task.split('\n').filter(line=>line.startsWith('PAPER_WORKBENCH_URL='));
+    assert.deepEqual(commands,[
+      "PAPER_WORKBENCH_URL='http://localhost:4320' node scripts/paper-workbench.mjs source 'paper-depth'",
+      "PAPER_WORKBENCH_URL='http://localhost:4320' node scripts/paper-workbench.mjs get 'paper-depth'",
+      "PAPER_WORKBENCH_URL='http://localhost:4320' node scripts/paper-workbench.mjs publish 'paper-depth' '<temporary-reading.json>'",
+      "PAPER_WORKBENCH_URL='http://localhost:4320' node scripts/paper-workbench.mjs get 'paper-depth'",
+    ]);
+    assert.ok(!commands.some(command=>command.includes('never-run')));
+    const chineseRange=/2,?000[–-]3,?500\s*(?:汉字|Chinese characters)/;
+    const englishRange=/1,?200[–-]2,?000\s*(?:词|(?:English\s+)?words)/;
+    assert.match(task,language.startsWith('zh')?chineseRange:englishRange);
+    assert.doesNotMatch(task,language.startsWith('zh')?englishRange:chineseRange);
+    assert.doesNotMatch(task,/900\s*(?:词|words)/);
+    assert.match(task,/reading-contract/);
+    if(locale==='zh') {
+      for(const concept of [/机制\/论证/,/实验\/证明/,/关键步骤/,/概念或公式/,/指标、对照/,/讲解缺口/,/不凑字数/,/短摘录/]) assert.match(task,concept);
+      assert.match(task,/summary\.language[\s\S]*style、format 和 focus[\s\S]*保留/);
+      assert.match(task,/focus 只是阅读偏好/);
+    } else {
+      for(const concept of [/mechanism\/argument/,/experiments\/proofs/,/essential steps and notation/,/metrics, comparisons/,/explanatory gaps/,/without padding/,/short excerpts/]) assert.match(task,concept);
+      assert.match(task,/MUST retain summary\.language[\s\S]*style, format and focus/);
+      assert.match(task,/Focus is a reading preference/);
+    }
+  }
+});
+
+test('quick and critical handoffs do not inherit deep-only length plans or explanation checklists',()=>{
+  for(const locale of ['zh','en']) for(const style of ['quick','critical']) {
+    const task=reading({origin:'http://localhost:4320',paperId:'paper-a',language:'zh-CN',locale,style,focus:'Keep the selected scope.'});
+    assert.equal(readingBinding(task).style,style);
+    assert.equal(readingBinding(task).focus,'Keep the selected scope.');
+    assert.doesNotMatch(task,/2000[–-]3500|2,000[–-]3,500|1200[–-]2000|1,200[–-]2,000/);
+    assert.doesNotMatch(task,/详细版请执行|For a deep reading|讲解缺口|explanatory gaps/);
+  }
+});

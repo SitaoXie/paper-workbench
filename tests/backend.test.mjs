@@ -2020,7 +2020,7 @@ test("reading generation honors style and focus, translates selected revisions, 
   assert.deepEqual(generated.data.report.source.readingPolicy, readingPolicyIdentity);
   assert.match(calls[0].messages[0].content, /quick reading overview/);
   assert.match(calls[0].messages[1].content, /Focus on baselines/);
-  assert.match(calls[2].messages[1].content, /at most 250 words/);
+  assert.match(calls[2].messages[1].content, /(?:at most|within) 250 words/);
   await api(`${route}/report`, { method: "POST", body: { style: "deep", language: "en", adversarial: false } });
   const translated = await api(`${route}/translate`, { method: "POST", body: { target: "reading", readingId: version.id, language: "zh-cn" } });
   assert.equal(translated.status, 200);
