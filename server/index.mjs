@@ -278,7 +278,9 @@ export async function createApp({
             content: "Reply with exactly: Connection successful",
           },
         ],
-        { fetchImpl, maxTokens: 30 },
+        // Reasoning providers may count internal reasoning toward this limit.
+        // A 30-token probe can fail before producing even a short confirmation.
+        { fetchImpl, maxTokens: Math.min(settings.maxOutputTokens ?? DEFAULT_OUTPUT_TOKENS, 2048) },
       );
       response.json({ ok: true, message: content, model: settings.model });
     }),

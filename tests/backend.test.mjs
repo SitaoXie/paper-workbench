@@ -1030,7 +1030,7 @@ test("output budget is validated and used by all report stages and chat while co
   );
   assert.deepEqual(
     calls.map((call) => call.max_tokens),
-    [30, 65536, 65536, 65536, 65536],
+    [2048, 65536, 65536, 65536, 65536],
   );
 });
 
