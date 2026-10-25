@@ -1,7 +1,7 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { chatMessageAnchor, nearChatBottom, readChatScroll, saveChatScroll, type ChatScrollPosition } from './chat-scroll';
+import { chatProgressTail, chatMessageAnchor, nearChatBottom, readChatScroll, saveChatScroll, type ChatScrollPosition } from './chat-scroll';
 
-type Message = { id?: string; role: string; content: string };
+type Message = { id?: string; role: string; content: string; reasoning?:{text:string}[]; streaming?:boolean };
 type Binding = { node: HTMLDivElement; key: string; position: ChatScrollPosition; initialized: boolean; observer?: ResizeObserver };
 const emptyPosition = (): ChatScrollPosition => ({ top: 0, following: true, unread: false, tail: '', count: 0, updatedAt: Date.now() });
 
@@ -11,6 +11,7 @@ export function useChatScroll(key: string, messages: Message[], busy: boolean) {
   const binding = useRef<Binding | null>(null);
   const latestAnchors = useRef(anchors);
   latestAnchors.current = anchors;
+  const latestTail = useRef(''); latestTail.current = chatProgressTail(messages);
   const [status, setStatus] = useState({ key, unread: false, away: false });
   const publish = useCallback((current: Binding) => {
     const next = { key: current.key, unread: current.position.unread, away: !current.position.following };
@@ -46,7 +47,7 @@ export function useChatScroll(key: string, messages: Message[], busy: boolean) {
   }, [save]);
   const synchronize = useCallback((current: Binding) => {
     const nextAnchors = latestAnchors.current;
-    const tail = nextAnchors.at(-1) || '', position = current.position;
+    const tail = latestTail.current, position = current.position;
     const changed = position.tail !== tail && nextAnchors.length >= position.count && !!position.count;
     if (changed && !position.following) position.unread = true;
     position.tail = tail; position.count = nextAnchors.length;

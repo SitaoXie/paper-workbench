@@ -1,3 +1,5 @@
+import InlineMarkers from "./InlineMarkers";
+import { captureTextAnchor,inlineMemoryKey,readInlineMemory,saveInlineMemory,type InlineMemory } from "./inline-memory";
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowUpLeft, BookOpen, Copy, Languages, Loader2, MessageSquare, Minus, RefreshCw, X } from 'lucide-react';
@@ -49,6 +51,26 @@ export default function SelectionTools({ children, paperId, readingId, scope, la
   onAsk: (text: string, label: string, question?: string, source?: {sourceScope:'reading'|'abstract';readingId?:string}) => Promise<boolean>;
 }) {
   const host = useRef<HTMLDivElement>(null);
+  const memoryKey=inlineMemoryKey(paperId,scope,readingId,language);
+  const [memory,setMemory]=useState<{key:string;entries:InlineMemory[]}>(()=>({key:memoryKey,entries:readInlineMemory(memoryKey)}));
+  const entries=memory.key===memoryKey?memory.entries:[];
+  const [memoryId,setMemoryId]=useState<string>();
+  const [memoryError,setMemoryError]=useState(false);
+  useEffect(()=>{setMemory({key:memoryKey,entries:readInlineMemory(memoryKey)});setMemoryId(undefined);setMemoryError(false);},[memoryKey]);
+  function updateMemory(next:InlineMemory[]) {setMemory({key:memoryKey,entries:next});setMemoryError(!saveInlineMemory(memoryKey,next));}
+  function remember(text:string,nextKind:'translation'|'explanation',model?:string) {
+    if(!host.current||!savedRange.current||!selection)return;
+    const anchor=captureTextAnchor(host.current,savedRange.current.range);if(!anchor)return;
+    const existing=entries.find(m=>JSON.stringify(m.anchor)===JSON.stringify(anchor)&&m.kind===nextKind&&m.language===outputLanguage);
+    const entry:InlineMemory={id:existing?.id||crypto.randomUUID(),anchor,text:selection.text,result:text,kind:nextKind,language:outputLanguage,model};
+    updateMemory([...entries.filter(m=>m.id!==entry.id),entry]);setMemoryId(entry.id);
+  }
+  function reopen(entry:InlineMemory,range:Range) {
+    request.current++;setBusy(false);setAsking(false);setError('');setQuestion('');setAssisted(false);setFolded(false);setLocationUnavailable(false);
+    savedRange.current={range,start:range.startContainer,startOffset:range.startOffset,end:range.endContainer,endOffset:range.endOffset,text:entry.text};
+    selectionKey.current=`${entry.text.length}:${entry.text.slice(0,12000)}`;
+    setSelection({text:entry.text,...popupPosition(range.getBoundingClientRect())});setResult(entry.result);setKind(entry.kind);setOutputLanguage(entry.language);setResultModel(entry.model||'');setMemoryId(entry.id);
+  }
   const popup = useRef<HTMLDivElement>(null);
   const chip = useRef<HTMLDivElement>(null), questionInput = useRef<HTMLInputElement>(null);
   const savedRange = useRef<SavedRange | undefined>(undefined);
@@ -71,7 +93,7 @@ export default function SelectionTools({ children, paperId, readingId, scope, la
   preserveDraft.current = !!question.trim() || assisted || busy || !!result || !!error || asking;
   const request = useRef(0), timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const label = sourceLabel || (scope === 'reading' ? t('解读选文 · AI生成内容', 'Overview selection · AI-generated text') : t('原始摘要选文', 'Original abstract selection'));
-  function dismiss() { request.current++; selectionKey.current=''; savedRange.current=undefined; cancelAnimationFrame(restoreFrame.current); restoring.current=false; setFolded(false); setLocationUnavailable(false); setSelection(undefined); setQuestion(''); setResult(''); setResultModel(''); setError(''); setBusy(false); setAssisted(false); setAsking(false); setAskFailed(false); askingRef.current=false; }
+  function dismiss() { setMemoryId(undefined); request.current++; selectionKey.current=''; savedRange.current=undefined; cancelAnimationFrame(restoreFrame.current); restoring.current=false; setFolded(false); setLocationUnavailable(false); setSelection(undefined); setQuestion(''); setResult(''); setResultModel(''); setError(''); setBusy(false); setAssisted(false); setAsking(false); setAskFailed(false); askingRef.current=false; }
   function updateChipPosition() {
     if (!host.current) return;
     const hostRect = host.current.getBoundingClientRect();
@@ -154,7 +176,7 @@ export default function SelectionTools({ children, paperId, readingId, scope, la
         selectionKey.current=key;
         savedRange.current={range:range.cloneRange(),start:range.startContainer,startOffset:range.startOffset,end:range.endContainer,endOffset:range.endOffset,text};
         const rect = range.getBoundingClientRect();
-        request.current++; setAssisted(false); setAskFailed(false); setQuestion(''); setResult(''); setResultModel(''); setError(''); setBusy(false);
+        request.current++; setMemoryId(undefined); setAssisted(false); setAskFailed(false); setQuestion(''); setResult(''); setResultModel(''); setError(''); setBusy(false);
         setFolded(false);setLocationUnavailable(false);setSelection({text: text.slice(0,12000),tooLong:text.length>12000,...popupPosition(rect)});
       },120);
     };
@@ -228,13 +250,13 @@ export default function SelectionTools({ children, paperId, readingId, scope, la
     if (useAgent) return;
     try {
       const response=await api<{result:{text:string,source?:{model?:string}}}>(`/papers/${paperId}/assist`,{method:'POST',body:JSON.stringify({sourceScope:scope,readingId,text:selection.text,kind:nextKind,language:outputLanguage})});
-      if(token===request.current) { setResult(response.result.text); setResultModel(response.result.source?.model || ''); }
+      if(token===request.current) { setResult(response.result.text); setResultModel(response.result.source?.model || ''); remember(response.result.text,nextKind,response.result.source?.model); }
     } catch(e) { if(token===request.current) setError(selectionErrorMessage(e, getLocale())); }
     finally { if(token===request.current) setBusy(false); }
   }
   async function copy() { try { await navigator.clipboard.writeText(result || selection?.text || ''); setCopied(true); setTimeout(()=>setCopied(false),1500); } catch { setError(t('无法访问剪贴板，请直接选择文本复制。','Clipboard unavailable. Select and copy the text directly.')); } }
   const draftStatus=asking?t('正在创建会话','Creating session'):busy?t('处理中','Processing'):error?t('处理未完成','Needs attention'):result?t('结果已保留','Result preserved'):question?t('问题已保留','Question preserved'):t('选文已保留','Selection preserved');
-  return <div className="selection-source" ref={host}>{children}{active && selection && createPortal(<>
+  return <><div className="selection-source" ref={host}>{children}<InlineMarkers root={host} entries={entries} active={active} onOpen={reopen}/>{active && selection && createPortal(<>
     {folded && <div className="selection-draft-chip" ref={chip} role="region" aria-label={t('选文草稿','Selection draft')} style={chipPosition}>
       <button className="selection-draft-restore" onClick={restoreDraft} aria-label={t('返回选文草稿','Return to selected draft')}><ArrowUpLeft size={17}/><span><strong>{t('返回选文草稿','Return to selected draft')}</strong><small role="status">{draftStatus}</small></span></button>
       <button className="icon-button" aria-label={t('丢弃选文草稿','Discard selection draft')} onClick={dismiss}><X size={16}/></button>
@@ -258,9 +280,11 @@ export default function SelectionTools({ children, paperId, readingId, scope, la
       {asking && <p className="selection-pending" role="status"><Loader2 size={15} className="spin"/>{t("正在创建提问会话…","Creating a question session…")}</p>}
       {busy && <p className="selection-pending" role="status"><Loader2 size={15} className="spin"/>{t('正在阅读选文…','Reading the selection…')}</p>}
       {error && <div role="alert" className="reading-inline-error"><span>{error}</span>{!selection.tooLong && <button onClick={()=>void (askFailed ? ask() : assist(kind))} disabled={busy || asking}><RefreshCw size={14}/>{t('重试','Retry')}</button>}</div>}
+      {memoryError && <p role="alert">{t('浏览器存储已满，标记仅在本次打开期间保留；结果仍可在历史中查看。','Browser storage is full. This marker lasts for this visit; the result remains in history.')}</p>}
+      {memoryId && <button className="text-button" onClick={()=>{updateMemory(entries.map(m=>m.id===memoryId?{...m,hidden:true}:m));dismiss();}}>{t('隐藏标记','Hide marker')}</button>}
       {result && <><div className="overview-selection-result prose"><Mark>{result}</Mark></div><button className="text-button" onClick={()=>void copy()}><Copy size={14}/>{copied?t('已复制','Copied'):t('复制结果','Copy result')}</button></>}
       {assisted && <AgentSelectionBridge key={selectionBindingKey({paperId,sourceScope:scope,readingId,text:selection.text,kind,language:outputLanguage})}
         binding={{paperId,sourceScope:scope,readingId,text:selection.text,kind,language:outputLanguage}} primary={useAgent}
-        onResult={activity=>{request.current++;setBusy(false);setError('');setResult(activity.result!.text);setResultModel(activity.source?.model || activity.source?.agent || t('订阅助手','Subscription agent'));}}/>}
-    </div></>, document.body)}</div>;
+        onResult={activity=>{request.current++;setBusy(false);setError('');setResult(activity.result!.text);remember(activity.result!.text,kind,activity.source?.model || activity.source?.agent);setResultModel(activity.source?.model || activity.source?.agent || t('订阅助手','Subscription agent'));}}/>}
+    </div></>, document.body)}</div>{active && entries.some(m=>m.hidden) && <button className="inline-memory-restore" onClick={()=>updateMemory(entries.map(m=>({...m,hidden:false})))}>{t("恢复隐藏标记","Restore hidden markers")}</button>}</>;
 }

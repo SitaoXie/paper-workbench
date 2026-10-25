@@ -30,3 +30,8 @@
 .overview-selection-options > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .overview-selection-question{display:block;width:100%;min-height:40px;margin:0 0 9px;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--text);font:inherit;box-sizing:border-box}
 @media(pointer:coarse){.overview-selection-question{font-size:16px;min-height:44px}}
+.selection-source { position:relative; }
+.inline-memory-markers { position:absolute; inset:0; pointer-events:none; }
+.inline-memory-markers button { position:absolute; height:6px; padding:0; border:0; border-bottom:2px dotted var(--accent); border-radius:0; background:transparent; pointer-events:auto; cursor:pointer; transform:translateY(-3px); }
+.inline-memory-markers button:hover,.inline-memory-markers button:focus-visible { background:color-mix(in srgb,var(--accent) 25%,transparent); outline:1px solid var(--accent); }
+.inline-memory-restore { display:inline-flex; margin:6px 0; border:1px solid var(--line); border-radius:20px; padding:6px 12px; background:var(--panel); color:var(--muted); font-size:12px; }

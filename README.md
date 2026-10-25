@@ -146,3 +146,7 @@ npm run test:e2e
 The browser suite uses Playwright; install its Chromium browser with `npx playwright install chromium` if it is not already available. External service availability and live-model validation are separate from deterministic tests. See [docs/model-validation.md](docs/model-validation.md) for the recorded validation limits. Product research and release decisions are documented in `docs/competitor-study-v3.md`, `docs/community-reading-skills.md`, and `docs/judge-v3.md`.
 
 Before sharing a checkout, exclude runtime data, imported papers, API credentials, and private addresses. Code is licensed under [MIT](LICENSE). Paper contents and third-party names remain subject to their respective rights. No alphaXiv logo or proprietary application source is bundled.
+
+Assistant API answers now appear as the provider streams them, including successive retrieval rounds. Provider-returned thinking text, when available, expands during generation and folds afterward; click to reopen it. Hidden or encrypted reasoning is not reconstructed. Failed or interrupted previews remain explicitly incomplete and do not enter saved conversation history.
+
+Completed PDF translations and explanations automatically leave clickable underlines and save to the notebook. Open an underline to revisit the result or hide its marker without deleting the note; hidden markers can be restored. Abstract and overview selections also retain clickable markers in this browser, separately for each reading version and language. Their full results remain available in activity history.

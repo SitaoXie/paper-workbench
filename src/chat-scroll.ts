@@ -65,3 +65,10 @@ export function chatMessageAnchor(message: { id?: string; role: string; content:
   return `${index}-${(hash >>> 0).toString(36)}`;
 }
 export const nearChatBottom = (top: number, height: number, viewport: number) => height - viewport - Math.max(0, top) <= 64;
+
+/** Content progress is independent of the stable DOM anchor during streaming. */
+export function chatProgressTail(messages: {id?:string;role:string;content:string;reasoning?:{text:string}[];streaming?:boolean}[]) {
+  const last=messages.at(-1);if(!last)return '';
+  const text=last.content+'\n'+(last.reasoning||[]).map(p=>p.text).join('\n');
+  return `${chatMessageAnchor({role:last.role,content:text},messages.length-1)}:${last.streaming?'stream':'done'}`;
+}

@@ -178,7 +178,7 @@ export type ModelProfile = Omit<
 };
 export type SourceScope = 'pdf' | 'source-text' | 'reading' | 'abstract';
 export type QuestionMetadata = {page?:number;pages?:number[];quote?:string;sourceScope?:SourceScope;readingId?:string};
-export type Message = { id?: string; paperId?: string | null; conversationId?: string; agentTaskId?: string; mode?: string; source?: {agent?: string; [key:string]:unknown}; role: "user" | "assistant"; content: string; questionText?: string; metadata?: QuestionMetadata };
+export type Message = { reasoning?: {round:number;text:string}[]; reasoningTruncated?:boolean; streaming?:boolean; streamStatus?:string; streamError?:string; id?: string; paperId?: string | null; conversationId?: string; agentTaskId?: string; mode?: string; source?: {agent?: string; [key:string]:unknown}; role: "user" | "assistant"; content: string; questionText?: string; metadata?: QuestionMetadata };
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`/api${path}`, {
     ...init,

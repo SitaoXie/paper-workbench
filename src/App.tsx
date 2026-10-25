@@ -1,3 +1,5 @@
+import ReasoningPanel from "./ReasoningPanel";
+import { streamChat, applyChatEvent, completedChat } from "./chat-stream";
 import { prepareAgentQuestionTask } from "./agent-task";
 import { parseReadingSectionLocation, readingSectionUrl, READING_SECTION_EVENT } from "./reading-sections";
 import { activityResultText, usableActivityResult } from "./activity-result";
@@ -735,7 +737,7 @@ export default function App() {
     const context = chatContext.current;
     if (!text.trim() || pendingChats.current.has(context.key) || (conversationBusy && !branch)) return;
     chatScroll.followLatest(context.key);
-    const previous = branch?.history || chat;
+    const previous = completedChat(branch?.history || chat);
     const passage = readChatDraft(context.key).passage;
     // Keep the submitted draft until success. Editing while the request is in
     // flight creates a newer revision which this request must never clear.
@@ -745,14 +747,14 @@ export default function App() {
       ? `${text.trim()}\n\n${passage.sourceLabel || t("选中的原文", "Selected passage")}${passage.page ? ` [${pageLabel(passage.page,passage.pages)}]` : ""}:\n> ${passage.text.replace(/\n/g, "\n> ")}`
       : text.trim();
     const metadata = context.paperId && passage ? passageMetadata(passage) : submitted.contextPolicy === "omit" ? null : undefined;
-    setChat((xs) => [...xs, { role: "user", content: message, ...(metadata ? { metadata } : {}) }]);
+    const pendingId = `stream-${crypto.randomUUID()}`;
+    setChat([...previous, { role: "user", content: message, ...(metadata ? { metadata } : {}) }, {id:pendingId,role:"assistant",content:"",streaming:true,streamStatus:"reading"}]);
     pendingChats.current.add(context.key);
     setChatting(true);
     setError("");
     try {
-      const r = await api<{ message: Message; userMessage?: Message; conversationId?: string }>("/chat", {
-        method: "POST",
-        body: JSON.stringify({
+      const r = await streamChat({
+          stream: true,
           paperId: context.paperId,
           conversationId: context.conversationId,
           message,
@@ -763,20 +765,21 @@ export default function App() {
           // Saved sessions carry server-verified source provenance. Sending a
           // text-only UI copy would discard it and bypass stale-evidence checks.
           ...(!context.conversationId ? { history: previous } : {}),
-        }),
-      });
+        }, event => {
+          if (chatContext.current.key === context.key) setChat(xs => xs.map(item => item.id === pendingId ? applyChatEvent(item,event) : item));
+        });
       clearChatDraft(context.key, submitted.revision);
       if (!context.conversationId && r.conversationId)
         adoptChatDraft(context.key, chatDraftKey(context.paperId, r.conversationId));
       if (chatContext.current.key === context.key) {
         if (!context.conversationId && r.conversationId) activateChat(context.paperId, r.conversationId);
         else setDraft(readChatDraft(context.key));
-        setChat((xs) => [...xs.map((item, index) => index === previous.length && r.userMessage ? r.userMessage : item), r.message]);
+        setChat((xs) => xs.map((item, index) => item.id === pendingId ? r.message : index === previous.length && r.userMessage ? r.userMessage : item));
       }
     } catch (e) {
       if (chatContext.current.key === context.key) {
         setError((e as Error).message);
-        setChat(previous);
+        setChat(xs => xs.map(item => item.id === pendingId ? {...item,streaming:false,streamError:(e as Error).message} : item));
         setDraft(readChatDraft(context.key));
       }
     } finally {
@@ -1464,15 +1467,18 @@ export default function App() {
                   {m.role === "user" && view === "paper" && (m.metadata?.page || m.metadata?.sourceScope === 'reading' || m.metadata?.sourceScope === 'abstract') && <button className="message-source-link citation-link" onClick={() => openQuestionSource(m.metadata)}>
                     <FileText size={12}/>{m.metadata?.sourceScope === 'reading' ? t('AI 解读选文 · 查看版本','AI overview selection · View version') : m.metadata?.sourceScope === 'abstract' ? t('摘要选文','Abstract selection') : `${t("提问选文", "Question source")} · ${pageLabel(m.metadata!.page,m.metadata!.pages)}`}
                   </button>}
+                  {m.role === "assistant" && <ReasoningPanel message={m}/>}
                   <Mark onPage={view === "paper" ? goToPage : undefined} onSource={view === 'paper' ? openReadingSource : undefined}>
                     {m.content}
                   </Mark>
+                  {m.streaming && <div className="stream-progress" role="status"><Loader2 size={14} className="spin"/>{m.streamStatus === 'search_papers' ? t('已检索论文，继续阅读…','Papers searched, continuing…') : m.streamStatus === 'read_pages' ? t('已读取原文，正在整理…','Pages read, composing…') : m.streamStatus === 'search_web' || m.streamStatus === 'read_webpage' ? t('正在检索网页…','Researching the web…') : t('正在生成…','Generating…')}</div>}
+                  {m.streamError && <p className="stream-failure" role="alert">{t('回答未完成，未保存。问题已保留，可重新发送。','Answer incomplete and not saved. Your draft is retained; send again to retry.')}</p>}
                   {m.role === 'assistant' && <AgentEvidence evidence={m.source?.questionAgent as AgentEvidenceData | undefined} chinese={language.startsWith('zh')} paperId={view === 'paper' ? paper?.id : undefined} onPage={view === 'paper' ? goToPage : undefined}/>}
-                  <MessageActions message={m} paper={view === "paper" ? paper || undefined : undefined} question={chat.slice(0, i).reverse().find(item => item.role === "user")}
-                    busy={chatting || conversationBusy} onBranch={(message, action) => void branchQuestion(message, action)}/>
+                  {!m.streaming && !m.streamError && <MessageActions message={m} paper={view === "paper" ? paper || undefined : undefined} question={chat.slice(0, i).reverse().find(item => item.role === "user")}
+                    busy={chatting || conversationBusy} onBranch={(message, action) => void branchQuestion(message, action)}/>}
                 </div>
               ))}
-              {chatting && (
+              {chatting && !chat.some(m=>m.streaming) && (
                 <div className="thinking">
                   <Loader2 size={16} className="spin" /> {t("正在阅读与思考…")}
                 </div>
@@ -1948,6 +1954,7 @@ export default function App() {
                           onAskSelection={askSelection}
                           annotations={annotations}
                           onCreateAnnotation={createAnnotation}
+                          onHideAnnotation={(id,hidden)=>mutateAnnotation(id,{markerHidden:hidden})}
                           onSelectAnnotation={(id, page) => {
                             const entry = annotations.find((a) => a.id === id);
                             if (entry) selectAnnotation(entry, page);

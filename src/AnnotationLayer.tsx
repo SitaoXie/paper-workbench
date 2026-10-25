@@ -69,7 +69,7 @@ export default function AnnotationLayer({
             data-annotation-id={annotation.id}
           >
             {annotation.rects?.map((rect, index) =>
-              annotation.kind === "underline" ? (
+              ["underline", "translation", "explanation"].includes(annotation.kind) ? (
                 <line
                   key={index}
                   x1={rect.x}
@@ -119,6 +119,11 @@ export default function AnnotationLayer({
           ),
         )}
       </svg>
+      {!drawing && annotations.filter(note=>['translation','explanation'].includes(note.kind)).flatMap(note=>(note.rects || []).map((rect,index)=><button
+        key={`${note.id}-${index}`} className="reader-inline-underline" type="button"
+        style={{left:`${rect.x*100}%`,top:`${(rect.y+rect.height)*100}%`,width:`${rect.width*100}%`}}
+        aria-label={language?.startsWith('en') ? `Review ${note.kind}: ${(note.quote||'').slice(0,60)}` : `查看${note.kind==='translation'?'翻译':'解释'}：${(note.quote||'').slice(0,60)}`}
+        onPointerDown={event=>event.stopPropagation()} onClick={event=>{event.stopPropagation();onSelect?.(note.id);}} />))}
       {!drawing &&
         markers.map((annotation, index) => {
           const rect = annotation.rects?.[0];

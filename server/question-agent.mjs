@@ -144,7 +144,7 @@ export function createQuestionToolbox({ papers, webSearch = false, question = ''
   };
 }
 
-export async function runQuestionAgent({ papers, selected, messages, provider, call, webSearch = false, download, search, question, toolBudget = 17600 }) {
+export async function runQuestionAgent({ papers, selected, messages, provider, call, webSearch = false, download, search, question, toolBudget = 17600, onEvent }) {
   const tools = questionTools.filter(tool => webSearch || !['search_web', 'read_webpage'].includes(tool.name));
   const execute = createQuestionToolbox({ papers, webSearch, download, search, question });
   const transcript = messages.map(message => ({ ...message }));
@@ -162,7 +162,8 @@ Local read_pages supplies TEXT and captions, not pixels. Cite source page number
       limitReached = true;
       transcript.push({ role: 'user', content: 'The tool budget is exhausted. Give the best supported answer now, explicitly stating evidence gaps. Do not request more tools.' });
     }
-    const turn = await call(transcript, { tools, returnTurn: true, timeoutMs: Math.max(1, 300000 - (Date.now() - started)), ...(final ? { toolChoice: 'none' } : {}), usageStage: `question-agent-${++modelCalls}` });
+    onEvent?.({type:"round",round:round + 1});
+    const turn = await call(transcript, { ...(onEvent ? { onEvent: event => onEvent({...event,round:round + 1}) } : {}), tools, returnTurn: true, timeoutMs: Math.max(1, 300000 - (Date.now() - started)), ...(final ? { toolChoice: 'none' } : {}), usageStage: `question-agent-${++modelCalls}` });
     if (!turn.calls.length) return { content: turn.text, initialMessageCharacters, evidence: { version: 1, webEnabled: webSearch, modelCalls, toolCharacters: used, limitReached, steps } };
     if (final) throw new ApiError('The model did not finish after the agent tool limit. No incomplete answer was saved.', 502);
     transcript.push(turn.assistant);
@@ -191,6 +192,7 @@ Local read_pages supplies TEXT and captions, not pixels. Cite source page number
         || value.results?.map(result => ({ title: result.title, url: result.url }))
         || (value.url ? [{ title: value.title, url: value.url, start: value.start, end: value.end }] : []);
       steps.push({ tool: tool.name, ok, cached, ...(typeof args?.query === 'string' ? { query: args.query.slice(0, 500) } : {}), ...(value.provider ? { provider: value.provider } : {}), references, ...(ok ? {} : { error: value.error }) });
+      onEvent?.({type:"tool",tool:tool.name,ok});
       const content = JSON.stringify({ untrustedSourceData: true, ...value });
       results.push(provider === 'anthropic' ? { type: 'tool_result', tool_use_id: tool.id, content, ...(!ok ? { is_error: true } : {}) }
         : { role: 'tool', tool_call_id: tool.id, content });

@@ -4,7 +4,7 @@ import { ApiError, isPublicAddress } from "./network.mjs";
 
 export const annotationKinds = ["highlight", "underline", "note", "ink", "translation", "explanation"];
 const colors = ["yellow", "green", "blue", "pink", "purple"];
-const fields = ["kind", "page", "rects", "quote", "body", "color", "tags", "strokes", "language", "segments"];
+const fields = ["kind", "page", "rects", "quote", "body", "color", "tags", "strokes", "language", "segments", "markerHidden"];
 const number = (value) => typeof value === "number" && Number.isFinite(value);
 const point = (value) => value && number(value.x) && number(value.y) && value.x >= 0 && value.y >= 0 && value.x <= 1 && value.y <= 1;
 const plain = (value, name, max, required = false) => {
@@ -72,6 +72,10 @@ export function validateAnnotation(input, paper, previous) {
   const { kind } = merged;
   if (!annotationKinds.includes(kind)) throw new ApiError("Unknown annotation kind.");
   const result = { kind };
+  if (merged.markerHidden !== undefined) {
+    if (typeof merged.markerHidden !== "boolean") throw new ApiError("markerHidden must be a boolean.");
+    result.markerHidden = merged.markerHidden;
+  }
   if (merged.segments !== undefined) {
     if (kind === "ink" || merged.strokes !== undefined) throw new ApiError("Ink strokes retain their single-page annotation format; segments cannot contain ink.");
     const aliases = ["page", "quote", "rects"];

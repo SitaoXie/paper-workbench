@@ -1,0 +1,8 @@
+.reasoning-panel { border:1px solid var(--line); border-radius:12px; background:var(--subtle); margin:10px 0 16px; overflow:hidden; }
+.reasoning-panel summary { display:flex; align-items:center; justify-content:space-between; gap:16px; cursor:pointer; padding:10px 14px; font-size:13px; color:var(--muted); }
+.reasoning-panel summary span { font-size:12px; }
+.reasoning-panel summary:focus-visible { outline:2px solid var(--accent); outline-offset:-3px; }
+.reasoning-content { padding:0 14px 12px; max-height:300px; overflow:auto; color:var(--muted); font-size:13px; line-height:1.7; }
+.reasoning-content p { white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0; }
+.stream-progress { display:flex; gap:8px; align-items:center; margin:10px 0; color:var(--muted); font-size:12px; }
+.stream-failure { border-left:3px solid var(--accent); padding:8px 12px; font-size:13px; }

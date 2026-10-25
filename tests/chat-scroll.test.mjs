@@ -29,3 +29,11 @@ test('bottom following has a bounded tolerance for short content and fractional 
  assert.equal(near(540,1000,400),true);assert.equal(near(530,1000,400),false);
  assert.equal(near(599.5,1000,400),true);
 });
+
+test('streaming deltas update unread tracking without destabilizing message anchors',async()=>{
+ const {chatProgressTail}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
+ const a={id:'stable',role:'assistant',content:'first',streaming:true},b={...a,content:'first and more'};
+ assert.equal(anchor(a,0),anchor(b,0));assert.notEqual(chatProgressTail([a]),chatProgressTail([b]));
+ assert.notEqual(chatProgressTail([a]),chatProgressTail([{...a,reasoning:[{text:'thinking'}]}]));
+ assert.notEqual(chatProgressTail([a]),chatProgressTail([{...a,streaming:false}]));
+});

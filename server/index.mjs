@@ -1202,7 +1202,8 @@ export async function createApp({
   app.post(
     "/api/chat",
     wrap(async (request, response) => {
-      const { message, history, processing, webSearch = false } = bodyOf(request);
+      const { message, history, processing, webSearch = false, stream = false } = bodyOf(request);
+      if (typeof stream !== "boolean") throw new ApiError("stream must be a boolean.");
       if (typeof webSearch !== 'boolean') throw new ApiError('webSearch must be a boolean.');
       if (processing !== undefined && !["api", "extractive"].includes(processing))
         throw new ApiError("processing must be api or extractive; omit it for the compatible automatic behavior.");
@@ -1260,51 +1261,63 @@ export async function createApp({
       const previous = history
         ? history.map(({ role, content }) => ({ role, content }))
         : conversationMessages(conversationId);
-      const answer = await answerQuestion(
-        papers,
-        message.trim(),
-        previous,
-        settings,
-        { fetchImpl, metadata, forceExtractive: processing === "extractive", webSearch, download },
-      );
-      if (paperId && !store.paper(paperId))
-        throw new ApiError(
-          "The paper was deleted while answering this question.",
-          409,
+      const controller = new AbortController();
+      const disconnected = () => { if (!response.writableEnded) controller.abort(); };
+      const emit = event => { if (!response.destroyed) response.write(`data: ${JSON.stringify(event)}\n\n`); };
+      let heartbeat;
+      if (stream) {
+        response.status(200).set({"Content-Type":"text/event-stream; charset=utf-8","Cache-Control":"no-cache, no-transform","X-Accel-Buffering":"no"});
+        response.flushHeaders(); response.on("close", disconnected);
+        heartbeat = setInterval(() => { if (!response.destroyed) response.write(": heartbeat\n\n"); }, 15000);
+      }
+      try {
+        const answer = await answerQuestion(
+          papers,
+          message.trim(),
+          previous,
+          settings,
+          { fetchImpl, metadata, forceExtractive: processing === "extractive", webSearch, download, ...(stream ? {onEvent:emit,signal:controller.signal} : {}) },
         );
-      const userMessage = {
-        id: randomUUID(),
-        role: "user",
-        content: message.trim(),
-        paperId,
-        conversationId,
-        createdAt: new Date().toISOString(),
-        ...(metadata ? { metadata } : {}),
-        ...(questionText === undefined ? {} : { questionText }),
-      };
-      const assistantMessage = {
-        id: randomUUID(),
-        role: "assistant",
-        content: answer.content,
-        paperId,
-        conversationId,
-        createdAt: new Date().toISOString(),
-        mode: answer.mode,
-        ...(answer.source ? { source: answer.source } : {}),
-        sources: answer.sources,
-      };
-      store.data.chats.push(userMessage, assistantMessage);
-      if (conversation.title === "New conversation")
-        conversation.title = message.trim().slice(0, 80);
-      conversation.updatedAt = assistantMessage.createdAt;
-      await store.save();
-      response.json({
-        userMessage,
-        message: assistantMessage,
-        sources: answer.sources,
-        mode: answer.mode,
-        conversationId,
-      });
+        if (controller.signal.aborted) throw new ApiError("The client disconnected. No incomplete answer was saved.", 499);
+        if (paperId && !store.paper(paperId))
+          throw new ApiError(
+            "The paper was deleted while answering this question.",
+            409,
+          );
+        const userMessage = {
+          id: randomUUID(),
+          role: "user",
+          content: message.trim(),
+          paperId,
+          conversationId,
+          createdAt: new Date().toISOString(),
+          ...(metadata ? { metadata } : {}),
+          ...(questionText === undefined ? {} : { questionText }),
+        };
+        const assistantMessage = {
+          id: randomUUID(),
+          role: "assistant",
+          content: answer.content,
+          ...(answer.reasoning ? {reasoning:answer.reasoning,reasoningTruncated:answer.reasoningTruncated} : {}),
+          paperId,
+          conversationId,
+          createdAt: new Date().toISOString(),
+          mode: answer.mode,
+          ...(answer.source ? { source: answer.source } : {}),
+          sources: answer.sources,
+        };
+        store.data.chats.push(userMessage, assistantMessage);
+        if (conversation.title === "New conversation")
+          conversation.title = message.trim().slice(0, 80);
+        conversation.updatedAt = assistantMessage.createdAt;
+        await store.save();
+        const result = { userMessage, message: assistantMessage, sources: answer.sources, mode: answer.mode, conversationId };
+        if (stream) { emit({type:"done",result}); response.end(); }
+        else response.json(result);
+      } catch (error) {
+        if (!stream) throw error;
+        emit({type:"error",error:error instanceof ApiError ? error.message : "Answering failed. Retry the question; no incomplete answer was saved."}); response.end();
+      } finally { clearInterval(heartbeat); response.off("close", disconnected); }
     }),
   );
   app.use("/api", (_request, _response, next) =>

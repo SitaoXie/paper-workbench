@@ -14,6 +14,7 @@ export type AnnotationSegment = {
 export type InkPoint = { x: number; y: number; pressure?: number };
 export type InkStroke = { points: InkPoint[]; width: number };
 export type Annotation = {
+  markerHidden?: boolean;
   id: string;
   paperId: string;
   kind:

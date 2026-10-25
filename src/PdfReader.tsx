@@ -93,6 +93,7 @@ type Props = {
   annotations?: Annotation[];
   onCreateAnnotation?: (draft: AnnotationDraft) => Promise<Annotation | void>;
   onSelectAnnotation?: (id: string, page?: number) => void;
+  onHideAnnotation?: (id:string, hidden:boolean) => Promise<void>;
   onInlineAssist?: (payload: {
     text: string;
     page: number;
@@ -130,6 +131,7 @@ type InlineResult = {
   text: string;
   error: string;
   saved?: boolean;
+  annotationId?: string;
   source?: string;
 };
 type PageSize = { width: number; height: number };
@@ -484,6 +486,7 @@ export default function PdfReader({
   onCreateAnnotation,
   onSelectAnnotation,
   onInlineAssist,
+  onHideAnnotation,
   language = "zh-CN",
   annotationFocus,
 }: Props) {
@@ -1324,6 +1327,7 @@ export default function PdfReader({
   ) => {
     if (!selection || selectionTooLong(selection)) return;
     dismissSelection(selection);
+    autoSaveAttempt.current = "";
     setNoteEditor(null);
     const request = ++inlineRequest.current;
     setInlineResult({
@@ -1375,6 +1379,7 @@ export default function PdfReader({
         });
     }
   };
+  const autoSaveAttempt = useRef('');
   const saveInline = async () => {
     if (!inlineResult?.text || !onCreateAnnotation || saveBusy.current) return;
     if (selectionTooLong(inlineResult.selection)) {
@@ -1391,7 +1396,8 @@ export default function PdfReader({
     setAnnotationError("");
     const result = inlineResult;
     try {
-      await onCreateAnnotation({
+      const existing = annotations.find(note => note.kind === result.kind && note.language === result.language && note.body === result.text && JSON.stringify(annotationSegments(note)) === JSON.stringify(annotationSegments({...selectionAnchors(result.selection)})));
+      const saved = existing || await onCreateAnnotation({
         kind: result.kind,
         ...selectionAnchors(result.selection),
         body: result.text,
@@ -1400,7 +1406,7 @@ export default function PdfReader({
         tags: [result.language],
       });
       setInlineResult((current) =>
-        current === result ? { ...current, saved: true } : current,
+        current === result ? { ...current, saved: true, annotationId: saved?.id } : current,
       );
       setAnnotationStatus(t("已保存到笔记", "Saved to notes"));
     } catch (reason) {
@@ -1413,6 +1419,27 @@ export default function PdfReader({
       saveBusy.current = false;
       setAnnotationBusy(false);
     }
+  };
+  useEffect(() => {
+    if (!inlineResult?.text || inlineResult.saved || inlineResult.loading || inlineResult.error || !onCreateAnnotation) return;
+    const key = JSON.stringify([url, inlineResult.selection.text, inlineResult.selection.segments, inlineResult.kind, inlineResult.language, inlineResult.text]);
+    if (autoSaveAttempt.current === key || saveBusy.current) return;
+    autoSaveAttempt.current = key;
+    void saveInline();
+  }, [inlineResult, onCreateAnnotation]);
+  const reopenInline = (id:string, page:number) => {
+    const note = annotations.find(note => note.id === id);
+    if (!note || !['translation','explanation'].includes(note.kind) || !note.body) { onSelectAnnotation?.(id,page); return; }
+    const segments = annotationSegments(note).map(segment=>({page:segment.page,text:segment.quote || '',rects:segment.rects || []}));
+    const first = segments.find(segment=>segment.page===page) || segments[0];
+    inlineRequest.current++; setDraftFolded(false); setDraftLocationUnavailable(false); setSelectionMenu(null); setNoteEditor(null); setAnnotationError('');
+    setInlineResult({kind:note.kind as 'translation'|'explanation',language:note.language || language,text:note.body,loading:false,error:'',saved:true,annotationId:id,
+      selection:{page:first.page,text:segments.map(segment=>segment.text).join('\n'),rects:first.rects,segments,left:24,top:80}});
+  };
+  const hideInlineMarker = async () => {
+    const id=inlineResult?.annotationId;if(!id || !onHideAnnotation)return;
+    try { await onHideAnnotation(id,true); clearSelectionDraft(); }
+    catch(reason) {setAnnotationError((reason as Error).message);}
   };
   const saveInk = async () => {
     if (!inkDrafts.length || !onCreateAnnotation || saveBusy.current) return;
@@ -1881,7 +1908,7 @@ export default function PdfReader({
                 searchMatch={searchMatch?.page === index + 1 ? searchMatch : citationMatch?.page === index + 1 ? citationMatch : null}
                 onSearchLocated={locateSearchText}
                 paperColors={paperColors}
-                annotations={annotations.flatMap(annotation => annotationSegments(annotation).filter(segment => segment.page === index + 1).map(segment => ({...annotation,...segment})))}
+                annotations={annotations.filter(note=>!note.markerHidden).flatMap(annotation => annotationSegments(annotation).filter(segment => segment.page === index + 1).map(segment => ({...annotation,...segment})))}
                 drawing={drawing}
                 annotationColor={inkColor}
                 strokes={inkDrafts.filter((item) => item.page === index + 1)}
@@ -1891,7 +1918,7 @@ export default function PdfReader({
                     { page: index + 1, stroke, color: inkColor },
                   ])
                 }
-                onSelectAnnotation={id => onSelectAnnotation?.(id, index + 1)}
+                onSelectAnnotation={id => reopenInline(id, index + 1)}
                 focusedAnnotation={annotationFocus?.id}
                 language={language}
               />
@@ -1899,6 +1926,7 @@ export default function PdfReader({
           </div>
         )}
       </div>
+      {active && onHideAnnotation && annotations.some(note=>note.markerHidden) && <button className="pdf-restore-markers" onClick={()=>void Promise.all(annotations.filter(note=>note.markerHidden).map(note=>onHideAnnotation(note.id,false))).catch(reason=>setAnnotationError(reason.message))}>{t('恢复隐藏的标记','Restore hidden markers')} ({annotations.filter(note=>note.markerHidden).length})</button>}
       {active && (annotationStatus || (annotationError && !noteEditor && !inlineResult && !selectionMenu)) && <div className={`pdf-annotation-feedback ${annotationError ? "is-error" : ""}`} role={annotationError ? "alert" : "status"}>
         {annotationError ? <span>{annotationError}</span> : <><Check size={15}/><span>{annotationStatus}</span></>}
         <button aria-label={t("关闭保存提示", "Dismiss save status")} onClick={() => { setAnnotationStatus(""); setAnnotationError(""); }}><X size={14}/></button>
@@ -2192,6 +2220,7 @@ export default function PdfReader({
                 onResult={activity=>{inlineRequest.current++;setInlineResult(current=>current ? {...current,text:activity.result!.text,source:activity.source?.model || activity.source?.agent || t('订阅助手','Subscription agent'),loading:false,error:'',saved:false} : current);}}/>}
             </div>
             <footer>
+              {inlineResult.annotationId && onHideAnnotation && <button onClick={()=>void hideInlineMarker()}>{t('隐藏标记','Hide marker')}</button>}
               {inlineResult.source && <span className="inline-result-source" title={inlineResult.source}>{inlineResult.source}</span>}
               {!useSelectionAgent && <button
                 disabled={inlineResult.loading}

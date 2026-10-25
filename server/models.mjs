@@ -1,3 +1,4 @@
+import { readModelStream } from "./model-stream.mjs";
 import { ApiError, modelFetch } from "./network.mjs";
 import { DEFAULT_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
 import { beginUsage, finishUsage } from "./usage.mjs";
@@ -268,7 +269,7 @@ export function canUseModel(settings) {
 export async function callModel(
   settings,
   messages,
-  { fetchImpl = modelFetch, maxTokens = settings.maxOutputTokens ?? DEFAULT_OUTPUT_TOKENS, images = [], usageStage, tools = [], returnTurn = false, toolChoice, timeoutMs = Infinity } = {},
+  { fetchImpl = modelFetch, maxTokens = settings.maxOutputTokens ?? DEFAULT_OUTPUT_TOKENS, images = [], usageStage, tools = [], returnTurn = false, toolChoice, timeoutMs = Infinity, onEvent, signal } = {},
 ) {
   if (!canUseModel(settings))
     throw new ApiError("Configure an API key in model settings first.", 400);
@@ -321,6 +322,7 @@ export async function callModel(
     headers["anthropic-version"] = "2023-06-01";
   } else if (settings.apiKey)
     headers.Authorization = `Bearer ${settings.apiKey}`;
+  if (onEvent) { body.stream = true; if (!anthropic) body.stream_options = { include_usage: true }; }
   const ticket = beginUsage(settings, usageStage);
   let usage, usageStatus = "failed";
   try {
@@ -330,7 +332,7 @@ export async function callModel(
         method: "POST",
         headers,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(Math.max(1, Math.min((settings.requestTimeoutSeconds ?? 90) * 1000, timeoutMs))),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.min((settings.requestTimeoutSeconds ?? 90) * 1000, timeoutMs)))]) : AbortSignal.timeout(Math.max(1, Math.min((settings.requestTimeoutSeconds ?? 90) * 1000, timeoutMs))),
         redirect: "error",
       });
     } catch (error) {
@@ -342,8 +344,17 @@ export async function callModel(
       );
     }
     let data;
-    try { data = await response.json(); usage = data?.usage; }
-    catch { if (response.ok) throw new ApiError("The model API returned invalid JSON.", 502); }
+    try {
+      if (response.ok && onEvent && response.headers.get("content-type")?.includes("text/event-stream"))
+        data = await readModelStream(response, anthropic, onEvent, value => { usage = value; });
+      else { data = await response.json(); usage = data?.usage;
+        if (response.ok && onEvent) {
+          const parts = anthropic ? data.content || [] : [{type:"text",text:data.choices?.[0]?.message?.content},{type:"thinking",thinking:data.choices?.[0]?.message?.reasoning_content}];
+          for (const part of parts) { const value = part.type === "text" ? part.text : part.type === "thinking" ? part.thinking : undefined; if (typeof value === "string" && value) onEvent({type:part.type === "text" ? "text" : "reasoning",delta:value}); }
+        }
+      }
+    }
+    catch (error) { if (error instanceof ApiError) throw error; if (response.ok) throw new ApiError("The model API returned invalid JSON.", 502); }
     if (!response.ok) {
       // Only typed usage counts are retained; never upstream error bodies.
       throw new ApiError(
@@ -383,7 +394,8 @@ export async function callModel(
     usageStatus = "success";
     if (returnTurn) return { text: typeof text === 'string' ? text.trim() : '', calls,
       // Preserve signed thinking blocks / compatible-provider reasoning fields
-      // within this request only. They are not exposed or saved in chat history.
+      // within this request only. Only explicit display text is separately emitted;
+      // signed/redacted payloads are never exposed or saved in chat history.
       assistant: anthropic ? { role: 'assistant', content: data.content }
         : { ...data.choices[0].message, role: 'assistant' } };
     return text.trim();
@@ -664,7 +676,7 @@ export async function answerQuestion(
   question,
   history,
   settings,
-  { fetchImpl, metadata, forceExtractive = false, webSearch = false, download } = {},
+  { fetchImpl, metadata, forceExtractive = false, webSearch = false, download, onEvent, signal } = {},
 ) {
   const sourceMetadata = papers.length === 1 && metadata && typeof metadata === "object" ? metadata : undefined;
   const excerpts = relevantExcerpts(papers, `${question}\n${typeof sourceMetadata?.quote === "string" ? sourceMetadata.quote : ""}`);
@@ -743,13 +755,26 @@ export async function answerQuestion(
     ...previous.messages,
     { role: "user", content: currentQuestion },
   ];
-  const agent = await runQuestionAgent({ papers, selected, messages, webSearch, download,
+  const reasoning = [];
+  let reasoningSize = 0;
+  const publish = onEvent ? event => {
+    if (event.type === "reasoning") {
+      const remaining = Math.max(0, 200000 - reasoningSize);
+      const delta = event.delta.slice(0, remaining); reasoningSize += delta.length;
+      if (!delta) return;
+      let part = reasoning.find(part => part.round === event.round);
+      if (!part) { part = {round:event.round,text:""}; reasoning.push(part); }
+      part.text += delta; onEvent({...event,delta});
+    } else onEvent(event);
+  } : undefined;
+  const agent = await runQuestionAgent({ papers, selected, messages, webSearch, download, onEvent: publish,
     toolBudget: Math.max(0, sourceBudget - corpus.length), question,
-    call: (transcript, options) => callModel(settings, transcript, { fetchImpl, ...options }),
+    call: (transcript, options) => callModel(settings, transcript, { fetchImpl, signal, ...options }),
     provider: settings.provider });
   const usedPaperIds = new Set([...selected.map(paper => paper.id), ...agent.evidence.steps.flatMap(step => step.references.map(ref => ref.paperId)).filter(Boolean)]);
   return {
     content: agent.content,
+    ...(reasoning.length ? { reasoning, reasoningTruncated: reasoningSize >= 200000 } : {}),
     sources: papers.filter(paper => usedPaperIds.has(paper.id))
       .map((paper) => ({ id: paper.id, title: paper.title, url: paper.url })),
     mode: "model",
