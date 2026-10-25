@@ -10,6 +10,7 @@ import { hasUsableResultText } from "./translation-language.mjs";
 import { selectQuestionContext } from "./question-context.mjs";
 import { prepareConversationHistory } from "./conversation-context.mjs";
 import { validateRecommendationSettings } from './recommendation-settings.mjs';
+import { runQuestionAgent, rankQuestionPapers } from './question-agent.mjs';
 
 function validateProfile(input, current) {
   const result = { ...current };
@@ -267,7 +268,7 @@ export function canUseModel(settings) {
 export async function callModel(
   settings,
   messages,
-  { fetchImpl = modelFetch, maxTokens = settings.maxOutputTokens ?? DEFAULT_OUTPUT_TOKENS, images = [], usageStage } = {},
+  { fetchImpl = modelFetch, maxTokens = settings.maxOutputTokens ?? DEFAULT_OUTPUT_TOKENS, images = [], usageStage, tools = [], returnTurn = false, toolChoice, timeoutMs = Infinity } = {},
 ) {
   if (!canUseModel(settings))
     throw new ApiError("Configure an API key in model settings first.", 400);
@@ -310,6 +311,11 @@ export async function callModel(
         max_tokens: maxTokens,
       };
   const headers = { "Content-Type": "application/json" };
+  if (tools.length) {
+    body.tools = anthropic ? tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.parameters }))
+      : tools.map(tool => ({ type: 'function', function: tool }));
+    if (toolChoice === 'none') body.tool_choice = anthropic ? { type: 'none' } : 'none';
+  }
   if (anthropic) {
     headers["x-api-key"] = settings.apiKey;
     headers["anthropic-version"] = "2023-06-01";
@@ -324,7 +330,7 @@ export async function callModel(
         method: "POST",
         headers,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout((settings.requestTimeoutSeconds ?? 90) * 1000),
+        signal: AbortSignal.timeout(Math.max(1, Math.min((settings.requestTimeoutSeconds ?? 90) * 1000, timeoutMs))),
         redirect: "error",
       });
     } catch (error) {
@@ -341,7 +347,7 @@ export async function callModel(
     if (!response.ok) {
       // Only typed usage counts are retained; never upstream error bodies.
       throw new ApiError(
-        `Model API returned HTTP ${response.status}. ${response.status === 401 || response.status === 403 ? "Check the API key and model access." : response.status === 429 ? "Rate limit or quota exceeded; retry later." : "Verify the model identifier and API compatibility."}`,
+        `Model API returned HTTP ${response.status}. ${response.status === 401 || response.status === 403 ? "Check the API key and model access." : response.status === 429 ? "Rate limit or quota exceeded; retry later." : tools.length && [400, 422].includes(response.status) ? "Question agents require native tool calling. Check this model's tool support, output limit and provider-specific options; or select another model." : "Verify the model identifier and API compatibility."}`,
         502,
       );
     }
@@ -362,12 +368,24 @@ export async function callModel(
           .map((part) => part.text)
           .join("\n")
       : data.choices?.[0]?.message?.content;
-    if (typeof text !== "string" || !text.trim())
+    const calls = anthropic
+      ? (data.content || []).filter(part => part.type === 'tool_use').map(part => ({ id: part.id, name: part.name, arguments: part.input }))
+      : (data.choices?.[0]?.message?.tool_calls || []).map(part => ({ id: part.id, name: part.function?.name, arguments: part.function?.arguments }));
+    if (calls.length && (!returnTurn || !tools.length || toolChoice === 'none'))
+      throw new ApiError('The model requested tools when no further tool calls were allowed. No incomplete answer was saved.', 502);
+    if (calls.length > 16 || calls.some(call => typeof call.id !== 'string' || !call.id || call.id.length > 200 || typeof call.name !== 'string' || call.name.length > 100) || new Set(calls.map(call => call.id)).size !== calls.length)
+      throw new ApiError('The model returned invalid tool calls.', 502);
+    if (!calls.length && (typeof text !== "string" || !text.trim()))
       throw new ApiError(
         "The model returned no text. Verify that this is a compatible chat model.",
         502,
       );
     usageStatus = "success";
+    if (returnTurn) return { text: typeof text === 'string' ? text.trim() : '', calls,
+      // Preserve signed thinking blocks / compatible-provider reasoning fields
+      // within this request only. They are not exposed or saved in chat history.
+      assistant: anthropic ? { role: 'assistant', content: data.content }
+        : { ...data.choices[0].message, role: 'assistant' } };
     return text.trim();
   } finally {
     await finishUsage(ticket, usage, usageStatus);
@@ -646,7 +664,7 @@ export async function answerQuestion(
   question,
   history,
   settings,
-  { fetchImpl, metadata, forceExtractive = false } = {},
+  { fetchImpl, metadata, forceExtractive = false, webSearch = false, download } = {},
 ) {
   const sourceMetadata = papers.length === 1 && metadata && typeof metadata === "object" ? metadata : undefined;
   const excerpts = relevantExcerpts(papers, `${question}\n${typeof sourceMetadata?.quote === "string" ? sourceMetadata.quote : ""}`);
@@ -698,14 +716,18 @@ export async function answerQuestion(
       mode: "extractive",
     };
   }
-  const selected = papers.slice(0, 8);
+  const selected = rankQuestionPapers(papers, question, history).slice(0, 8);
+  const sourceBudget = settings.contextChars || 44000;
+  const completeLength = selected.reduce((sum, paper) => sum + paperContextDetails(paper, sourceBudget).sourceCharacters, 0) + Math.max(0, selected.length - 1) * 7;
+  // Preserve a short source in full when possible, while reserving at least
+  // 20% for tool evidence. Long sources start with a 60% retrieval budget.
+  const initialBudget = Math.floor(completeLength <= sourceBudget * .8 ? Math.max(sourceBudget * .6, completeLength) : sourceBudget * .6);
   const perPaperBudget = Math.floor(
-    ((settings.contextChars || 44000) - Math.max(0, selected.length - 1) * 7) /
+    (initialBudget - Math.max(0, selected.length - 1) * 7) /
       Math.max(1, selected.length),
   );
-  const corpus = selected
-    .map((paper) => questionContextDetails(paper, question, sourceMetadata, perPaperBudget).text)
-    .join("\n\n---\n\n");
+  const contexts = selected.map(paper => questionContextDetails(paper, question, sourceMetadata, completeLength <= sourceBudget * .8 ? sourceBudget : perPaperBudget));
+  const corpus = contexts.map(context => context.text).join("\n\n---\n\n");
   const previous = prepareConversationHistory(history, settings.contextChars || 44000, {
     currentVisualEvidenceIds: new Set(selected.flatMap(paper => currentVisualEvidence(paper).map(evidence => evidence.id))),
   });
@@ -721,21 +743,21 @@ export async function answerQuestion(
     ...previous.messages,
     { role: "user", content: currentQuestion },
   ];
-  const content = await callModel(
-    settings,
-    messages,
-    { fetchImpl, maxTokens: settings.maxOutputTokens ?? DEFAULT_OUTPUT_TOKENS },
-  );
+  const agent = await runQuestionAgent({ papers, selected, messages, webSearch, download,
+    toolBudget: Math.max(0, sourceBudget - corpus.length), question,
+    call: (transcript, options) => callModel(settings, transcript, { fetchImpl, ...options }),
+    provider: settings.provider });
+  const usedPaperIds = new Set([...selected.map(paper => paper.id), ...agent.evidence.steps.flatMap(step => step.references.map(ref => ref.paperId)).filter(Boolean)]);
   return {
-    content,
-    sources: papers
-      .slice(0, 8)
+    content: agent.content,
+    sources: papers.filter(paper => usedPaperIds.has(paper.id))
       .map((paper) => ({ id: paper.id, title: paper.title, url: paper.url })),
     mode: "model",
     source: {
       kind: "model", model: settings.model, readingPolicy: readingPolicyIdentity, pixelsProvided: false,
       visualEvidenceMode: visualEvidenceIds.length ? "prior-vision-observations" : "none",
       visualEvidenceIds,
+      questionAgent: { ...agent.evidence, initialSources: selected.map((paper, index) => ({ paperId: paper.id, title: paper.title, coverage: contexts[index].coverage, characters: contexts[index].contextCharacters })) },
       inputContext: {
         sourceCharacters: corpus.length, historyCharacters: previous.characters,
         historyBudgetCharacters: previous.budget, includedHistoryMessages: previous.messages.length,
@@ -743,7 +765,7 @@ export async function answerQuestion(
         withdrawnVisualHistoryMessages: previous.withdrawnVisualMessages,
         incompleteHistory: previous.incomplete || previous.omittedMessages > 0 || previous.truncatedMessages > 0 || previous.withdrawnVisualMessages > 0,
         currentQuestionCharacters: currentQuestion.length,
-        totalMessageCharacters: messages.reduce((sum, message) => sum + message.content.length, 0),
+        totalMessageCharacters: agent.initialMessageCharacters,
       },
     },
   };

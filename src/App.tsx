@@ -51,6 +51,7 @@ import {
 } from "lucide-react";
 import Mark from "./Markdown";
 import MessageActions from "./MessageActions";
+import AgentEvidence, { type AgentEvidenceData } from './AgentEvidence';
 import QuestionTaskBridge,{type PreparedQuestionTask} from './QuestionTaskBridge';
 import {completedQuestionTaskAnswer,loadQuestionTasks,saveQuestionTasks} from './question-task-store';
 import SelectionTools from "./SelectionTools";
@@ -227,6 +228,7 @@ export default function App() {
   const [copyingAgent, setCopyingAgent] = useState(false);
   const preparingQuestion=useRef(false);
   const [questionModes,setQuestionModes]=useState<Record<string,'api'|'agent'|'extractive'>>({});
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [questionTaskStore,setQuestionTaskStore]=useState(loadQuestionTasks);
   const questionTasks=questionTaskStore.tasks;
   const questionTasksRef=useRef(questionTasks);
@@ -755,6 +757,7 @@ export default function App() {
           conversationId: context.conversationId,
           message,
           processing: questionMode==='extractive'?'extractive':'api',
+          webSearch: questionMode === 'api' && webSearchEnabled,
           ...(!submitted.verbatim ? { questionText: text.trim() } : {}),
           ...(metadata !== undefined ? { metadata } : {}),
           // Saved sessions carry server-verified source provenance. Sending a
@@ -1464,6 +1467,7 @@ export default function App() {
                   <Mark onPage={view === "paper" ? goToPage : undefined} onSource={view === 'paper' ? openReadingSource : undefined}>
                     {m.content}
                   </Mark>
+                  {m.role === 'assistant' && <AgentEvidence evidence={m.source?.questionAgent as AgentEvidenceData | undefined} chinese={language.startsWith('zh')} paperId={view === 'paper' ? paper?.id : undefined} onPage={view === 'paper' ? goToPage : undefined}/>}
                   <MessageActions message={m} paper={view === "paper" ? paper || undefined : undefined} question={chat.slice(0, i).reverse().find(item => item.role === "user")}
                     busy={chatting || conversationBusy} onBranch={(message, action) => void branchQuestion(message, action)}/>
                 </div>
@@ -1557,6 +1561,11 @@ export default function App() {
                 onChange={setSettings}
                 disabled={chatting || reporting || translating}
               />}
+              {questionMode === 'api' && <button type="button" className="agent-web-toggle" aria-pressed={webSearchEnabled}
+                disabled={chatting || conversationBusy} onClick={() => setWebSearchEnabled(enabled => !enabled)}
+                title={t('允许助手向外部搜索服务发送检索词，并读取公开网页；关闭时仅使用论文资料。','Allow the assistant to send search terms to an external search service and read public webpages. Off uses paper sources only.')}>
+                <Globe2 size={14}/><span>{t('联网','Web')}</span>
+              </button>}
               <button
                 type="button"
                 className="icon-button"

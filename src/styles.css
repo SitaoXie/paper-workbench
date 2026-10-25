@@ -3034,3 +3034,15 @@ a svg {
 @media (max-width: 600px) {
   .paper-byline { font-size: 12px; gap: 8px 10px; }
 }
+/* Source-grounded question agent: compact controls and inspectable evidence. */
+.agent-web-toggle { display:inline-flex; align-items:center; gap:5px; padding:6px 9px; border:1px solid var(--line); border-radius:18px; background:transparent; color:var(--muted); flex-shrink:0; }
+.agent-web-toggle[aria-pressed="true"] { color:var(--accent); background:color-mix(in srgb,var(--accent) 10%,transparent); border-color:currentColor; }
+.agent-evidence { margin:12px 0; padding:10px 12px; border:1px solid var(--line); border-radius:10px; font-size:12px; color:var(--muted); overflow-wrap:anywhere; }
+.agent-evidence summary { cursor:pointer; font-weight:600; }
+.agent-evidence p { margin:8px 0; }
+.agent-evidence ol { padding-left:18px; margin:8px 0 0; max-height:300px; overflow:auto; }
+.agent-evidence li { margin:8px 0; }
+.agent-evidence a,.agent-evidence button { color:var(--accent); font-size:inherit; text-align:left; }
+.agent-evidence button { border:0; padding:3px 0; background:none; cursor:pointer; }
+.agent-evidence summary:focus-visible,.agent-web-toggle:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+@media(pointer:coarse) { .agent-web-toggle { min-height:44px; } }

@@ -27,7 +27,7 @@ Usage: node scripts/paper-workbench.mjs <command> [arguments]
   search <query> [--source all|local|arxiv]
   import <url-or-pdf-path>
   report <paper-id> [--single-agent] [--language <tag>] [--style quick|deep|critical] [--focus <text>] [--format article|interactive]
-  ask <question> [--paper <paper-id>]
+  ask <question> [--paper <paper-id>] [--web]
   config [show]
   config set [--provider <name>] [--base-url <url>] [--model <name>] [--request-timeout-seconds <15-600>] [--key-stdin]
   config test
@@ -51,6 +51,7 @@ function parse(tokens) {
     "source",
     "source-scope",
     "paper",
+    "web",
     "provider",
     "base-url",
     "model",
@@ -84,7 +85,7 @@ function parse(tokens) {
         "Unknown option. Run with --help for supported arguments; API keys must use environment or stdin.",
       );
     if (Object.hasOwn(options, option)) fail(`Duplicate option: --${option}`);
-    if (option === "key-stdin" || option === "single-agent" || option === "include-derived" || option === "annotated-pdf")
+    if (option === "key-stdin" || option === "single-agent" || option === "include-derived" || option === "annotated-pdf" || option === "web")
       options[option] = true;
     else {
       const value = tokens[++i];
@@ -493,10 +494,11 @@ async function main() {
       );
       break;
     case "ask":
-      ensureOptions(options, ["paper"]);
+      ensureOptions(options, ["paper", "web"]);
       ensureCount(values, 1, "one quoted question");
       result = await request("/api/chat", "POST", {
         message: values[0],
+        ...(options.web ? { webSearch: true } : {}),
         ...(options.paper ? { paperId: options.paper } : {}),
       });
       break;

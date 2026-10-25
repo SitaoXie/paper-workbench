@@ -1200,7 +1200,8 @@ export async function createApp({
   app.post(
     "/api/chat",
     wrap(async (request, response) => {
-      const { message, history, processing } = bodyOf(request);
+      const { message, history, processing, webSearch = false } = bodyOf(request);
+      if (typeof webSearch !== 'boolean') throw new ApiError('webSearch must be a boolean.');
       if (processing !== undefined && !["api", "extractive"].includes(processing))
         throw new ApiError("processing must be api or extractive; omit it for the compatible automatic behavior.");
       const settings = { ...store.data.settings };
@@ -1234,7 +1235,7 @@ export async function createApp({
         );
       const papers = paperId
         ? [paperById(paperId)]
-        : store.data.papers.slice(0, 8);
+        : store.data.papers;
       let conversation = request.body.conversationId
         ? store.data.conversations.find((item) => item.id === request.body.conversationId && item.paperId === paperId)
         : activeConversation(paperId);
@@ -1262,7 +1263,7 @@ export async function createApp({
         message.trim(),
         previous,
         settings,
-        { fetchImpl, metadata, forceExtractive: processing === "extractive" },
+        { fetchImpl, metadata, forceExtractive: processing === "extractive", webSearch, download },
       );
       if (paperId && !store.paper(paperId))
         throw new ApiError(

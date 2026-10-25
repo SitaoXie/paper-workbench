@@ -4,6 +4,34 @@ Default origin: `http://127.0.0.1:4318`. JSON request bodies are limited to 256 
 
 ## Library and import
 
+### Question agent
+
+`POST /api/chat` keeps its existing conversation, selection, processing and response contract, and adds optional boolean `webSearch` (default `false`; invalid types fail before session mutation). With a configured model, questions now use native tool calls. `processing: "extractive"` still makes no model or external-web calls even when `webSearch: true` is supplied.
+
+The internal tools are `search_papers({query,paperId?})`, `read_pages({paperId,pages,offset?})`, and, only when enabled, `search_web({query})` and `read_webpage({url,offset?})`. Paper-scoped chats restrict local tools to that paper; general research chats can search the library. Searches return exact source excerpts and offsets. Pages accept 1–3 one-based PDF indices; long page text can be continued with `nextOffset`. Non-PDF source text uses input page 1 but returns `page: null`, and metadata-only results are labeled. Tools do not inspect image pixels.
+
+Web searches use DuckDuckGo HTML by default or Tavily when `TAVILY_API_KEY` is present in the server environment; `PAPER_WORKBENCH_SEARCH_PROVIDER` explicitly chooses `duckduckgo` or `tavily`. No runtime key is returned by public APIs or passed to the model. Web reads accept only URLs explicitly supplied in the current question or returned by search, enforce existing public-network download safeguards, extract HTML/plain text and reject PDF/binary responses. External search snippets never imply a full webpage was read. Provider failures are tool errors, not empty successful searches. No automatic provider fallback occurs.
+
+Limits: four retrieval rounds, at most ten executed tools, one final synthesis call, five-minute agent deadline plus per-profile request timeouts. Source text is shared between initial context and bounded tool results; oversized results return an explicit budget error. The model may answer directly when initial context suffices. Each model round is counted in the usage ledger with `stage: "question-agent-N"`. Unsupported native-tool providers and incomplete final answers return errors; the loop does not silently fall back to a fabricated tool transcript.
+
+Saved assistant messages add `source.questionAgent`:
+
+```json
+{
+  "version": 1,
+  "webEnabled": false,
+  "modelCalls": 2,
+  "toolCharacters": 1200,
+  "limitReached": false,
+  "initialSources": [{"paperId":"paper-id","title":"Paper","coverage":"source-excerpts","characters":8000}],
+  "steps": [{"tool":"read_pages","ok":true,"cached":false,"references":[{"paperId":"paper-id","title":"Paper","page":4,"start":0,"end":1000,"complete":true}]}]
+}
+```
+
+Each step may include `query` and, on failure, `error`; references may instead contain a public `url`. These are server-recorded operations, not the model's self-report. Tool payloads, credentials and private model reasoning are not persisted in this metadata. Existing `source.inputContext.totalMessageCharacters` describes the initial message payload including agent instructions; additional retrieved evidence is in `toolCharacters`. Initial source IDs plus successfully retrieved local paper IDs populate the existing `sources` list. Native function calling follows the [OpenAI protocol](https://developers.openai.com/api/docs/guides/function-calling) and [Anthropic tool-result protocol](https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls).
+
+### Library endpoints
+
 | Method | Path                                 | Request                                              | Response                                       |
 | ------ | ------------------------------------ | ---------------------------------------------------- | ---------------------------------------------- |
 | GET    | `/api/health`                        | —                                                    | Server health information                      |

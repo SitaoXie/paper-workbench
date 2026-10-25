@@ -33,6 +33,17 @@ function chunks(page) {
   return result;
 }
 
+export function searchPaperChunks(paper, query, limit = 6) {
+  const words = terms(query);
+  const pages = paper.pages?.length ? paper.pages : [{ number: null, text: paper.text || paper.abstract || '' }];
+  const candidates = pages.filter(page => typeof page.text === 'string').flatMap(chunks);
+  for (const chunk of candidates) {
+    const text = chunk.text.normalize('NFKC').toLowerCase();
+    chunk.score = words.reduce((sum, word) => sum + (text.includes(word) ? 1 : 0), 0);
+  }
+  return candidates.filter(chunk => chunk.score > 0).sort((a, b) => b.score - a.score || (a.page || 0) - (b.page || 0) || a.start - b.start).slice(0, limit);
+}
+
 export function selectQuestionContext(paper, { question, metadata, budget, header, full, includeOverview = false }) {
   if (full.text.length <= budget || !paper.pages?.length || paper.metadataOnly) return null;
   const pages = paper.pages.filter(page => typeof page.text === "string" && page.text.trim());
