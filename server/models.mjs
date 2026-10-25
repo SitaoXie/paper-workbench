@@ -1,3 +1,4 @@
+import { cleanAssistantContent, createAnswerEventFilter } from "./answer-presentation.mjs";
 import {assistantStyle} from '../shared/assistant-prompts.mjs';
 import {validateAssistantPreferences} from './assistant-preferences.mjs';
 import {renderPdfImage} from './pdf-images.mjs';
@@ -798,6 +799,7 @@ export async function answerQuestion(
   ];
   const reasoning = [];
   let reasoningSize = 0;
+  const answerEvents = onEvent ? createAnswerEventFilter(onEvent) : undefined;
   const publish = onEvent ? event => {
     if (event.type === "reasoning") {
       const remaining = Math.max(0, 200000 - reasoningSize);
@@ -806,15 +808,16 @@ export async function answerQuestion(
       let part = reasoning.find(part => part.round === event.round);
       if (!part) { part = {round:event.round,text:""}; reasoning.push(part); }
       part.text += delta; onEvent({...event,delta});
-    } else onEvent(event);
+    } else answerEvents.push(event);
   } : undefined;
   const agent = await runQuestionAgent({ papers, selected, messages, webSearch, download, onEvent: publish, dataDir, renderImage, signal, pdfMode:preferences.pdfMode, vision:settings.modelCapabilities?.[settings.model]==="vision",
     toolBudget: Math.max(QUESTION_TOOL_CHARACTER_BUDGET, sourceBudget), question,
     call: (transcript, options) => callModel(settings, transcript, { fetchImpl, signal, ...options }),
     provider: settings.provider });
+  answerEvents?.finish();
   const usedPaperIds = new Set([...selected.map(paper => paper.id), ...agent.evidence.steps.flatMap(step => step.references.map(ref => ref.paperId)).filter(Boolean)]);
   return {
-    content: agent.content,
+    content: cleanAssistantContent(agent.content),
     ...(reasoning.length ? { reasoning, reasoningTruncated: reasoningSize >= 200000 } : {}),
     sources: papers.filter(paper => usedPaperIds.has(paper.id))
       .map((paper) => ({ id: paper.id, title: paper.title, url: paper.url })),

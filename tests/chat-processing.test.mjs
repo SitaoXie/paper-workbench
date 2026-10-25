@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {createApp} from '../server/index.mjs';
 import {answerQuestion} from '../server/models.mjs';
 import {defaultSettings} from '../server/storage.mjs';
+import {legacyVisualHistoryPrefix} from '../server/answer-presentation.mjs';
 
 async function fixture(t,model=()=> 'A configured model answer.'){
  const directory=await mkdtemp(join(tmpdir(),'pw-chat-processing-')),calls=[];
@@ -17,6 +18,29 @@ async function fixture(t,model=()=> 'A configured model answer.'){
  async function api(path,body){const response=await fetch(origin+'/api'+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});return {status:response.status,data:await response.json()};}
  return {app,paper,api,calls,configure:()=>Object.assign(app.locals.store.data.settings,{apiKey:'synthetic-configured-key'})};
 }
+
+test('historical API answers hide leaked prefixes without rewriting stored records or user messages', async t => {
+ const f = await fixture(t, () => legacyVisualHistoryPrefix + '新的回答');
+ f.configure();
+ const created = await f.api('/chats/new', {paperId:f.paper.id});
+ const conversationId = created.data.conversationId;
+ const records = [
+  {id:'old-user',role:'user',content:legacyVisualHistoryPrefix,conversationId,paperId:f.paper.id},
+  {id:'old-answer',role:'assistant',content:legacyVisualHistoryPrefix + legacyVisualHistoryPrefix + '旧回答',conversationId,paperId:f.paper.id,source:{toolImageCount:1}},
+ ];
+ f.app.locals.store.data.chats.push(...records);
+ const snapshot = JSON.stringify(records);
+ const history = await f.api(`/chats?paperId=${f.paper.id}&conversationId=${conversationId}`);
+ assert.equal(history.status,200);
+ assert.equal(history.data.messages[0].content,legacyVisualHistoryPrefix);
+ assert.equal(history.data.messages[1].content,'旧回答');
+ assert.equal(JSON.stringify(records),snapshot);
+ const reply = await f.api('/chat',{paperId:f.paper.id,conversationId,message:'继续',processing:'api'});
+ assert.equal(reply.status,200);
+ assert.equal(reply.data.message.content,'新的回答');
+ assert.equal(f.app.locals.store.data.chats.at(-1).content,'新的回答');
+ assert.equal(f.calls[0].messages.find(m=>m.role==='assistant').content,'旧回答');
+});
 
 test('invalid processing and explicit unconfigured API fail before conversations, active state or messages can change',async t=>{
  const f=await fixture(t),before=JSON.stringify(f.app.locals.store.data);

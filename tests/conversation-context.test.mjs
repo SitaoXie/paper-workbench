@@ -74,7 +74,8 @@ test("historical visual answers are withdrawn by provenance while valid observat
   const result = prepareConversationHistory(original, 8000, { currentVisualEvidenceIds: new Set(["current-observation"]) });
   assert.ok(!result.messages.some(message => message.content.includes("WITHDRAWN_CLAIM")));
   assert.match(result.messages[1].content, /excluded, stale, superseded or unavailable/);
-  assert.match(result.messages[3].content, /Unverified historical model output/);
+  assert.match(result.notice, /unverified model interpretations/);
+  assert.equal(result.messages[3].content, "CURRENT_UNVERIFIED_CLAIM");
   assert.match(result.messages[3].content, /CURRENT_UNVERIFIED_CLAIM/);
   assert.deepEqual(result.visualEvidenceIds, ["current-observation"]);
   assert.equal(result.withdrawnVisualMessages, 1);

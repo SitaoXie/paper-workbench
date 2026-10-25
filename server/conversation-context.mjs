@@ -1,3 +1,5 @@
+import { presentChatMessage } from "./answer-presentation.mjs";
+
 // A source budget is not a model token limit. Keep historical turns separately
 // bounded so a long conversation cannot silently multiply the source allowance.
 function clipped(text, limit) {
@@ -11,7 +13,9 @@ function clipped(text, limit) {
 }
 
 function historicalMessage(message, currentVisualEvidenceIds) {
-  if(message.role==='assistant'&&(message.source?.toolImageCount>0||message.source?.initialPageImageCount>0))message={...message,content:`[Earlier model interpretation of PDF images, not original evidence. Those earlier image pixels are not automatically replayed in this turn. Use the currently supplied page images or view_pdf_page/view_figure again to verify visual claims.]\n${message.content}`};
+  message = presentChatMessage(message);
+  if (message.role === 'assistant' && (message.source?.toolImageCount > 0 || message.source?.initialPageImageCount > 0))
+    message = { ...message, historicalPixels: true };
   if (message.role !== "assistant" || !message.source || !Object.hasOwn(message.source, "visualEvidenceIds")) return message;
   const ids = message.source.visualEvidenceIds;
   if (!Array.isArray(ids) || ids.length > 32 || ids.some(id => typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(id)))
@@ -20,8 +24,7 @@ function historicalMessage(message, currentVisualEvidenceIds) {
   if (ids.some(id => !currentVisualEvidenceIds.has(id)))
     return { role: "assistant", content: "[Earlier assistant answer omitted: visual evidence used by that answer is now excluded, stale, superseded or unavailable. The stored answer remains in history; do not reconstruct or rely on its claims.]", visualEvidenceWithdrawn: true };
   return {
-    role: message.role,
-    content: `[Unverified historical model output; not original paper text or a new inspection of pixels. This earlier assistant synthesis used visual observations: ${[...new Set(ids)].join(", ")}.]\n${message.content}`,
+    ...message,
     historicalVisualEvidenceIds: [...new Set(ids)],
   };
 }
@@ -42,6 +45,7 @@ export function prepareConversationHistory(history = [], sourceBudget = 44000, {
   let characters = 0;
   let truncatedMessages = 0;
   let withdrawnVisualMessages = 0;
+  let historicalPixels = false;
   const visualEvidenceIds = new Set();
   for (const group of groups) {
     const remaining = budget - characters;
@@ -59,6 +63,7 @@ export function prepareConversationHistory(history = [], sourceBudget = 44000, {
     const messages = group.map((message, index) => {
       if (message.content.length > limits[index]) truncatedMessages++;
       if (message.visualEvidenceWithdrawn) withdrawnVisualMessages++;
+      if (message.historicalPixels) historicalPixels = true;
       for (const id of message.historicalVisualEvidenceIds || []) visualEvidenceIds.add(id);
       return { role: message.role, content: clipped(message.content, limits[index]), ...(message.role==="user"&&message.images?.length?{images:message.images}:{}) };
     });
@@ -68,8 +73,9 @@ export function prepareConversationHistory(history = [], sourceBudget = 44000, {
   }
   const omittedMessages = originalCount - selected.length;
   const incomplete = selected.some((message, index) => message.role === "assistant" && (index === 0 || selected[index - 1].role !== "user"));
-  const notice = omittedMessages || truncatedMessages || incomplete
+  let notice = omittedMessages || truncatedMessages || incomplete
     ? `\n[Conversation history is incomplete: ${omittedMessages} older message(s) omitted, ${truncatedMessages} message(s) shortened.${incomplete ? " Some retained replies have no paired user message." : ""} Missing history is unavailable; do not reconstruct it or treat prior answers as source evidence.]`
     : "";
+  if (historicalPixels || visualEvidenceIds.size) notice += "\nInternal history guidance; do not quote this guidance in your answer. Earlier assistant answers are unverified model interpretations, not original evidence or a new inspection of pixels. Earlier image pixels are not automatically replayed. Use the currently supplied images or view_pdf_page/view_figure to verify visual claims. When evidence is missing, explain the relevant limitation naturally in the user's language.";
   return { messages: selected, characters, budget, omittedMessages, truncatedMessages, incomplete, notice, withdrawnVisualMessages, visualEvidenceIds: [...visualEvidenceIds] };
 }

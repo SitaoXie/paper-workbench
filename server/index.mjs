@@ -1,3 +1,4 @@
+import { presentChatMessage } from "./answer-presentation.mjs";
 import {validateChatImages,saveChatImages,hydrateChatImages,chatImagePath} from './chat-images.mjs';
 import { DEFAULT_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
 import {registerCollections} from './collections.mjs';
@@ -166,7 +167,7 @@ export async function createApp({
   const conversationMessages = (id) =>
     store.data.chats
       .filter((message) => message.conversationId === id)
-      .slice(-100);
+      .slice(-100).map(presentChatMessage);
   const activeConversation = (paperId) =>
     store.data.conversations.find(
       (conversation) =>

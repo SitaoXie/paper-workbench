@@ -102,5 +102,6 @@ test('HTTP preferences persist, invalid built-in edits are atomic, image-mode te
 test('historical PDF visual interpretations do not imply pixels are still visible',async()=>{
  const {prepareConversationHistory}=await import('../server/conversation-context.mjs');
  const result=prepareConversationHistory([{role:'user',content:'See page one'},{role:'assistant',content:'A red panel',source:{visualEvidenceIds:[],toolImageCount:1}}]);
- assert.match(result.messages[1].content,/not automatically replayed/);
+ assert.equal(result.messages[1].content,"A red panel");
+ assert.match(result.notice,/not automatically replayed/);
 });
