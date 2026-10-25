@@ -24,6 +24,17 @@ function MarkdownTable({ node: _node, ...props }: HTMLAttributes<HTMLTableElemen
     <table {...props} className={["markdown-table", props.className].filter(Boolean).join(" ")} />
   </div>;
 }
+// ReactMarkdown uses these functions as component types. Declaring `pre` inside
+// Mark remounts every diagram on parent updates, collapsing message height and
+// feeding a scroll/resize loop when the reader reaches the bottom.
+function MarkdownPre({children}: HTMLAttributes<HTMLPreElement> & ExtraProps) {
+  const code=Children.toArray(children)[0];
+  if(isValidElement<{className?:string;children?:string}>(code)) {
+    const kind=code.props.className==='language-mermaid'?'mermaid':code.props.className==='language-chart'?'chart':undefined;
+    if(kind && typeof code.props.children==='string')return <RecoverableFeature feature="visual"><Suspense fallback={<p>{t('正在准备图形…','Preparing visual…')}</p>}><ReadingVisual kind={kind} source={code.props.children}/></Suspense></RecoverableFeature>;
+  }
+  return <pre>{children}</pre>;
+}
 export default function Mark({
   children,
   onPage,
@@ -104,14 +115,7 @@ export default function Mark({
       components={{
         ...headings,
         table: MarkdownTable,
-        pre: ({children}) => {
-          const code=Children.toArray(children)[0];
-          if(isValidElement<{className?:string;children?:string}>(code)) {
-            const kind=code.props.className==='language-mermaid'?'mermaid':code.props.className==='language-chart'?'chart':undefined;
-            if(kind && typeof code.props.children==='string')return <RecoverableFeature feature="visual"><Suspense fallback={<p>{t('正在准备图形…','Preparing visual…')}</p>}><ReadingVisual kind={kind} source={code.props.children}/></Suspense></RecoverableFeature>;
-          }
-          return <pre>{children}</pre>;
-        },
+        pre: MarkdownPre,
         img: ({ alt }) => (
           <span className="muted-label">
             [{t("图片", "Image")}: {alt || t("外部图片，未自动加载", "External image, not loaded automatically")}]

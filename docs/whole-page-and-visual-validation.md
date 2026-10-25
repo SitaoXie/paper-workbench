@@ -29,3 +29,9 @@ Replaced the fixed 300px / 65vh frame toggle with SVG viewBox-based sizing. Diag
 The source-figure lightbox previously measured client dimensions changed by its own scrollbars, then removed the current canvas while redrawing. It now fits against a size-contained border box with scrollbar allowance and swaps an offscreen completed canvas into place. This removes the resize/render feedback loop and retains the visible image while a new zoom is rendering.
 
 461 automated tests and the production build passed. New tests simulate scrollbar client-width oscillation, retain the old canvas until completion, exercise clipboard file/item formats and image preparation, and verify image bytes through provider tool rounds, stored history and retry branches for both API protocols. A live check with Claude Opus 5.5 medium sent one MAE image and received a streamed interpretation (208 text events); the pixel-bearing request was verified. No personal credentials, runtime image files or conversation responses are included in source control. Live browser interaction acceptance remains outstanding.
+
+## Chat bottom stability
+
+Markdown fenced-code renderers now have stable component identities. Parent scroll-status updates and streaming prose no longer unmount diagrams, reset their zoom, or temporarily collapse their height. The conversation observer watches the actual transcript even when recommendations precede it, and scroll restoration ignores differences of at most one pixel.
+
+Both new regressions failed against the previous implementation and pass with the fix: diagram DOM/zoom survives repeated parent updates, and bottom following handles late content growth without fractional-pixel scroll writes or pulling an away reader to the bottom. The complete suite passed 463 tests and the production build passed. DOM tests simulate layout geometry; live browser visual acceptance remains outstanding.

@@ -42,7 +42,10 @@ export function useChatScroll(key: string, messages: Message[], busy: boolean) {
         top = node.scrollTop + rect.top - node.getBoundingClientRect().top + position.anchor.fraction * rect.height;
       }
     }
-    node.scrollTop = Math.max(0, top);
+    const target=Math.max(0, Math.min(top,node.scrollHeight-node.clientHeight));
+    // Fractional scrollTop rounding must not generate an endless stream of
+    // programmatic scroll events at the bottom edge.
+    if(Math.abs(node.scrollTop-target)>1)node.scrollTop = target;
     save(current);
   }, [save]);
   const synchronize = useCallback((current: Binding) => {
@@ -57,8 +60,11 @@ export function useChatScroll(key: string, messages: Message[], busy: boolean) {
       current.observer = new ResizeObserver(() => { if (binding.current === current) place(current); });
       current.observer.observe(current.node);
     }
-    const content = current.node.firstElementChild;
-    if (content) current.observer.observe(content);
+    // Recommendations can precede the messages. Observing only the first child
+    // misses image/diagram loads and expanding reasoning in the actual transcript.
+    current.observer.disconnect();
+    current.observer.observe(current.node);
+    for(const content of current.node.children)current.observer.observe(content);
   }, [place, publish]);
   const ref = useCallback((node: HTMLDivElement | null) => {
     const previous = binding.current;
