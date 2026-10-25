@@ -6,7 +6,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {validateDiagram,parseChart} from '../shared/reading-visuals.mjs';
+import {validateDiagram,parseChart,orderIndependentDiagramGroups} from '../shared/reading-visuals.mjs';
 const require=createRequire(import.meta.url);
 function component(file,overrides={}){const exports={};const code=ts.transpileModule(readFileSync(new URL(file,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022}}).outputText;vm.runInNewContext(code,{exports,require:name=>name.endsWith('.css')?{}:overrides[name]||require(name)});return exports.default;}
 test('diagrams permit explanatory graphs but reject executable configuration, HTML, links and oversized graphs',()=>{
@@ -57,16 +57,38 @@ test('fine-tuning comparison with subgraphs, Chinese, emoji and line breaks rend
   const {default:mermaid}=await import('mermaid');
   mermaid.initialize({startOnLoad:false,securityLevel:'strict',htmlLabels:false});
   for(const graph of ['flowchart LR\n A["可见图块"] --> B["编码器"]\n B --> C["解码器"]','sequenceDiagram\n participant R as Reader\n participant A as Agent\n R->>A: Explain the evidence\n A-->>R: Source-grounded answer'])assert.ok((await mermaid.parse(validateDiagram(graph))).diagramType);
-  for(const theme of ['default','dark']){
+  for(const theme of ['default','dark'])for(const direction of ['TB','LR']){
    mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme,htmlLabels:false,flowchart:{htmlLabels:false},suppressErrorRendering:true});
    const container=document.createElement('div');document.body.append(container);
-   const {svg}=await mermaid.render(`linebreak-${theme}`,validateDiagram(source),container);
+   const parsed=await mermaid.mermaidAPI.getDiagramFromText(validateDiagram(source.replace('flowchart TB',`flowchart ${direction}`)));
+   const ordered=orderIndependentDiagramGroups(validateDiagram(source.replace('flowchart TB',`flowchart ${direction}`)),{groups:parsed.db.getSubGraphs(),edges:parsed.db.getEdges(),nodeIds:[...parsed.db.getVertices().keys()]});
+   assert.match(ordered,/FT ~~~ LP/);
+   const {svg}=await mermaid.render(`linebreak-${theme}-${direction}`,ordered,container);
    const result=new dom.window.DOMParser().parseFromString(svg,'image/svg+xml');
    assert.equal(result.querySelector('parsererror')?.textContent,undefined);assert.equal(result.querySelectorAll('.node').length,6);
    const encoder=[...result.querySelectorAll('.node')].find(node=>node.textContent.includes('参数全部参与更新'));
    assert.ok(encoder);assert.ok(encoder.querySelectorAll('tspan.text-outer-tspan').length>=2);
+   const groupPosition=id=>{const group=result.querySelector(`[id="linebreak-${theme}-${direction}-${id}"]`);assert.ok(group);const transform=group.closest('.root').getAttribute('transform');return transform.match(/translate\(([^,]+),\s*([^)]+)\)/).slice(1).map(Number);};
+   const axis=direction==='LR'?0:1;assert.ok(groupPosition('FT')[axis]<groupPosition('LP')[axis],'First source group must precede the second on the declared axis');
+   assert.equal(result.querySelectorAll('.flowchart-link').length,4,'Ordering adds no visible causal connection');
    assert.match(svg,/参数完全冻结/);assert.match(svg,/🔥/);assert.equal(result.querySelector('foreignObject, script, a, image'),null);
    container.remove();
   }
  }finally{dom.window.close();delete globalThis.window;delete globalThis.document;delete globalThis.Element;delete globalThis.CSSStyleSheet;}
+});
+
+test('source-order layout is limited to flat independent groups and preserves explicit graph relationships',()=>{
+ const graph={groups:[{id:'First',nodes:['A','B']},{id:'Second',nodes:['C','D']}],edges:[{start:'A',end:'B'},{start:'C',end:'D'}],nodeIds:['A','B','C','D']};
+ for(const large of ['flowchart TB\n%%'+ 'x'.repeat(15980),'flowchart TB'+'\n%% comment'.repeat(177)])assert.equal(orderIndependentDiagramGroups(large,graph),large);
+ for(const direction of ['TB','TD','LR'])assert.match(orderIndependentDiagramGroups(`flowchart ${direction}`,graph),/First ~~~ Second/);
+ for(const source of ['flowchart BT','flowchart RL','sequenceDiagram'])assert.equal(orderIndependentDiagramGroups(source,graph),source);
+ for(const modified of [
+  {...graph,edges:[...graph.edges,{start:'B',end:'C'}]},
+  {...graph,edges:[...graph.edges,{start:'First',end:'Second'}]},
+  {...graph,nodeIds:[...graph.nodeIds,'Outside']},
+  {...graph,groups:[...graph.groups,{id:'Parent',nodes:['First','Second']}]},
+  {...graph,groups:[graph.groups[0],{id:'Second',nodes:['B','C']}]},
+  {...graph,groups:[graph.groups[0],{id:'unsafe;click',nodes:['C','D']}]},
+  {...graph,groups:[graph.groups[0]]},
+ ])assert.equal(orderIndependentDiagramGroups('flowchart TB',modified),'flowchart TB');
 });

@@ -1,5 +1,5 @@
 import {useEffect,useRef,useState} from 'react';
-import {parseChart,validateDiagram,type ChartData} from '../shared/reading-visuals.mjs';
+import {parseChart,validateDiagram,orderIndependentDiagramGroups,type ChartData} from '../shared/reading-visuals.mjs';
 import {t} from './i18n';
 import './reading-visual.css';
 import DiagramViewport, {diagramSize, type DiagramSize} from './DiagramViewport';
@@ -33,8 +33,15 @@ export default function ReadingVisual({source,kind}:{source:string;kind:'mermaid
     const timer=setTimeout(()=>{renderQueue=renderQueue.catch(()=>{}).then(async()=>{
       if(disposed)return;const {default:mermaid}=await import('mermaid');if(disposed)return;
       mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:theme==='dark'?'dark':'default',htmlLabels:false,maxTextSize:16000,maxEdges:150,suppressErrorRendering:true,flowchart:{htmlLabels:false}});
+      let layoutSource=diagram;
+      if(/^\s*(?:flowchart|graph)\b/.test(diagram)){
+        const parsed=await mermaid.mermaidAPI.getDiagramFromText(diagram);
+        const db=parsed.db as {getSubGraphs?:()=>{id:string;nodes:string[]}[];getEdges?:()=>{start:string;end:string}[];getVertices?:()=>Map<string,unknown>};
+        if(db.getSubGraphs&&db.getEdges&&db.getVertices)layoutSource=orderIndependentDiagramGroups(diagram,{groups:db.getSubGraphs(),edges:db.getEdges(),nodeIds:[...db.getVertices().keys()]});
+      }
+      if(disposed)return;
       const container=document.createElement('div');slot.current?.append(container);
-      try{const {svg}=await mermaid.render(`diagram-${crypto.randomUUID()}`,diagram,container);if(!disposed){setSize(diagramSize(svg));setSvg(svg);}}
+      try{const {svg}=await mermaid.render(`diagram-${crypto.randomUUID()}`,layoutSource,container);if(!disposed){setSize(diagramSize(svg));setSvg(svg);}}
       finally{container.remove();}
     }).catch(()=>{if(!disposed)setError(t('图形语法暂不可渲染，可展开源代码查看。','This diagram could not be rendered. Expand the source to inspect it.'));});},350);
     return()=>{disposed=true;clearTimeout(timer);};
