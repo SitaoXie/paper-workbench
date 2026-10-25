@@ -8,6 +8,7 @@ import { protectTranslationBindings } from "./translation-bindings.mjs";
 import { hasUsableResultText } from "./translation-language.mjs";
 import { selectQuestionContext } from "./question-context.mjs";
 import { prepareConversationHistory } from "./conversation-context.mjs";
+import { validateRecommendationSettings } from './recommendation-settings.mjs';
 
 function validateProfile(input, current) {
   const result = { ...current };
@@ -232,7 +233,8 @@ export function validateSettings(input, current) {
     active = updated;
   }
   const vision = validateVisionSettings(input.vision, normalized.vision, profiles);
-  return normalizeProfiles({ ...active, profiles, activeProfileId: active.id, vision });
+  const recommendations = validateRecommendationSettings(input.recommendations, normalized.recommendations, profiles);
+  return normalizeProfiles({ ...active, profiles, activeProfileId: active.id, vision, recommendations });
 }
 
 export function validateLanguage(language = "zh-CN") {

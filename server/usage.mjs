@@ -42,6 +42,7 @@ export function normalizeUsage(provider, usage) {
 export function usageOperation(request) {
   if (request.path === '/api/settings/test') return 'connection-test';
   if (request.path === '/api/chat') return 'question';
+  if (/\/recommendations$/.test(request.path)) return 'recommendations';
   if (/\/figures\/[^/]+\/analyze$/.test(request.path)) return 'vision';
   if (/\/assist$/.test(request.path)) return request.body?.kind === 'translation' ? 'passage-translation' : 'passage-explanation';
   if (/\/translate$/.test(request.path)) return 'translation';

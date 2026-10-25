@@ -45,6 +45,7 @@ export type VisionSettings = {
   profileId?: string;
   model?: string;
 };
+export type RecommendationSettings = { enabled: boolean; profileId?: string; model?: string };
 export type ModelCapability = "text" | "vision";
 export type VisualEvidence = {
   /** Server-derived eligibility, evaluated before any CLI page filtering. */
@@ -116,6 +117,8 @@ export type Conversation = {
   source?: {kind?:string;conversationId?:string;messageId?:string;action?:string};
 };
 export type Paper = {
+  /** Opaque source-only identity for invalidating recommended questions. */
+  recommendationSourceRevision?: string;
   pdfRevision?: string;
   id: string;
   title: string;
@@ -162,10 +165,11 @@ export type Settings = {
   profiles?: ModelProfile[];
   modelCapabilities?: Record<string, ModelCapability>;
   vision?: VisionSettings;
+  recommendations?: RecommendationSettings;
 };
 export type ModelProfile = Omit<
   Settings,
-  "profiles" | "activeProfileId" | "vision"
+  "profiles" | "activeProfileId" | "vision" | "recommendations"
 > & {
   id: string;
   name: string;

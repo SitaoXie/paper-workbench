@@ -11,7 +11,7 @@ Default origin: `http://127.0.0.1:4318`. JSON request bodies are limited to 256 
 | GET    | `/api/papers/:id`                    | —                                                    | `{ "paper": {...} }`, including extracted text |
 | POST   | `/api/import`                        | `{ "url": "https://arxiv.org/abs/1706.03762" }`      | `{ "paper": {...} }`                           |
 | POST   | `/api/upload`                        | `multipart/form-data`, field `file` containing a PDF | `{ "paper": {...} }`                           |
-| PATCH  | `/api/papers/:id`                    | `{ "favorite": true }`                               | Updated paper                                  |
+| PATCH  | `/api/papers/:id`                    | Partial `{ "favorite": true, "title": "Correct title", "tags": ["Methods"] }` | Updated paper                                  |
 | DELETE | `/api/papers/:id`                    | —                                                    | Deletion result                                |
 | GET    | `/api/papers/:id/file`               | —                                                    | Imported PDF file, when present                |
 | GET    | `/api/search?q=attention&source=all` | Query parameters                                     | `{ "papers": [...] }`                          |
@@ -19,6 +19,39 @@ Default origin: `http://127.0.0.1:4318`. JSON request bodies are limited to 256 
 Search `source` accepts `all`, `local`, or `arxiv`. Remote search results are metadata, not necessarily library entries. Import a result's `url` and use the resulting `paper.id` before requesting a report or paper-scoped answer. External search can fail independently of local search.
 
 Paper URL downloads accept public HTTP(S) destinations on standard ports; private-network destinations are blocked and redirects are revalidated. This restriction concerns paper retrieval. It is distinct from the user-configured model endpoint policy below. PDF extraction requires readable text; a scanned image-only PDF may not yield usable content.
+
+Classification edits accept at most 30 tags, each a non-empty single-line string up to 80 characters. Leading/trailing whitespace is removed, and case-insensitive Unicode-normalized duplicates are collapsed. `tags: []` clears classification. A corrected `title` must be non-empty single-line text up to 500 characters. A mixed patch validates every field before changing anything. These metadata edits preserve PDF contents, page anchors, notes and existing reading versions. A title change invalidates question recommendations; a tag change does not. `activeReadingId` remains available for selecting an existing reading version.
+
+Public paper metadata includes an opaque `recommendationSourceRevision`, also in library listings. Clients use it to invalidate visible question suggestions when source text or title changes without replacing the PDF. It excludes ordinary generated reading versions, notes and tags; included visual evidence that enters model context is part of the source identity.
+
+## Recommended questions
+
+This optional feature is off by default. Select a separate saved connection/model through a partial settings update:
+
+```json
+{
+  "recommendations": {
+    "enabled": true,
+    "profileId": "personal",
+    "model": "model-a"
+  }
+}
+```
+
+The selected model must belong to that profile. Switching the main chat model does not change this selection. `{ "recommendations": { "enabled": false } }` disables automatic generation while retaining the selection. Removing its connection/model disables recommendations and clears their selection; explicitly enabling an invalid selection is rejected. No credentials are copied into these preferences.
+
+| Method | Path | Request | Behavior |
+| --- | --- | --- | --- |
+| GET | `/api/papers/:id/recommendations?language=zh-CN` | `language`: `zh-CN` or `en`, default `zh-CN` | Read matching cache only; never invokes a model. |
+| POST | `/api/papers/:id/recommendations` | `{ "language": "zh-CN", "refresh": false }` | Reuse matching cache or generate one set. `refresh: true` explicitly replaces a cached set. |
+
+Both routes return `{ enabled, recommendation, cached }`. When disabled, GET returns `{ "enabled": false, "recommendation": null, "cached": false }`; POST returns 409 without making a provider request. When enabled with no matching cache, GET returns `recommendation: null`.
+
+A recommendation contains `id`, `language`, `createdAt`, `questions` (3–5 items with `id`, `question`, `angle`), `source: { kind: "model", model, profileId }`, `coverage` and `contextCharacters`. Angles are `understanding`, `method`, `evidence`, `limitations`, or `extension`. They are unverified model suggestions, not established claims or answers. The UI should prepare an editable question when one is selected; sending it is a separate action.
+
+Generation makes one model call using up to 44,000 source characters, capped by the selected profile's context setting. It requires strict JSON, distinct bounded questions and the requested language, with a conservative language mismatch check. It does not silently retry failures. Models that return malformed JSON, substantially wrong-language prose or truncated output must be retried explicitly or changed. Cache identity includes source text/PDF identity, title, language, provider/endpoint identity, model and generation configuration. Endpoint identity is hashed; returned cache data contains neither endpoints nor keys. Up to six source/configuration variants are retained per paper. Cache is stored only in the ignored local data store and omitted from ordinary paper responses.
+
+Identical concurrent calls share one generation. The server allows at most two simultaneous generations and twelve new generations per minute; cache reads remain available. Changed source/configuration or a disabled feature invalidates a pending result before saving. A failed refresh preserves the prior valid set. Disabling the feature or aborting a browser request cannot undo an already submitted provider call. Actual calls are counted as `recommendations` in API usage.
 
 ## Provider settings
 

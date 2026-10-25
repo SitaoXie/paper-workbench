@@ -43,6 +43,7 @@ import { selectionPageBinding } from "./source-selection.mjs";
 import { existingTaskActivity, validateAgentTaskId } from "./activity-task.mjs";
 import { assertUniqueJsonKeys } from "./json.mjs";
 import { currentFigures, figuresRevision, getFigureCollection, prepareFigureChange, pdfRevision, bindPdfRevision } from "./figures.mjs";
+import { recommendationLanguage, recommendationBinding, cachedRecommendations, generateRecommendations } from './recommendations.mjs';
 
 import {
   prepareInsights,
@@ -74,6 +75,8 @@ export async function createApp({
   });
   const reportJobs = new Set();
   const translationJobs = new Map();
+  const recommendationJobs = new Map();
+  let recommendationRequests = [];
   const reusableTranslation = (entry, sourceHash, updatedAt, source) => entry &&
     usableTranslationBindings(source, entry.markdown) && !entry.stale &&
     (entry.sourceHash ? entry.sourceHash === sourceHash : Boolean(updatedAt) && entry.sourceUpdatedAt === updatedAt);
@@ -367,17 +370,71 @@ export async function createApp({
     wrap(async (request, response) => {
       const paper = paperById(request.params.id);
       const body = bodyOf(request);
-      if (!("favorite" in body) && !("activeReadingId" in body))
-        throw new ApiError("Provide favorite or activeReadingId.");
+      if (!["favorite", "activeReadingId", "tags", "title"].some(key => key in body))
+        throw new ApiError("Provide favorite, activeReadingId, tags or title.");
       if ("favorite" in body && typeof body.favorite !== "boolean") throw new ApiError("favorite must be true or false.");
       if ("activeReadingId" in body && !readingState(paper).readingVersions.some((version) => version.id === body.activeReadingId))
         throw new ApiError("Reading version not found in this paper.", 404);
+      if ('title' in body && (typeof body.title !== 'string' || !body.title.trim() || body.title.length > 500 || /[\u0000-\u001f\u007f]/.test(body.title)))
+        throw new ApiError('title must be non-empty single-line text, up to 500 characters.');
+      if ('tags' in body && (!Array.isArray(body.tags) || body.tags.length > 30 || body.tags.some(tag => typeof tag !== 'string' || !tag.trim() || tag.length > 80 || /[\u0000-\u001f\u007f]/.test(tag))))
+        throw new ApiError('tags must contain up to 30 non-empty labels, each up to 80 characters.');
       if ("favorite" in body) paper.favorite = body.favorite;
       if ("activeReadingId" in body) paper.activeReadingId = body.activeReadingId;
+      if ('title' in body) paper.title = body.title.trim();
+      if ('tags' in body) {
+        const seen = new Set();
+        paper.tags = body.tags.map(tag => tag.trim()).filter(tag => {
+          const key = tag.normalize('NFKC').toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key); return true;
+        });
+      }
       await store.save();
       response.json({ paper: publicPaper(paper) });
     }),
   );
+  app.get('/api/papers/:id/recommendations', wrap(async (request, response) => {
+    const paper = paperById(request.params.id);
+    const language = recommendationLanguage(request.query.language);
+    const binding = recommendationBinding(paper, store.data.settings, language);
+    const recommendation = cachedRecommendations(paper, binding);
+    response.json({ enabled: !!binding, recommendation, cached: !!recommendation });
+  }));
+  app.post('/api/papers/:id/recommendations', wrap(async (request, response) => {
+    const paper = paperById(request.params.id), body = bodyOf(request);
+    if (Object.keys(body).some(key => !['language','refresh'].includes(key)) || ('refresh' in body && typeof body.refresh !== 'boolean'))
+      throw new ApiError('Provide language and an optional boolean refresh.');
+    const language = recommendationLanguage(body.language);
+    const binding = recommendationBinding(paper, store.data.settings, language);
+    if (!binding) throw new ApiError('Recommended questions are disabled. Enable them and select a model first.', 409);
+    const cached = cachedRecommendations(paper, binding);
+    if (cached && !body.refresh) return response.json({ enabled:true, recommendation:cached, cached:true });
+    const jobKey = `${paper.id}:${binding.key}`;
+    let job = recommendationJobs.get(jobKey);
+    if (!job) {
+      recommendationRequests = recommendationRequests.filter(time => Date.now() - time < 60000);
+      if (recommendationJobs.size >= 2 || recommendationRequests.length >= 12) throw new ApiError('Too many recommendation requests. Please retry shortly.', 429);
+      recommendationRequests.push(Date.now());
+      job = (async () => {
+        const recommendation = await generateRecommendations(paper, binding, language, fetchImpl);
+        if (store.paper(paper.id) !== paper || recommendationBinding(paper, store.data.settings, language)?.key !== binding.key)
+          throw new ApiError('The paper or recommendation settings changed while generating. Please retry.', 409);
+        const previousCache = paper.recommendationCache;
+        const nextCache = [
+          { key:binding.key, recommendation },
+          ...(paper.recommendationCache || []).filter(entry => entry.key !== binding.key),
+        ].slice(0, 6);
+        paper.recommendationCache = nextCache;
+        try { await store.save(); }
+        catch (error) { if (paper.recommendationCache === nextCache) paper.recommendationCache = previousCache; throw error; }
+        return recommendation;
+      })();
+      recommendationJobs.set(jobKey, job);
+      job.finally(() => recommendationJobs.delete(jobKey)).catch(() => {});
+    }
+    response.json({ enabled:true, recommendation:await job, cached:false });
+  }));
   app.delete(
     "/api/papers/:id",
     wrap(async (request, response) => {

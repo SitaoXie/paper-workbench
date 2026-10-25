@@ -1,0 +1,32 @@
+.paper-recommendations { margin: 10px 18px 0; border: 1px solid var(--line); border-radius: 12px; background: var(--subtle); min-width: 0; }
+.recommendations-heading { display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; }
+.recommendations-toggle { display: flex; flex: 1; align-items: center; text-align: left; min-height: 34px; gap: 7px; min-width: 0; padding: 3px 0; font-size: 12px; }
+.recommendations-toggle > span { flex: 1; min-width: 0; }
+.recommendations-toggle > svg:first-child { color: var(--accent); }
+.recommendations-toggle > svg:last-child { transition: transform .15s; }
+.recommendations-toggle > svg.expanded { transform: rotate(180deg); }
+.recommendations-toggle small { color: var(--muted); font-variant-numeric: tabular-nums; }
+.recommendations-body { padding: 0 12px 10px; max-height: min(320px, 34dvh); overflow: auto; overscroll-behavior: contain; }
+.recommendations-help,.recommendations-cost { font-size: 11px; line-height: 1.65; color: var(--secondary); margin: 5px 0 9px; }
+.recommendations-questions { padding: 0; margin: 0; list-style: none; display: grid; gap: 5px; }
+.recommendations-questions button { display: block; width: 100%; text-align: left; font-size: 13px; line-height: 1.6; padding: 9px 10px; min-height: 38px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); overflow-wrap: anywhere; }
+.recommendations-questions button:hover { border-color: var(--accent); color: var(--accent); }
+.recommendations-questions button small { display: block; font-size: 10px; color: var(--muted); margin-bottom: 3px; }
+.recommendations-footer { display: flex; align-items: center; gap: 10px; justify-content: space-between; margin-top: 5px; }
+.recommendations-footer > span { font-size: 10px; color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.recommendations-footer > button { flex-shrink: 0; font-size: 11px; }
+.recommendations-status { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 1.6; color: var(--secondary); }
+.recommendations-error { font-size: 12px; line-height: 1.6; color: var(--accent); overflow-wrap: anywhere; margin-bottom: 4px; }
+.recommendations-cost { margin: 0; font-size: 10px; }
+.recommendation-settings { margin: 20px 0; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--subtle); }
+.recommendation-settings h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 14px; }
+.recommendation-settings h3 svg { color: var(--accent); }
+.recommendation-settings p { color: var(--secondary); font-size: 12px; line-height: 1.7; }
+.recommendation-settings > label:not(.checkbox-label) { display: block; font-size: 12px; margin: 13px 0 7px; }
+.recommendation-settings select { width: 100%; min-height: 38px; padding: 8px; border-radius: 7px; max-width: 100%; }
+.library-tag-filter { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 10px; margin: 0 0 18px; padding: 12px 14px; background: var(--subtle); border: 1px solid var(--line); border-radius: 10px; }
+.library-tag-filter label { display: flex; align-items: center; gap: 9px; min-width: 0; font-size: 12px; flex: 1; }
+.library-tag-filter label > span { flex-shrink: 0; }
+.library-tag-filter select { max-width: min(100%, 460px); min-width: 0; min-height: 36px; flex: 1; border-radius: 7px; padding: 6px 8px; }
+@media (pointer: coarse) { .recommendations-toggle,.recommendations-questions button,.recommendation-settings select,.library-tag-filter select { min-height: 44px; } }
+@media (max-width: 600px) { .paper-recommendations { margin-inline: 12px; } .library-tag-filter { padding: 10px; } }

@@ -76,6 +76,9 @@ import {
 import SettingsDialog from "./SettingsDialog";
 import UsagePage from "./UsagePage";
 import ResearchWelcome from "./ResearchWelcome";
+import PaperRecommendations from "./PaperRecommendations";
+import LibraryTagFilter from "./LibraryTagFilter";
+import { filterLibraryTag } from "./library-tags";
 import AssistantDock, { defaultAssistantWidth } from "./AssistantDock";
 import { readCompanionMode, saveCompanionMode, type CompanionMode } from "./assistant-layout";
 import { selectionErrorMessage } from "./selection-errors";
@@ -183,6 +186,8 @@ export default function App() {
     () => localStorage.getItem("pw-theme") || "light",
   );
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<'recommendations' | undefined>();
+  useEffect(() => { if (!showSettings) setSettingsSection(undefined); }, [showSettings]);
   const [settings, setSettings] = useState<Settings>({
     provider: "openai",
     baseUrl: "",
@@ -193,6 +198,7 @@ export default function App() {
   const [url, setUrl] = useState("");
   const [importing, setImporting] = useState(false);
   const [query, setQuery] = useState("");
+  const [libraryTag, setLibraryTag] = useState('');
   const [results, setResults] = useState<Paper[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchSource, setSearchSource] = useState("all");
@@ -465,7 +471,10 @@ export default function App() {
           "[role=dialog] button:not(:disabled), [role=dialog] input:not(:disabled), [role=dialog] select, [role=dialog] textarea, [role=dialog] a[href]",
         ),
       ).filter((el) => el.offsetParent !== null);
-    const timer = setTimeout(() => focusable()[0]?.focus(), 0);
+    const timer = setTimeout(() => {
+      const target = showSettings && settingsSection === 'recommendations' ? document.getElementById('recommendation-enabled') : undefined;
+      (target || focusable()[0])?.focus();
+    }, 0);
     const trap = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !importing) {
         setShowImport(false);
@@ -491,7 +500,7 @@ export default function App() {
       document.removeEventListener("keydown", trap);
       previous?.focus();
     };
-  }, [showImport, showSettings, showCite, importing]);
+  }, [showImport, showSettings, showCite, importing, settingsSection]);
   async function refresh() {
     const r = await api<{ papers: Paper[] }>("/papers");
     setPapers(r.papers);
@@ -1234,12 +1243,13 @@ export default function App() {
     ["research", Sparkles, t("研究助手")],
     ["usage", BarChart3, t("API 用量", "API usage")],
   ];
-  const list =
+  const unfilteredList =
     view === "saved"
       ? papers.filter((p) => p.favorite)
       : view === "discover" && results !== null
         ? results
         : papers;
+  const list = view === 'library' || view === 'saved' ? filterLibraryTag(unfilteredList, libraryTag) : unfilteredList;
   async function newConversation() {
     if (conversationBusy || chatting) return;
     setConversationBusy(true);
@@ -1399,11 +1409,15 @@ export default function App() {
         </>
         <div className="conversation-frame">
         <div className="conversation" ref={chatScroll.ref} onScroll={chatScroll.onScroll} tabIndex={0} aria-label={t("对话消息", "Conversation messages")}>
+          {!full && paper && <PaperRecommendations key={paper.id} paper={paper} settings={settings} language={language} hasConversation={chat.length > 0}
+            disabled={chatting || conversationBusy || copyingAgent} onConfigure={() => { setSettingsSection('recommendations'); setShowSettings(true); }} onQuestion={question => {
+              setSelectedPassage(null); setPrompt(question); setAssistant(true); composerRef.current?.focus();
+            }}/>}
           {chat.length === 0 ? full ? (
             <ResearchWelcome hasPapers={papers.length > 0} disabled={chatting || conversationBusy || copyingAgent || importing}
               onImport={() => setShowImport(true)}
               onQuestion={question => { setPrompt(question); composerRef.current?.focus(); }}/>
-          ) : (
+          ) : settings.recommendations?.enabled ? null : (
             <div className="assistant-welcome">
               <div className="assistant-symbol">
                 <Sparkles size={27} strokeWidth={1.2} />
@@ -1414,7 +1428,7 @@ export default function App() {
                 {t("或在这篇论文的基础上探索。")}
               </h2>
               <p>{t("从一个问题开始，找到值得深究的线索。")}</p>
-              <div className="suggestion-grid">
+              {!settings.recommendations?.enabled && <div className="suggestion-grid">
                 {suggestions().map((s, i) => (
                   <button key={s} onClick={() => submitQuestion(s)} disabled={chatting||conversationBusy||copyingAgent}>
                     <span>
@@ -1431,7 +1445,7 @@ export default function App() {
                     <ArrowUpRight size={13} />
                   </button>
                 ))}
-              </div>
+              </div>}
             </div>
           ) : (
             <div className="messages">
@@ -2213,6 +2227,7 @@ export default function App() {
                   </button>
                 </div>
               )}
+              {(view === 'library' || view === 'saved') && <LibraryTagFilter papers={unfilteredList} selected={libraryTag} onSelect={setLibraryTag}/>}
               <section className="papers-section">
                 <div className="section-heading">
                   <h2>
@@ -2347,14 +2362,14 @@ export default function App() {
                       </span>
                     </div>
                     <h3>
-                      {results !== null
+                      {(view === 'library' || view === 'saved') && libraryTag ? t('这个分类下还没有论文', 'No papers in this category') : results !== null
                         ? t("还没有找到相关论文")
                         : view === "saved"
                           ? t("把值得记住的论文留在这里")
                           : t("你的下一篇好论文，在这里。")}
                     </h3>
                     <p>
-                      {results !== null
+                      {(view === 'library' || view === 'saved') && libraryTag ? t('换一个分类，或清除筛选查看全部论文。', 'Choose another category or clear the filter to see all papers.') : results !== null
                         ? t("换个关键词，或选择其他搜索来源再试一次。")
                         : view === "saved"
                           ? t("在论文页面点击收藏，即可加入这份阅读清单。")

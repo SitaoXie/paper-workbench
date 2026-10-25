@@ -51,6 +51,14 @@ Saving a connection in the sidebar or CLI persists its key, endpoint, model list
 
 When using a remote model, the selected paper excerpts and question are sent to that configured provider. External paper search and URL import contact their source services. No public commenting or publication feature is included.
 
+## Paper question recommendations
+
+In model settings, enable **Suggested questions** and choose its dedicated connection and model. Opening a paper assistant then generates three to five questions from the extracted source text. The feature is off by default, independent of the chat model, and can be disabled at any time. Choosing a question fills the editable composer; it never sends a question automatically.
+
+Saved recommendations are reused for the same paper content, language and model configuration. **New questions** explicitly refreshes them. Chinese and English have separate cached results. Generation appears under recommendations in API usage; requests already started may still consume tokens after closing or disabling the feature. Questions are model suggestions and may contain mistaken premises, so check them against the source. This feature uses a configured API, not an agent subscription.
+
+Library and saved-paper views also support filtering by locally stored category tags. Tags and paper metadata stay in the runtime data directory.
+
 ## Figure understanding
 
 Text-only models can use source text and figure captions and place actual cropped PDF figures near the relevant paragraph. The interface labels that image pixels were not analyzed. In model settings, explicitly declare image-input capability for a model and optionally select a separate visual connection/model. Names never imply capability. Figure analysis is opt-in: the browser renders the selected PDF crop and sends that image only when Analyze is clicked. The model's observations are stored with the source page, crop, model, image hash, and limitations; image bytes are not retained in those records. New observations are not used in later readings or questions until explicitly included. They remain unverified secondary evidence after inclusion. A changed PDF or crop makes older evidence stale.

@@ -11,6 +11,7 @@ import {
   Loader2,
   Plus,
   ShieldCheck,
+  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
@@ -19,7 +20,9 @@ import {
   type Settings,
   type ModelProfile,
   type VisionSettings,
+  type RecommendationSettings,
 } from "./types";
+import "./paper-recommendations.css";
 
 type Draft = ModelProfile & {
   apiKey?: string;
@@ -74,6 +77,7 @@ export default function SettingsDialog({
   const [vision, setVision] = useState<VisionSettings>(
     () => current.vision || { enabled: false },
   );
+  const [recommendations, setRecommendations] = useState<RecommendationSettings>(() => current.recommendations || { enabled: false });
   const declaredModels = (profile: Draft) => [
     ...new Set(
       [...profile.modelText.split(/[\n,，]+/), profile.model]
@@ -106,6 +110,7 @@ export default function SettingsDialog({
     setActive(current.activeProfileId || profileList(current)[0].id);
     setSelected(current.activeProfileId || profileList(current)[0].id);
     setVision(current.vision || {enabled:false});
+    setRecommendations(current.recommendations || { enabled: false });
   }, [current, sharedWrite.pending, busy]);
   const draft = profiles.find((p) => p.id === selected) || profiles[0];
   const update = (patch: Partial<Draft>) => {
@@ -122,6 +127,8 @@ export default function SettingsDialog({
         origin(patch.baseUrl) !== origin(draft.baseUrl));
     if (destinationChanged && vision.profileId === draft.id)
       setVision((old) => ({ ...old, enabled: false }));
+    if (destinationChanged && recommendations.profileId === draft.id)
+      setRecommendations(old => ({ ...old, enabled: false }));
     setProfiles((ps) =>
       ps.map((profile) =>
         profile.id !== draft.id
@@ -145,6 +152,7 @@ export default function SettingsDialog({
   const payload = () => ({
     activeProfileId: active,
     vision,
+    recommendations,
     profiles: profiles.map(({ extra, modelText, ...p }) => {
       const models = [
         ...new Set(
@@ -178,6 +186,8 @@ export default function SettingsDialog({
     try {
       const body = payload();
       if (action === "save") {
+        if (recommendations.enabled && !profiles.some(profile => profile.id === recommendations.profileId && declaredModels(profile).includes(recommendations.model || '')))
+          throw new Error(t('请选择推荐问题使用的连接与模型。', 'Choose a connection and model for question recommendations.'));
         if (
           vision.enabled &&
           (!visionProfile || !visionModels.includes(vision.model || ""))
@@ -195,6 +205,7 @@ export default function SettingsDialog({
           setProfiles(profileList(s).map(toDraft));
           setActive(s.activeProfileId || active);
           setVision(s.vision || { enabled: false });
+          setRecommendations(s.recommendations || { enabled: false });
           setFeedback(t("配置已保存"));
         });
         if (!result.ok) throw new Error(result.error || t("其他模型配置正在保存，请稍后重试。", "Another model setting is being saved. Try again shortly."));
@@ -237,6 +248,7 @@ export default function SettingsDialog({
     setSelected(remaining[0].id);
     if (active === draft.id) setActive(remaining[0].id);
     if (vision.profileId === draft.id) setVision({ enabled: false });
+    if (recommendations.profileId === draft.id) setRecommendations({ enabled: false });
   }
   return (
     <div
@@ -547,6 +559,23 @@ export default function SettingsDialog({
             </>
           )}
         </section>
+        <section className="recommendation-settings" aria-label={t('推荐问题设置', 'Question recommendation settings')}>
+          <h3><Sparkles size={17}/>{t('自动推荐问题', 'Suggested questions')}</h3>
+          <p>{t('打开论文助手时，根据原文自动生成一组探索问题，并复用已保存的结果。点击问题只填入草稿，修改后再发送。', 'Opening a paper assistant generates question starters from the source, reusing saved results when available. Choosing a question fills an editable draft; it does not send it.')}</p>
+          <label className="checkbox-label"><input id="recommendation-enabled" type="checkbox" disabled={!!busy || sharedWrite.pending} checked={recommendations.enabled} onChange={event => {
+            const enabled = event.target.checked;
+            const profile = profiles.find(profile => profile.id === recommendations.profileId) || profiles.find(profile => profile.id === active) || profiles[0];
+            const models = declaredModels(profile);
+            setRecommendations({ enabled, profileId: profile.id, model: models.includes(recommendations.model || '') ? recommendations.model : profile.model || models[0] });
+          }}/>{t('启用自动推荐', 'Enable automatic recommendations')}</label>
+          {recommendations.enabled && <><label htmlFor="recommendation-model">{t('推荐问题专用模型', 'Dedicated recommendation model')}</label>
+            <select id="recommendation-model" disabled={!!busy || sharedWrite.pending} value={JSON.stringify([recommendations.profileId || '', recommendations.model || ''])} onChange={event => {
+              const [profileId, model] = JSON.parse(event.target.value); setRecommendations({ enabled: true, profileId, model });
+            }}><option value={JSON.stringify(['',''])}>{t('选择连接与模型', 'Choose a connection and model')}</option>
+              {profiles.map(profile => <optgroup key={profile.id} label={profile.name}>{declaredModels(profile).filter(Boolean).map(model => <option value={JSON.stringify([profile.id,model])} key={model}>{model}</option>)}</optgroup>)}
+            </select></>}
+          <p>{t('与当前问答模型独立。生成会把论文选段发送给所选 API，并计入用量；默认关闭，可随时停用。已开始的请求可能仍产生消耗。', 'Independent of the chat model. Generation sends paper excerpts to the selected API and is tracked in usage. Off by default; disable any time. Requests already started may still incur usage.')}</p>
+        </section>
         <details className="advanced-settings">
           <summary>
             {t("高级请求参数")} <ChevronDown size={12} />
@@ -596,7 +625,8 @@ export default function SettingsDialog({
           <ShieldCheck size={17} />
           <p>
             {t(
-              "密钥仅保存在本机服务端。配置和论文不随源码分享；只有主动生成或提问时才向所选服务发送内容。",
+              "密钥仅保存在本机服务端。配置和论文不随源码分享；生成、提问或启用自动推荐时会向所选服务发送相关内容。",
+              "Keys stay on your local server. Configuration and papers are not shared with the source code. Generation, questions and enabled automatic recommendations send relevant content to your chosen provider.",
             )}
           </p>
         </div>

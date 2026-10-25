@@ -6,6 +6,7 @@ import { currentVisualEvidence, visualEvidenceMatches } from "./vision.mjs";
 import { usableInteractiveTranslation, INTERACTIVE_TRANSLATION_INCOMPLETE } from "./interactive.mjs";
 import { captionSources, usableFigureCaptions, CAPTION_TRANSLATION_INCOMPLETE } from "./captions.mjs";
 import { usableTranslationBindings } from "./translation-bindings.mjs";
+import { recommendationSourceRevision } from './recommendation-source.mjs';
 
 export const defaultSettings = {
   provider: "openai",
@@ -20,7 +21,7 @@ export const defaultSettings = {
 
 // Keep the active profile mirrored at top level for older clients and callers.
 export function normalizeProfiles(settings = defaultSettings) {
-  const { profiles: existing, activeProfileId, vision, ...legacy } = settings;
+  const { profiles: existing, activeProfileId, vision, recommendations, ...legacy } = settings;
   const profiles =
     Array.isArray(existing) && existing.length
       ? existing
@@ -39,7 +40,7 @@ export function normalizeProfiles(settings = defaultSettings) {
   }
   const active =
     profiles.find((profile) => profile.id === activeProfileId) || profiles[0];
-  return { ...active, profiles, activeProfileId: active.id, vision: vision || { enabled: false } };
+  return { ...active, profiles, activeProfileId: active.id, vision: vision || { enabled: false }, recommendations: recommendations || { enabled: false, profileId: '', model: '' } };
 }
 
 export class Store {
@@ -211,7 +212,8 @@ export function publicReadingTranslation(translation, original, { language, page
 }
 
 export function publicPaper(paper, full = true) {
-  const { filePath, ...result } = paper;
+  const { filePath, recommendationCache: _recommendationCache, ...result } = paper;
+  result.recommendationSourceRevision = recommendationSourceRevision(paper);
   Object.assign(result, readingState(paper));
   result.readingVersions = result.readingVersions.map(version => ({ ...version,
     figures: version.figures || paper.figures || [],
