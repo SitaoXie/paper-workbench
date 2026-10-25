@@ -1,3 +1,4 @@
+import {citationHighlightLifetime,readyPdfTextLayer} from './citation-highlight';
 import {
   useCallback,
   useEffect,
@@ -171,7 +172,7 @@ function restoredInkDrafts(url: string): InkDraft[] {
 }
 
 /** Only nearby pages own canvases. Offscreen pages retain their exact geometry. */
-function RenderedPage({
+export function RenderedPage({
   document,
   number,
   scale,
@@ -188,6 +189,7 @@ function RenderedPage({
   focusedAnnotation,
   language,
   searchMatch,
+  citationTarget = false,
   onSearchLocated,
   paperColors,
 }: {
@@ -207,7 +209,8 @@ function RenderedPage({
   focusedAnnotation?: string;
   language: string;
   searchMatch: PdfSearchMatch | null;
-  onSearchLocated: (match: PdfSearchMatch, rect: DOMRect) => void;
+  citationTarget?: boolean;
+  onSearchLocated: (match: PdfSearchMatch, rect?: DOMRect) => void;
   paperColors: "theme" | "original";
 }) {
   const t = (zh: string, en: string) => (language.startsWith("en") ? en : zh);
@@ -232,16 +235,18 @@ function RenderedPage({
   }, [closeReference]);
   const searchLocated = useRef(onSearchLocated); searchLocated.current = onSearchLocated;
   useLayoutEffect(() => {
-    const container = surface.current?.querySelector<HTMLElement>(".pdf-text-layer[data-rendered='true']");
-    if (!active || !searchMatch || !container) { setSearchRects([]); return; }
+    const container = readyPdfTextLayer(surface.current,scale);
+    if (!active || !searchMatch || !container) { setSearchRects([]); if(searchMatch)searchLocated.current(searchMatch); return; }
     const result = highlightPdfSearchMatch(container, searchMatch);
     setSearchRects(result.rects);
-    if (result.firstRect) searchLocated.current(searchMatch, result.firstRect);
+    searchLocated.current(searchMatch, result.firstRect);
   }, [searchMatch, textRevision, active, scale]);
   useEffect(() => {
     const element = surface.current;
     if (!element) return;
     element.replaceChildren();
+    setSearchRects([]);
+    if(searchMatch)searchLocated.current(searchMatch);
     if (!active) return;
     let disposed = false;
     let renderTask: RenderTask | undefined;
@@ -301,6 +306,7 @@ function RenderedPage({
         await textLayer.render();
         if (!disposed) {
           bindPdfTextLayerItems(textLayer.textDivs, content.items);
+          textContainer.dataset.renderScale = String(scale);
           textContainer.dataset.rendered = "true";
           setTextRevision(value => value + 1);
         }
@@ -414,6 +420,7 @@ function RenderedPage({
     <div
       className="pdf-continuous-page"
       data-pdf-page={number}
+      data-citation-target={citationTarget || undefined}
       style={{ width, height }}
       aria-label={t(`第 ${number} 页`, `Page ${number}`)}
     >
@@ -560,10 +567,12 @@ export default function PdfReader({
   useEffect(() => { setOutlineOpen(false); }, [url, active]);
   const [searchMatch, setSearchMatch] = useState<PdfSearchMatch | null>(null);
   const [citationMatch, setCitationMatch] = useState<PdfSearchMatch | null>(null);
-  const [citationStatus, setCitationStatus] = useState<"loading" | "matched" | "missing" | "ambiguous" | null>(null);
+  const [citationStatus, setCitationStatus] = useState<"loading" | "matched" | "missing" | "ambiguous" | "page" | null>(null);
   const citationRequest = useRef(0);
-  const citationFade = useRef<ReturnType<typeof setTimeout>>(undefined);
-  useEffect(()=>()=>clearTimeout(citationFade.current),[]);
+  const citationLifetime = useRef(citationHighlightLifetime());
+  const [citationPage,setCitationPage]=useState<number|null>(null);
+  useEffect(()=>()=>citationLifetime.current.dispose(),[]);
+  useEffect(()=>{if(!active){citationLifetime.current.pause();setCitationPage(null);setCitationStatus(current=>current==="page"?null:current);}},[active]);
   const processedCitation = useRef<{document:PDFDocumentProxy;nonce:number} | null>(null);
   const searchButton = useRef<HTMLButtonElement>(null);
   const searchOriginSaved = useRef(false);
@@ -1082,14 +1091,21 @@ export default function PdfReader({
   }, [navigation?.nonce, active, document, width, zoom]);
 
   useEffect(() => {
-    if (!active || !document || !navigation) return;
+    if (!active || !document || !navigation || !width) return;
     if (processedCitation.current?.document === document && processedCitation.current.nonce === navigation.nonce) return;
     processedCitation.current = {document,nonce:navigation.nonce};
     const request = ++citationRequest.current;
-    clearTimeout(citationFade.current);
-    setCitationMatch(null); setCitationStatus(null);
+    const citationKey=`citation:${navigation.nonce}`;
+    citationLifetime.current.begin(citationKey);
+    setCitationPage(null);setCitationMatch(null); setCitationStatus(null);
     const quote = navigation?.quote?.trim();
-    if (navigation.position || !quote || quote.length > 500) return;
+    if (navigation.position) return;
+    setSearchOpen(false);setSearchMatch(null);
+    if (!quote || quote.length > 500) {
+      setCitationPage(navigation.page);setCitationStatus("page");
+      citationLifetime.current.shown(citationKey,()=>{setCitationPage(null);setCitationStatus(current=>current==="page"?null:current);});
+      return;
+    }
     let disposed = false, finished = false;
     setSearchOpen(false); setSearchMatch(null); setCitationStatus("loading");
     const pageNumber = navigation.page;
@@ -1103,13 +1119,13 @@ export default function PdfReader({
       const {matches} = searchPdfText({pages:[page],pageCount:1,indexed:1,failedPages:[]},quote,2);
       if (matches.length !== 1) { setCitationStatus(matches.length ? "ambiguous" : "missing"); return; }
       searchLocatedKey.current = "";
-      setCitationMatch(matches[0]); setCitationStatus("matched");
+      setCitationMatch({...matches[0],key:citationKey});
     })().catch(() => { if (!disposed && request === citationRequest.current) { finished = true; setCitationStatus("missing"); } });
     return () => {
       disposed = true;
       if (!finished && request === citationRequest.current) processedCitation.current = null;
     };
-  }, [navigation?.nonce, document, active]);
+  }, [navigation?.nonce, document, active, width]);
 
   useLayoutEffect(() => {
     const element = host.current;
@@ -1202,6 +1218,7 @@ export default function PdfReader({
   const navigateToPage = (number: number, point?: {x?:number;y?:number}) => {
     if (!active || !document || !host.current) return;
     citationRequest.current++;
+    citationLifetime.current.dispose();setCitationPage(null);
     setCitationMatch(null); setCitationStatus(null);
     const next = Math.max(
       1,
@@ -1223,6 +1240,7 @@ export default function PdfReader({
     setSearchMatch(match);
     if (!match || !host.current || !activeRef.current) return;
     citationRequest.current++;
+    citationLifetime.current.dispose();setCitationPage(null);
     setCitationMatch(null); setCitationStatus(null);
     if (!searchOriginSaved.current) { rememberJump(); searchOriginSaved.current = true; }
     searchLocatedKey.current = "";
@@ -1230,14 +1248,16 @@ export default function PdfReader({
     if (sheet) host.current.scrollTop = Math.max(0, sheet.offsetTop - 16);
     updateVisiblePages();
   };
-  const locateSearchText = (match: PdfSearchMatch, rect: DOMRect) => {
+  const locateSearchText = (match: PdfSearchMatch, rect?: DOMRect) => {
     const element = host.current;
-    if (!element || searchLocatedKey.current === match.key) return;
-    searchLocatedKey.current = match.key;
-    if (match.key === citationMatch?.key) {
-      clearTimeout(citationFade.current);
-      citationFade.current = setTimeout(()=>{setCitationMatch(current=>current?.key===match.key?null:current);setCitationStatus(current=>current==='matched'?null:current);},6000);
+    const isCitation=match.key===citationMatch?.key;
+    if(!rect||!activeRef.current||!element?.clientHeight){if(isCitation)citationLifetime.current.pause();return;}
+    if(isCitation){
+      setCitationStatus("matched");
+      citationLifetime.current.shown(match.key,()=>{setCitationMatch(current=>current?.key===match.key?null:current);setCitationStatus(current=>current==="matched"?null:current);});
     }
+    if (searchLocatedKey.current === match.key) return;
+    searchLocatedKey.current = match.key;
     const bounds = element.getBoundingClientRect();
     element.scrollTop += rect.top - bounds.top - Math.min(100, element.clientHeight * .22);
     if (rect.left < bounds.left + 16 || rect.right > bounds.right - 16)
@@ -1247,6 +1267,7 @@ export default function PdfReader({
   };
   const returnToReading = () => {
     citationRequest.current++;
+    citationLifetime.current.dispose();setCitationPage(null);
     setCitationMatch(null); setCitationStatus(null);
     const position = navigationHistory.at(-1);
     if (!position) { onReturnToOverview?.(); return; }
@@ -1910,7 +1931,8 @@ export default function PdfReader({
                 scale={scale}
                 width={size.width * scale}
                 height={size.height * scale}
-                active={active && ((index + 1 >= visible.first && index + 1 <= visible.last) || (!!draftSelection && !selectionTooLong(draftSelection) && (draftRestoring || !draftFolded) && draftSelection.segments.some(segment => segment.page === index + 1)))}
+                citationTarget={citationPage===index+1}
+                active={active && (citationMatch?.page===index+1 || (index + 1 >= visible.first && index + 1 <= visible.last) || (!!draftSelection && !selectionTooLong(draftSelection) && (draftRestoring || !draftFolded) && draftSelection.segments.some(segment => segment.page === index + 1)))}
                 onNavigate={navigateToPage}
                 searchMatch={searchMatch?.page === index + 1 ? searchMatch : citationMatch?.page === index + 1 ? citationMatch : null}
                 onSearchLocated={locateSearchText}
@@ -1939,7 +1961,7 @@ export default function PdfReader({
         <button aria-label={t("关闭保存提示", "Dismiss save status")} onClick={() => { setAnnotationStatus(""); setAnnotationError(""); }}><X size={14}/></button>
       </div>}
       {active && citationStatus && <div className="pdf-citation-status" role="status">
-        {citationStatus === "loading" ? <><Loader2 size={13} className="spin"/>{t("正在核对引用原文…", "Locating the source passage…")}</> : citationStatus === "matched" ? t(`已定位原文 · p.${citationMatch?.page}`, `Source passage located · p.${citationMatch?.page}`) : citationStatus === "ambiguous" ? t("此页有多处相同文字，已打开源页。", "Several passages match. Opened the source page.") : t("引文未在此页精确匹配，已打开源页。", "No exact passage match. Opened the source page.")}
+        {citationStatus === "loading" ? <><Loader2 size={13} className="spin"/>{t("正在核对引用原文…", "Locating the source passage…")}</> : citationStatus === "matched" ? t(`已定位原文 · p.${citationMatch?.page}`, `Source passage located · p.${citationMatch?.page}`) : citationStatus === "page" ? t(`已打开第 ${citationPage} 页 · 此引用未提供段落原文`, `Opened page ${citationPage} · No exact passage was supplied`) : citationStatus === "ambiguous" ? t("此页有多处相同文字，已打开源页。", "Several passages match. Opened the source page.") : t("引文未在此页精确匹配，已打开源页。", "No exact passage match. Opened the source page.")}
         <button aria-label={t("关闭引用定位提示", "Dismiss citation status")} onClick={() => setCitationStatus(null)}><X size={13}/></button>
       </div>}
       {active && (navigationHistory.length > 0 || onReturnToOverview) && <button className="pdf-reading-return" onClick={returnToReading}><ArrowLeft size={15} /><span>{navigationHistory.length ? t("回到上次阅读位置", "Back to previous position") : t("返回摘要阅读位置", "Back to overview position")}</span></button>}

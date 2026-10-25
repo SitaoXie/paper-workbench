@@ -35,3 +35,11 @@ The source-figure lightbox previously measured client dimensions changed by its 
 Markdown fenced-code renderers now have stable component identities. Parent scroll-status updates and streaming prose no longer unmount diagrams, reset their zoom, or temporarily collapse their height. The conversation observer watches the actual transcript even when recommendations precede it, and scroll restoration ignores differences of at most one pixel.
 
 Both new regressions failed against the previous implementation and pass with the fix: diagram DOM/zoom survives repeated parent updates, and bottom following handles late content growth without fractional-pixel scroll writes or pulling an away reader to the bottom. The complete suite passed 463 tests and the production build passed. DOM tests simulate layout geometry; live browser visual acceptance remains outstanding.
+
+## Citation highlight readiness and repeat clicks
+
+Passage highlights now wait for text-layer geometry from the current PDF scale. A repaint or hidden reader pauses expiry; completion restarts a full six-second visible interval. Each navigation has a distinct identity, so repeating the same quote does not reuse the previous click's location or expiry, and queued old timers cannot clear a newer highlight. The target page remains rendered while its citation is pending. “Source passage located” is shown only after actual highlight rectangles are available.
+
+Page-only references explicitly show a target-page outline and a notice that no passage was supplied. They do not fabricate a paragraph match; missing and ambiguous quoted passages retain their existing fallback explanations.
+
+465 automated tests and the production build passed. New tests cover delayed text rendering, stale zoom layers, expiry during repaint, repeated navigation and queued timer cancellation, plus the distinction between a page target and a passage highlight. Tests exercise the page component with simulated geometry; live browser acceptance remains outstanding.

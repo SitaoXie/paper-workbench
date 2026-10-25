@@ -1300,3 +1300,5 @@ html[data-theme="dark"] .pdf-reader[data-paper-colors="theme"] {
 .reader-inline-underline { position:absolute; height:7px; transform:translateY(-3px); border:0; background:transparent; pointer-events:auto; cursor:pointer; padding:0; border-radius:2px; }
 .reader-inline-underline:hover,.reader-inline-underline:focus-visible { background:color-mix(in srgb, var(--accent) 35%, transparent); outline:1px solid var(--accent); }
 .pdf-restore-markers { position:absolute; bottom:12px; left:16px; z-index:8; padding:6px 10px; border-radius:16px; border:1px solid var(--line); background:var(--panel); color:var(--muted); font-size:12px; }
+/* Page-only citations identify the page; never invent a paragraph match. */
+.pdf-continuous-page[data-citation-target="true"] { outline:3px solid color-mix(in srgb,var(--accent) 70%,transparent); outline-offset:-3px; }
