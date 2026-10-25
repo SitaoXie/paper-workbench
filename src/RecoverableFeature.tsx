@@ -4,7 +4,7 @@ import "./recoverable-feature.css";
 
 type Props = {
   children: ReactNode;
-  feature: "reader" | "figure" | "figure-manager";
+  feature: "reader" | "figure" | "figure-manager" | "visual";
   onExit?: () => void;
   onBeforeReload?: () => void;
 };
@@ -33,6 +33,7 @@ function UnavailableFeature({ feature, onExit, onBeforeReload }: Props) {
   }, [feature]);
   const title = feature === "reader" ? t("论文阅读器暂时无法显示", "The PDF reader is unavailable")
     : feature === "figure-manager" ? t("图表编辑器暂时无法显示", "The figure editor is unavailable")
+    : feature === "visual" ? t("解读图形暂时无法显示", "The explanatory visual is unavailable")
     : t("原文图表暂时无法显示", "The source figure is unavailable");
   const content = <section className="feature-unavailable" role="alert">
     <h3>{title}</h3>

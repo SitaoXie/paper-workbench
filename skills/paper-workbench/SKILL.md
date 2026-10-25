@@ -32,6 +32,8 @@ For figures, cite a real one-based PDF page and a visually verified normalized c
 
 ## Interactive readings and visual evidence
 
+For diagrams or numeric comparisons inside an answer/overview, read [inline visuals](references/inline-visuals.md). Use the supported declarative Mermaid/chart fences near the relevant paragraph; distinguish explanatory drawings from original source figures.
+
 For an interactive reading website, retain the same canonical Markdown overview and supply `format: "interactive"` plus validated `interactive` blocks in the insight payload. Read [references/agent-import.md](references/agent-import.md) for the schema. Include concept cards, source figure explanations, and self-checks only when useful to the reader. The application supplies all interactions and can export an offline HTML file. Do not provide executable scripts, invented simulations, or a separate competing report.
 
 When adding interactivity to an **existing** reading, use the [derived-version contract](references/agent-import.md#derived-interactive-versions) instead of resubmitting summary/report Markdown. A copied task fixes the original version, `derivationRevision` and task UUID. Submit only the companion blocks; the server preserves original text, language, focus and figure geometry, appends an attributed version, and leaves the active selection unchanged. A translated display is not a new original. Check the returned task/version before retrying an uncertain save.

@@ -1,6 +1,7 @@
+import CitationLink from "./CitationLink";
 import remarkPageCitations from "./remark-page-citations";
 import { paperCitation } from "./paper-citation";
-import { createElement, lazy, Suspense, useMemo, type HTMLAttributes } from "react";
+import { Children, isValidElement, createElement, lazy, Suspense, useMemo, type HTMLAttributes } from "react";
 import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import { readingSectionId, type ReadingSection } from "./reading-sections";
 import remarkGfm from "remark-gfm";
@@ -14,6 +15,7 @@ import type { Figure } from "./types";
 import { figureCaption, type FigureCaptionPresentation } from "./figure-captions";
 import { readingFigureSlots } from "./reading-figures";
 import RecoverableFeature from "./RecoverableFeature";
+const ReadingVisual = lazy(() => import("./ReadingVisual"));
 const PdfFigure = lazy(() => import("./PdfFigure"));
 // Keep the renderer identity stable so unrelated updates do not replace a
 // selected table's DOM nodes or discard its horizontal reading position.
@@ -102,6 +104,14 @@ export default function Mark({
       components={{
         ...headings,
         table: MarkdownTable,
+        pre: ({children}) => {
+          const code=Children.toArray(children)[0];
+          if(isValidElement<{className?:string;children?:string}>(code)) {
+            const kind=code.props.className==='language-mermaid'?'mermaid':code.props.className==='language-chart'?'chart':undefined;
+            if(kind && typeof code.props.children==='string')return <RecoverableFeature feature="visual"><Suspense fallback={<p>{t('正在准备图形…','Preparing visual…')}</p>}><ReadingVisual kind={kind} source={code.props.children}/></Suspense></RecoverableFeature>;
+          }
+          return <pre>{children}</pre>;
+        },
         img: ({ alt }) => (
           <span className="muted-label">
             [{t("图片", "Image")}: {alt || t("外部图片，未自动加载", "External image, not loaded automatically")}]
@@ -112,14 +122,7 @@ export default function Mark({
           if(source)return onSource?<button className="citation-link" title={source==='abstract'?t('查看原始摘要','View original abstract'):t('查看来源正文','View source text')} onClick={()=>onSource(source)}>{source==='abstract'?t('原始摘要','Abstract'):t('来源正文','Source text')}</button>:<span>{children}</span>;
           const citation = paperCitation(href, title);
           return citation && onPage ? (
-            <button
-              className="citation-link"
-              title={citation.quote ? t(`定位原文 · p.${citation.page}`, `Locate source passage · p.${citation.page}`) : undefined}
-              onClick={() => onPage(citation.page, citation.quote)}
-            >
-              {children}
-              {citation.quote && typeof children === "string" && !/^p\./i.test(children) && <small> · p.{citation.page}</small>}
-            </button>
+            <CitationLink page={citation.page} quote={citation.quote} onPage={onPage}>{children}</CitationLink>
           ) : (
             <a href={href} target="_blank" rel="noreferrer">
               {children}

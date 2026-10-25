@@ -1,0 +1,9 @@
+.citation-source-preview { position:fixed; z-index:150; box-sizing:border-box; overflow:auto; border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--text); padding:12px; box-shadow:0 12px 45px #0003; font-size:13px; }
+.citation-source-preview header { display:flex; justify-content:space-between; align-items:center; }
+.citation-source-preview header button { border:0; background:transparent; color:var(--muted); cursor:pointer; font-size:20px; padding:0 6px; }
+.citation-source-preview canvas { max-width:100%; height:auto; background:white; border-radius:6px; display:block; margin:8px auto; }
+.citation-source-preview canvas[hidden] { display:none; }
+.citation-source-text { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.6; margin:8px 0; }
+.citation-source-text mark { color:var(--text); background:color-mix(in srgb,#f5cf43 35%,var(--panel)); }
+.citation-match-status { font-size:11px; color:var(--muted); margin:6px 0; }
+.citation-source-preview footer { display:flex; justify-content:flex-end; }

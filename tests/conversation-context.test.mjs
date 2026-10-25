@@ -52,8 +52,9 @@ test("question payload bounds history independently while preserving the full cu
   } });
   assert.ok(body.messages.at(-1).content.startsWith(question));
   assert.ok(body.messages.at(-1).content.includes(JSON.stringify(metadata)));
-  assert.ok(body.messages.slice(1, -1).reduce((sum, message) => sum + message.content.length, 0) <= 4000);
-  assert.match(body.messages[0].content, /Conversation history is incomplete/);
+  assert.ok(body.messages.slice(1, -1).filter(message=>message.role!=="system").reduce((sum, message) => sum + message.content.length, 0) <= 4000);
+  assert.match(body.messages.filter(message=>message.role==="system").map(message=>message.content).join("\n"), /Conversation history is incomplete/);
+  assert.ok(!body.messages[0].content.includes("Conversation history is incomplete"), "dynamic history notices follow the stable source prefix");
   const context = answer.source.inputContext;
   assert.ok(context.sourceCharacters <= 8000); assert.equal(context.historyBudgetCharacters, 4000);
   assert.equal(context.currentQuestionCharacters, body.messages.at(-1).content.length);

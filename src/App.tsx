@@ -1,3 +1,4 @@
+import { CitationSourceContext } from "./CitationLink";
 import ReasoningPanel from "./ReasoningPanel";
 import { streamChat, applyChatEvent, completedChat } from "./chat-stream";
 import { prepareAgentQuestionTask } from "./agent-task";
@@ -1616,6 +1617,7 @@ export default function App() {
     </div>;
   }
   return (
+    <CitationSourceContext.Provider value={view === "paper" ? pdfSource : undefined}>
     <div
       className={`app-shell ${view !== "paper" ? "expanded-navigation" : ""} ${view === "paper" && (assistant || notebook) ? "has-assistant-dock" : ""}`}
       style={{ "--assistant-width": `${dockWidth}px` } as CSSProperties}
@@ -2576,5 +2578,6 @@ export default function App() {
         </div>
       )}
     </div>
+    </CitationSourceContext.Provider>
   );
 }

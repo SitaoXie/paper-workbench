@@ -1,0 +1,16 @@
+.reading-visual { margin:18px 0; border:1px solid var(--line); border-radius:14px; padding:12px 14px; background:var(--panel); min-width:0; overflow:hidden; }
+.reading-visual figcaption { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px; font-size:14px; font-weight:600; }
+.reading-visual figcaption small { color:var(--muted); font-weight:400; font-size:11px; }
+.reading-visual figcaption button { margin-left:auto; font-size:12px; border:1px solid var(--line); border-radius:8px; padding:4px 8px; background:var(--subtle); color:var(--text); }
+.reading-visual iframe { width:100%; height:300px; border:0; display:block; }
+.reading-visual.is-expanded iframe { height:65vh; }
+.reading-visual.is-expanded .reading-chart { min-height:420px; }
+.reading-visual details { margin-top:8px; font-size:12px; color:var(--muted); }
+.reading-visual pre { max-height:280px; overflow:auto; white-space:pre-wrap; }
+.reading-chart { width:100%; display:block; }
+.chart-label { fill:var(--muted); font-size:11px; }
+.chart-grid { stroke:var(--line); }
+.chart-zero { stroke:var(--muted); }
+.chart-selection { min-height:1.5em; font-size:12px; color:var(--muted); }
+.diagram-render-slot { position:fixed; left:-20000px; width:800px; top:0; pointer-events:none; }
+.chart-scroll { max-width:100%; overflow:auto; }

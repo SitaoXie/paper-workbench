@@ -592,6 +592,7 @@ export default function SettingsDialog({
             onChange={(event) => update({ requestTimeoutSeconds: Number(event.target.value) })}
           />
           <p className="field-hint">{t("慢速推理或高清图像可增加等待时间；每个连接独立设置，最多10分钟。", "Allow more time for slow reasoning or high-resolution images. Each connection has its own limit, up to 10 minutes.")}</p>
+          <p className="field-hint">{t("PDF 问答：15 页以内按页序提供完整提取原文；更长论文先给简要资料，再按需读整页。此字符预算用于报告和其他来源，不截断 PDF 问答的单页。", "PDF questions: up to 15 pages are supplied in full order; longer papers start with a brief and load whole pages on demand. This character budget applies to reports and other sources, not truncation within PDF question pages.")}</p>
           <label htmlFor="context-budget">{t("论文上下文预算（字符）")}</label>
           <input disabled={!!busy || sharedWrite.pending}
             id="context-budget"

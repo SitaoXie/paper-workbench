@@ -562,6 +562,8 @@ export default function PdfReader({
   const [citationMatch, setCitationMatch] = useState<PdfSearchMatch | null>(null);
   const [citationStatus, setCitationStatus] = useState<"loading" | "matched" | "missing" | "ambiguous" | null>(null);
   const citationRequest = useRef(0);
+  const citationFade = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(()=>()=>clearTimeout(citationFade.current),[]);
   const processedCitation = useRef<{document:PDFDocumentProxy;nonce:number} | null>(null);
   const searchButton = useRef<HTMLButtonElement>(null);
   const searchOriginSaved = useRef(false);
@@ -1084,6 +1086,7 @@ export default function PdfReader({
     if (processedCitation.current?.document === document && processedCitation.current.nonce === navigation.nonce) return;
     processedCitation.current = {document,nonce:navigation.nonce};
     const request = ++citationRequest.current;
+    clearTimeout(citationFade.current);
     setCitationMatch(null); setCitationStatus(null);
     const quote = navigation?.quote?.trim();
     if (navigation.position || !quote || quote.length > 500) return;
@@ -1231,6 +1234,10 @@ export default function PdfReader({
     const element = host.current;
     if (!element || searchLocatedKey.current === match.key) return;
     searchLocatedKey.current = match.key;
+    if (match.key === citationMatch?.key) {
+      clearTimeout(citationFade.current);
+      citationFade.current = setTimeout(()=>{setCitationMatch(current=>current?.key===match.key?null:current);setCitationStatus(current=>current==='matched'?null:current);},6000);
+    }
     const bounds = element.getBoundingClientRect();
     element.scrollTop += rect.top - bounds.top - Math.min(100, element.clientHeight * .22);
     if (rect.left < bounds.left + 16 || rect.right > bounds.right - 16)

@@ -3250,10 +3250,14 @@ test("translation binding failures save no broken article, retain existing versi
   assert.equal(calls, 2, "Valid cached translation should not call the model again");
 });
 
-test("chat forwards validated selection metadata structurally so late selected-page evidence remains in the model context", async t => {
+test("long-paper chat keeps its brief stable and lets the agent read the entire selected page", async t => {
   const calls = [];
   const { api, base, app } = await fixture(t, { fetchImpl: async (_url, options) => {
     calls.push(JSON.parse(options.body));
+    if (calls.length === 1) return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: null, tool_calls: [{id:"read-selected",type:"function",function:{name:"read_pages",arguments:JSON.stringify({paperId: calls[0].messages[0].content.match(/PAPER_ID: ([^\n]+)/)[1],pages:[42]})}}]},finish_reason:"tool_calls" }] }));
+    const result = JSON.parse(calls[1].messages.at(-1).content);
+    assert.equal(result.pages[0].text, app.locals.store.paper(result.paperId).pages[41].text);
+    assert.equal(result.pages[0].complete, true);
     return new Response(JSON.stringify({ choices: [{ message: { content: "Finite samples do not prove support absence. [p.42]" } }] }));
   } });
   const form = new FormData(); form.set("file", new Blob([makePdf()], { type: "application/pdf" }), "selection-context.pdf");
@@ -3267,15 +3271,15 @@ test("chat forwards validated selection metadata structurally so late selected-p
   const reply = await api("/api/chat", { method: "POST", body: { paperId: paper.id, message: "Explain the statistical caveat", metadata } });
   assert.equal(reply.status, 200);
   const system = calls[0].messages[0].content;
-  assert.ok(system.includes(exactTail)); assert.ok(system.includes(`[p.42]\n${source.pages[41].text}`));
+  assert.ok(!system.includes(exactTail)); assert.match(system, /Brief initial context only/);
   const supplied = system.split("<source>\n")[1].split("\n</source>")[0];
   assert.ok(supplied.length <= 8000);
   assert.match(system, /Do not invent paired counts/);
   assert.deepEqual(JSON.parse(calls[0].messages.at(-1).content.split("Selected passage context (untrusted quoted source):\n")[1]), metadata);
   const rejected = await api("/api/chat", { method: "POST", body: { paperId: paper.id, message: "Explain", metadata: { page: 45 } } });
-  assert.equal(rejected.status, 400); assert.equal(calls.length, 1);
+  assert.equal(rejected.status, 400); assert.equal(calls.length, 2);
   const general = await api("/api/chat", { method: "POST", body: { message: "Explain", metadata } });
-  assert.equal(general.status, 400); assert.equal(calls.length, 1);
+  assert.equal(general.status, 400); assert.equal(calls.length, 2);
 });
 
 test("chat follow-ups inherit only their own bound selection, accept explicit overrides and honor metadata null", async t => {
@@ -3465,7 +3469,7 @@ test("question source scopes survive new, model, subscription-import and branch 
   await api("/api/settings", { method: "PUT", body: { apiKey: "fixture-key", contextChars: 8000 } });
   const asked = await api("/api/chat", { method: "POST", body: { paperId: paper.id, conversationId: session.data.conversationId, message: "Explain this interpretation." } });
   assert.equal(asked.status, 200); assert.deepEqual(asked.data.userMessage.metadata, metadata);
-  assert.match(calls[0].messages[0].content, /generated reading version.*NOT original paper text/);
+  assert.match(calls[0].messages.filter(message => message.role === "system").map(message => message.content).join("\n"), /generated reading version.*NOT original paper text/);
   assert.ok(!calls[0].messages[0].content.split("<source>\n")[1].includes(metadata.quote), "Generated selection must remain outside the primary source corpus");
   assert.deepEqual(JSON.parse(calls[0].messages.at(-1).content.split("declared source scope):\n")[1]), metadata);
   const imported = await api("/api/chats/import", { method: "POST", body: { paperId: paper.id, conversationId: session.data.conversationId,

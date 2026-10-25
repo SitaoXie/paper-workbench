@@ -1,3 +1,5 @@
+import { questionPageContext, extractedPageCount, INITIAL_PAGE_QUOTA, QUESTION_TOOL_CHARACTER_BUDGET } from "./question-pages.mjs";
+import { readingVisualInstructions } from "../shared/reading-visuals.mjs";
 import { readModelStream } from "./model-stream.mjs";
 import { ApiError, modelFetch } from "./network.mjs";
 import { DEFAULT_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
@@ -556,7 +558,7 @@ export async function generateReport(
   const { text: context, ...contextInfo } = focus
     ? questionContextDetails(paper, focus, undefined, settings.contextChars || 44000, { includeOverview: true })
     : paperContextDetails(paper, settings.contextChars || 44000);
-  const reportSystem = `${systemPrompt}\n${readingPolicyPrompt("overview")}\n${sourceCitationInstructions([paper])}\n${evidenceInstructions}\nWrite every report section in the requested language: ${language}. Keep paper titles, technical identifiers, and page citations unchanged when needed. ${styleInstruction} ${lengthInstruction} Size the reading to the available source; short excerpts need a concise reading, not repeated limitations or generic review sections. Create ONE coherent reading document, not a duplicated summary followed by another report. When relevant supplied figures exist, prefer one for a quick overview; for deep readings choose distinct mechanism and evidence roles when available, and for critical readings choose the figures needed for the concerns. Do not force an image quota. Place each immediately after the paragraph it explains using a standalone line exactly :::figure FIGURE_ID. A text-only model has not inspected image pixels; do not claim visual verification. Include the marker in the final answer, not just a mention in prose. Only use ids in available_figures; never invent a figure or use external image URLs. A caption is context, not evidence for numerical or visual claims you cannot verify. ${figureInstructions}\nSource coverage supplied by the application (not a judgment of the paper): ${JSON.stringify({ coverage: contextInfo.coverage, suppliedCharacters: context.length, sourceCharacters: contextInfo.sourceCharacters, extractionTruncated: Boolean(paper.extractionTruncated) })}. Every role must distinguish unavailable input from an omission by the authors. A skeptical draft or earlier model answer is not evidence that the paper omitted a detail; the final editor must remove unsupported absence claims.`;
+  const reportSystem = `${systemPrompt}\n${readingPolicyPrompt("overview")}\n${readingVisualInstructions}\n${sourceCitationInstructions([paper])}\n${evidenceInstructions}\nWrite every report section in the requested language: ${language}. Keep paper titles, technical identifiers, and page citations unchanged when needed. ${styleInstruction} ${lengthInstruction} Size the reading to the available source; short excerpts need a concise reading, not repeated limitations or generic review sections. Create ONE coherent reading document, not a duplicated summary followed by another report. When relevant supplied figures exist, prefer one for a quick overview; for deep readings choose distinct mechanism and evidence roles when available, and for critical readings choose the figures needed for the concerns. Do not force an image quota. Place each immediately after the paragraph it explains using a standalone line exactly :::figure FIGURE_ID. A text-only model has not inspected image pixels; do not claim visual verification. Include the marker in the final answer, not just a mention in prose. Only use ids in available_figures; never invent a figure or use external image URLs. A caption is context, not evidence for numerical or visual claims you cannot verify. ${figureInstructions}\nSource coverage supplied by the application (not a judgment of the paper): ${JSON.stringify({ coverage: contextInfo.coverage, suppliedCharacters: context.length, sourceCharacters: contextInfo.sourceCharacters, extractionTruncated: Boolean(paper.extractionTruncated) })}. Every role must distinguish unavailable input from an omission by the authors. A skeptical draft or earlier model answer is not evidence that the paper omitted a detail; the final editor must remove unsupported absence claims.`;
   const visualProvenance = visualContextProvenance(paper, context);
   if (!canUseModel(settings))
     return {
@@ -731,14 +733,15 @@ export async function answerQuestion(
   const selected = rankQuestionPapers(papers, question, history).slice(0, 8);
   const sourceBudget = settings.contextChars || 44000;
   const completeLength = selected.reduce((sum, paper) => sum + paperContextDetails(paper, sourceBudget).sourceCharacters, 0) + Math.max(0, selected.length - 1) * 7;
-  // Preserve a short source in full when possible, while reserving at least
-  // 20% for tool evidence. Long sources start with a 60% retrieval budget.
+  // Character budgeting below applies to non-PDF sources. PDF questions use
+  // whole pages up to the page quota, or a stable brief with on-demand reads.
   const initialBudget = Math.floor(completeLength <= sourceBudget * .8 ? Math.max(sourceBudget * .6, completeLength) : sourceBudget * .6);
   const perPaperBudget = Math.floor(
     (initialBudget - Math.max(0, selected.length - 1) * 7) /
       Math.max(1, selected.length),
   );
-  const contexts = selected.map(paper => questionContextDetails(paper, question, sourceMetadata, completeLength <= sourceBudget * .8 ? sourceBudget : perPaperBudget));
+  const wholePages = selected.reduce((count,paper)=>count+extractedPageCount(paper),0) <= INITIAL_PAGE_QUOTA;
+  const contexts = selected.map(paper => questionPageContext(paper,{wholePages,header:paperContextHeader(paper)}) || questionContextDetails(paper, question, sourceMetadata, completeLength <= sourceBudget * .8 ? sourceBudget : perPaperBudget));
   const corpus = contexts.map(context => context.text).join("\n\n---\n\n");
   const previous = prepareConversationHistory(history, settings.contextChars || 44000, {
     currentVisualEvidenceIds: new Set(selected.flatMap(paper => currentVisualEvidence(paper).map(evidence => evidence.id))),
@@ -750,8 +753,9 @@ export async function answerQuestion(
   const messages = [
     {
       role: "system",
-      content: `${systemPrompt}\n${readingPolicyPrompt("question")}\n${sourceCitationInstructions(selected)}${selectionNotice}\nDo not invent paired counts, sample sizes, gains/losses or test inputs from a p-value or a selected quote. State those quantities only when the supplied original text explicitly reports them; otherwise say the evidence is missing. A selected quote can omit nearby context. Read supplied page evidence before interpreting it.${previous.notice}\n\nThe user is asking about ${papers.length ? "the following selected source material" : "research in general; no paper is loaded, so do not claim to have read one"}.\n<source>\n${corpus}\n</source>`,
+      content: `${systemPrompt}\n${readingPolicyPrompt("question")}\n${readingVisualInstructions}\n${sourceCitationInstructions(selected)}\nDo not invent paired counts, sample sizes, gains/losses or test inputs from a p-value or a selected quote. State those quantities only when the supplied original text explicitly reports them; otherwise say the evidence is missing. A selected quote can omit nearby context. Read supplied page evidence before interpreting it.\n\nThe user is asking about ${papers.length ? "the following selected source material" : "research in general; no paper is loaded, so do not claim to have read one"}.\n<source>\n${corpus}\n</source>`,
     },
+    ...(selectionNotice || previous.notice ? [{role:"system",content:`Current selection/history context (after the stable paper prefix): ${selectionNotice}${previous.notice}`}] : []),
     ...previous.messages,
     { role: "user", content: currentQuestion },
   ];
@@ -768,7 +772,7 @@ export async function answerQuestion(
     } else onEvent(event);
   } : undefined;
   const agent = await runQuestionAgent({ papers, selected, messages, webSearch, download, onEvent: publish,
-    toolBudget: Math.max(0, sourceBudget - corpus.length), question,
+    toolBudget: Math.max(QUESTION_TOOL_CHARACTER_BUDGET, sourceBudget), question,
     call: (transcript, options) => callModel(settings, transcript, { fetchImpl, signal, ...options }),
     provider: settings.provider });
   const usedPaperIds = new Set([...selected.map(paper => paper.id), ...agent.evidence.steps.flatMap(step => step.references.map(ref => ref.paperId)).filter(Boolean)]);
@@ -782,9 +786,9 @@ export async function answerQuestion(
       kind: "model", model: settings.model, readingPolicy: readingPolicyIdentity, pixelsProvided: false,
       visualEvidenceMode: visualEvidenceIds.length ? "prior-vision-observations" : "none",
       visualEvidenceIds,
-      questionAgent: { ...agent.evidence, initialSources: selected.map((paper, index) => ({ paperId: paper.id, title: paper.title, coverage: contexts[index].coverage, characters: contexts[index].contextCharacters })) },
+      questionAgent: { ...agent.evidence, initialSources: selected.map((paper, index) => ({ paperId: paper.id, title: paper.title, coverage: contexts[index].coverage, characters: contexts[index].contextCharacters, initialPages:contexts[index].initialPages || [], pageCount:contexts[index].pageCount })) },
       inputContext: {
-        sourceCharacters: corpus.length, historyCharacters: previous.characters,
+        initialPageQuota:INITIAL_PAGE_QUOTA, wholePageContext:wholePages, sourceCharacters: corpus.length, historyCharacters: previous.characters,
         historyBudgetCharacters: previous.budget, includedHistoryMessages: previous.messages.length,
         omittedHistoryMessages: previous.omittedMessages, truncatedHistoryMessages: previous.truncatedMessages,
         withdrawnVisualHistoryMessages: previous.withdrawnVisualMessages,

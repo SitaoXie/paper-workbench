@@ -57,10 +57,10 @@ for (const provider of ['openai', 'anthropic']) test(`${provider}: native search
 test('local tools validate scope, preserve exact page ranges and distinguish metadata from PDF pixels', async () => {
   const long = { ...paper, pages: [{ number: 1, text: 'A'.repeat(13000) }] };
   const execute = createQuestionToolbox({ papers: [long] });
-  const first = await execute('read_pages', { paperId: paper.id, pages: [1] }, 4000);
-  const page = first.pages[0]; assert.equal(page.complete, false); assert.equal(page.nextOffset, page.text.length);
-  const next = await execute('read_pages', { paperId: paper.id, pages: [1], offset: page.nextOffset }, 4000);
-  assert.equal(next.pages[0].start, page.end); assert.equal(first.pixelsProvided, false);
+  await assert.rejects(execute('read_pages', { paperId: paper.id, pages: [1] }, 4000), /No page was truncated/);
+  const first = await execute('read_pages', { paperId: paper.id, pages: [1] }, 20000);
+  const page = first.pages[0]; assert.equal(page.complete, true); assert.equal(page.nextOffset, null);
+  assert.equal(page.text, long.pages[0].text); assert.equal(first.pixelsProvided, false);
   for (const args of [{paperId:'other',pages:[1]}, {paperId:paper.id,pages:[3]}, {paperId:paper.id,pages:[0]}, {paperId:paper.id,pages:[1],offset:-1}, {paperId:paper.id,pages:[1],script:'ignored?'}]) await assert.rejects(execute('read_pages', args));
   assert.deepEqual((await execute('search_papers',{query:'unmatched technical term'})).hits, []);
   const textOnly = createQuestionToolbox({papers:[{id:'metadata',metadataOnly:true,abstract:'Only an abstract.'}]});

@@ -42,7 +42,7 @@ type SharedPdf = {
   timer?: ReturnType<typeof setTimeout>;
 };
 const documents = new Map<string, SharedPdf>();
-function acquire(url: string) {
+export function acquire(url: string) {
   let entry = documents.get(url);
   if (!entry) {
     const task = getDocument({
