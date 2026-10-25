@@ -10,6 +10,7 @@ import "./chat-scroll.css";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import {
   ArrowUp,
+  BarChart3,
   ArrowDown,
   ArrowUpRight,
   BookOpen,
@@ -73,6 +74,7 @@ import {
   type Figure,
 } from "./types";
 import SettingsDialog from "./SettingsDialog";
+import UsagePage from "./UsagePage";
 import AssistantDock, { defaultAssistantWidth } from "./AssistantDock";
 import { readCompanionMode, saveCompanionMode, type CompanionMode } from "./assistant-layout";
 import { selectionErrorMessage } from "./selection-errors";
@@ -80,7 +82,7 @@ import { pageLabel } from "./page-label";
 import ReadingTools, { ModelSelect } from "./ReadingTools";
 const FigureManager = lazy(() => import("./FigureManager"));
 
-type View = "discover" | "library" | "saved" | "research" | "paper";
+type View = "discover" | "library" | "saved" | "research" | "paper" | "usage";
 function passageMetadata(passage: DraftPassage) {
   return {quote:passage.text,page:passage.page,pages:passage.pages,sourceScope:passage.sourceScope,readingId:passage.readingId};
 }
@@ -1229,6 +1231,7 @@ export default function App() {
     ["library", Library, t("文库")],
     ["saved", Bookmark, t("收藏")],
     ["research", Sparkles, t("研究助手")],
+    ["usage", BarChart3, t("API 用量", "API usage")],
   ];
   const list =
     view === "saved"
@@ -1672,7 +1675,7 @@ export default function App() {
         </div>
       </nav>
       <main
-        className={`workspace ${view === "paper" ? "paper-workspace" : ""} ${view === "paper" && (assistant || notebook) ? "has-docked-assistant" : ""} ${tab === "paper" ? "continuous-reading" : ""}`}
+        className={`workspace ${view === "paper" ? "paper-workspace" : ""} ${view === "paper" && (assistant || notebook) ? "has-docked-assistant" : ""} ${view === "paper" && tab === "paper" ? "continuous-reading" : ""}`}
       >
         {error && (
           <div className="error-banner" role="alert">
@@ -2057,7 +2060,7 @@ export default function App() {
               ) : null}
             </div>
           </>
-        ) : view === "research" ? (
+        ) : view === "usage" ? <UsagePage/> : view === "research" ? (
           <div className="research-page">
             <header className="page-header">
               <div className="breadcrumb">

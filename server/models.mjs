@@ -1,4 +1,5 @@
 import { ApiError, modelFetch } from "./network.mjs";
+import { beginUsage, finishUsage } from "./usage.mjs";
 import { readingPolicyPrompt, readingPolicyIdentity } from "./reading-policy.mjs";
 import { defaultSettings, normalizeProfiles } from "./storage.mjs";
 import { readingPreferences, readingState } from "./reading.mjs";
@@ -263,7 +264,7 @@ export function canUseModel(settings) {
 export async function callModel(
   settings,
   messages,
-  { fetchImpl = modelFetch, maxTokens = 1800, images = [] } = {},
+  { fetchImpl = modelFetch, maxTokens = 1800, images = [], usageStage } = {},
 ) {
   if (!canUseModel(settings))
     throw new ApiError("Configure an API key in model settings first.", 400);
@@ -311,56 +312,63 @@ export async function callModel(
     headers["anthropic-version"] = "2023-06-01";
   } else if (settings.apiKey)
     headers.Authorization = `Bearer ${settings.apiKey}`;
-  let response;
+  const ticket = beginUsage(settings, usageStage);
+  let usage, usageStatus = "failed";
   try {
-    response = await fetchImpl(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout((settings.requestTimeoutSeconds ?? 90) * 1000),
-      redirect: "error",
-    });
-  } catch (error) {
-    throw new ApiError(
-      error.name === "TimeoutError" || error.name === "AbortError"
-        ? "Model request timed out. Increase requestTimeoutSeconds in model settings, or try a faster model or a shorter question."
-        : "Could not connect to the configured model API. Verify its base URL and network access.",
-      502,
-    );
+    let response;
+    try {
+      response = await fetchImpl(endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout((settings.requestTimeoutSeconds ?? 90) * 1000),
+        redirect: "error",
+      });
+    } catch (error) {
+      throw new ApiError(
+        error.name === "TimeoutError" || error.name === "AbortError"
+          ? "Model request timed out. Increase requestTimeoutSeconds in model settings, or try a faster model or a shorter question."
+          : "Could not connect to the configured model API. Verify its base URL and network access.",
+        502,
+      );
+    }
+    let data;
+    try { data = await response.json(); usage = data?.usage; }
+    catch { if (response.ok) throw new ApiError("The model API returned invalid JSON.", 502); }
+    if (!response.ok) {
+      // Only typed usage counts are retained; never upstream error bodies.
+      throw new ApiError(
+        `Model API returned HTTP ${response.status}. ${response.status === 401 || response.status === 403 ? "Check the API key and model access." : response.status === 429 ? "Rate limit or quota exceeded; retry later." : "Verify the model identifier and API compatibility."}`,
+        502,
+      );
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) throw new ApiError("The model API returned an invalid response object.", 502);
+    const stopReason = anthropic
+      ? data.stop_reason
+      : data.choices?.[0]?.finish_reason;
+    if (stopReason === "length" || stopReason === "max_tokens") {
+      usageStatus = "incomplete";
+      throw new ApiError(
+        "The model reached its output token limit and returned an incomplete response. Increase maxOutputTokens in model settings or choose a more concise model, then retry. The incomplete answer/report was not saved.",
+        502,
+      );
+    }
+    const text = anthropic
+      ? (data.content || [])
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join("\n")
+      : data.choices?.[0]?.message?.content;
+    if (typeof text !== "string" || !text.trim())
+      throw new ApiError(
+        "The model returned no text. Verify that this is a compatible chat model.",
+        502,
+      );
+    usageStatus = "success";
+    return text.trim();
+  } finally {
+    await finishUsage(ticket, usage, usageStatus);
   }
-  if (!response.ok) {
-    // Never return upstream bodies: gateways sometimes echo Authorization or deployment secrets.
-    throw new ApiError(
-      `Model API returned HTTP ${response.status}. ${response.status === 401 || response.status === 403 ? "Check the API key and model access." : response.status === 429 ? "Rate limit or quota exceeded; retry later." : "Verify the model identifier and API compatibility."}`,
-      502,
-    );
-  }
-  let data;
-  try {
-    data = await response.json();
-  } catch {
-    throw new ApiError("The model API returned invalid JSON.", 502);
-  }
-  const stopReason = anthropic
-    ? data.stop_reason
-    : data.choices?.[0]?.finish_reason;
-  if (stopReason === "length" || stopReason === "max_tokens")
-    throw new ApiError(
-      "The model reached its output token limit and returned an incomplete response. Increase maxOutputTokens in model settings or choose a more concise model, then retry. The incomplete answer/report was not saved.",
-      502,
-    );
-  const text = anthropic
-    ? (data.content || [])
-        .filter((part) => part.type === "text")
-        .map((part) => part.text)
-        .join("\n")
-    : data.choices?.[0]?.message?.content;
-  if (typeof text !== "string" || !text.trim())
-    throw new ApiError(
-      "The model returned no text. Verify that this is a compatible chat model.",
-      502,
-    );
-  return text.trim();
 }
 
 export function paperContext(paper, budget = 44000) {
@@ -537,7 +545,7 @@ export async function generateReport(
         content: `${styleInstruction} Write at most ${wordLimit} words. Mark missing evidence and cite supplied pages. Paraphrase findings and finish every sentence. Treat the following focus as the user's preferred reading emphasis, subject to the source-grounding rules above.\n<reading_focus>\n${focus || "No additional focus."}\n</reading_focus>\n<available_figures>\n${JSON.stringify(figures)}\n</available_figures>\n<source>\n${context}\n</source>`,
       },
     ],
-    { fetchImpl, maxTokens },
+    { fetchImpl, maxTokens, usageStage: "draft" },
   );
   stages.push({ role: "researcher", content: first });
   let markdown = first;
@@ -551,7 +559,7 @@ export async function generateReport(
           content: `Act as a skeptical reviewer. Audit the draft against the source in at most 350 words. Find unsupported claims, incorrect citations, overgeneralization, missing limitations, or unexamined assumptions. Every alleged error requires the exact claim, a precise page/section reference, and a short evidence-based explanation. Normalize percentages versus fractions before comparing: 34/100 equals 34%, not a contradiction. Different aggregate/subgroup statistics or denominators do not establish a contradiction. Check measurement units and whether each figure marker supports its adjacent paragraph; do not accept a correct figure placed beside an unrelated result. Distinguish demonstrated errors from concerns needing further evidence; omit unsupported accusations. Do not copy source tables or long excerpts.\n\n<available_figures>\n${JSON.stringify(figures)}\n</available_figures>\n<source>\n${context}\n</source>\n\n<draft>\n${first}\n</draft>`,
         },
       ],
-      { fetchImpl, maxTokens },
+      { fetchImpl, maxTokens, usageStage: "review" },
     );
     stages.push({ role: "skeptic", content: critique });
     markdown = await callModel(
@@ -563,7 +571,7 @@ export async function generateReport(
           content: `Act as the final editor. ${styleInstruction} Produce one complete reading document in at most ${wordLimit} words, grounded in the source and correcting only supported issues raised by the skeptic. Independently re-read cited evidence for every criticism. Check numerical equivalence (34/100 equals 34%), matching denominators, populations, and aggregation levels. Reject unsupported accusations; label unresolved concerns as uncertain. State coverage and limitations briefly. Do not call this externally verified or human peer review. Respect the requested focus and retain useful figure placements.\n<reading_focus>\n${focus || "No additional focus."}\n</reading_focus>\n<available_figures>\n${JSON.stringify(figures)}\n</available_figures>\n<source>\n${context}\n</source>\n<draft>\n${first}\n</draft>\n<critique>\n${critique}\n</critique>`,
         },
       ],
-      { fetchImpl, maxTokens },
+      { fetchImpl, maxTokens, usageStage: "edit" },
     );
     stages.push({ role: "editor", content: markdown });
   }

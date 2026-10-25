@@ -37,3 +37,11 @@ test('restricted, malformed and oversized navigation caches degrade to memory sa
  const entries=new Map([['entry',{version:1,view:'library',entryId:'entry'}]]);
  assert.doesNotThrow(()=>saveWorkspaceHistoryPositions(entries,{setItem:()=>{throw new Error('Quota exceeded');}}));assert.equal(entries.size,1);
 });
+
+test('usage page has a restorable navigation URL without paper or provider information',()=>{
+ const href=workspaceUrl('http://localhost:4318/zh/?paper=old&page=4#page=4',{view:'usage'});
+ assert.equal(href,'http://localhost:4318/zh/?view=usage');
+ assert.deepEqual(plain(workspaceLocation(href)),{view:'usage'});
+ const restored=readWorkspaceHistory(workspaceHistoryState({version:1,view:'usage',paperId:'private-paper',source:'private-config'}));
+ assert.deepEqual(plain(restored),{version:1,view:'usage'});
+});

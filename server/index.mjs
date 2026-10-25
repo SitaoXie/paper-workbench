@@ -1,4 +1,5 @@
 import express from "express";
+import { UsageLedger, withUsage, usageOperation } from "./usage.mjs";
 import packageMetadata from "../package.json" with { type: "json" };
 import multer from "multer";
 import path from "node:path";
@@ -64,6 +65,7 @@ export async function createApp({
   fetchImpl,
 } = {}) {
   const store = await new Store(path.resolve(dataDir)).init();
+  const usage = await new UsageLedger(store.directory).init();
   const ingestor = new Ingestor(store.directory, download);
   const app = express();
   const upload = multer({
@@ -130,6 +132,8 @@ export async function createApp({
   app.use("/api/papers/:id/figures/:figureId/analyze", express.json({ limit: "6mb" }));
   app.use("/api/papers/:id/insights", express.json({ limit: "256kb", verify: (_request, _response, buffer) => assertUniqueJsonKeys(buffer.toString("utf8")) }));
   app.use(express.json({ limit: "256kb" }));
+  app.use((request, _response, next) => withUsage(usage, usageOperation(request), next));
+  app.get("/api/usage", wrap(async (request, response) => response.json(await usage.summary(request.query))));
   const paperById = (id) => {
     const paper = store.paper(id);
     if (!paper)
@@ -782,7 +786,7 @@ export async function createApp({
             report.interactive = await generateInteractiveReading({
               markdown: report.markdown, language: report.language, ...preferences,
               figures: readingFigures, pageCount: sourcePaper.pages?.length,
-              callModel: (prompt) => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens || 4096 }),
+              callModel: (prompt) => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens || 4096, usageStage: "interactive" }),
             });
           } catch (error) {
             // A conversion failure must not append a duplicate article. A fresh
@@ -849,7 +853,7 @@ export async function createApp({
             try {
               translated.interactive = await translateInteractiveReading({
                 interactive: version.interactive, ...translationOptions,
-                callModel: (prompt) => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens || 4096 }),
+                callModel: (prompt) => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens || 4096, usageStage: "interactive" }),
               });
               delete translated.interactiveTranslationError;
             } catch (error) {
@@ -863,7 +867,7 @@ export async function createApp({
           if (!completeCaptions) {
             try {
               translated.figureCaptions = await translateFigureCaptions({ ...translationOptions,
-                callModel: prompt => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens || 4096 }),
+                callModel: prompt => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens || 4096, usageStage: "captions" }),
               });
               translated.figureCaptionsSourceHash = captionsHash;
               delete translated.captionTranslationError;

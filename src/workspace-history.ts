@@ -1,6 +1,6 @@
 import {validPdfPosition,type PdfReadingPosition,type OverviewReadingPosition} from './reading-position';
 
-export type WorkspaceView='discover'|'library'|'saved'|'research'|'paper';
+export type WorkspaceView='discover'|'library'|'saved'|'research'|'paper'|'usage';
 export type WorkspaceHistory={
   version:1;view:WorkspaceView;entryId?:string;paperId?:string;source?:string;tab?:'summary'|'paper';
   overview?:OverviewReadingPosition;pdf?:PdfReadingPosition;language?:string;original?:boolean;
@@ -12,7 +12,7 @@ const CACHE_KEY='paper-workbench:history-positions-v1';
 export function readWorkspaceHistory(state:unknown):WorkspaceHistory|undefined {
   if(!state||typeof state!=='object')return;
   const entry=(state as Record<string,unknown>)[KEY] as WorkspaceHistory|undefined;
-  if(!entry||entry.version!==1||!['discover','library','saved','research','paper'].includes(entry.view))return;
+  if(!entry||entry.version!==1||!['discover','library','saved','research','paper','usage'].includes(entry.view))return;
   if(entry.view==='paper'&&(!entry.paperId||!/^[A-Za-z0-9_-]{1,256}$/.test(entry.paperId)||!['summary','paper'].includes(entry.tab||'')))return;
   const result:WorkspaceHistory={version:1,view:entry.view};
   if(typeof entry.entryId==='string'&&/^[A-Za-z0-9_-]{1,80}$/.test(entry.entryId))result.entryId=entry.entryId;
@@ -60,7 +60,7 @@ export function workspaceLocation(href:string):{view:WorkspaceView;paperId?:stri
     return {view:'paper',paperId:id,tab:page||url.searchParams.get('tab')==='paper'?'paper':'summary',...(page?{page}:{})};
   }
   const view=url.searchParams.get('view');
-  return {view:view&&['library','saved','research'].includes(view)?view as WorkspaceView:'discover'};
+  return {view:view&&['library','saved','research','usage'].includes(view)?view as WorkspaceView:'discover'};
 }
 export function workspaceUrl(href:string,target:{view:WorkspaceView;paperId?:string;tab?:'summary'|'paper';page?:number;hash?:string}):string {
   const url=new URL(href);url.search='';url.hash=target.hash||'';

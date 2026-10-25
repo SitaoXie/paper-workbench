@@ -33,6 +33,12 @@ Selection actions can use either a configured model API or an existing Codex/Cla
 
 The PDF reader includes a searchable text layer, outline and accessible internal links, with return-to-reading navigation. Named bibliography links can preview a source region before jumping; ordinary section links still navigate directly. Previews are drawn from the local PDF and do not invoke a model. Chapter links retain the overview version. Browser Back/Forward also follows explicit library, paper, overview and PDF-source navigation while preserving the reading position. Conversation scroll position, unsent question drafts and notebook edits are restored within the current browser tab. Opening or resizing the assistant preserves the current PDF position. Ordinary illustrated articles and interactive cards both export standalone HTML with embedded source crops, tables and equations; Markdown copies replace internal figure placeholders with visible captions and public source links.
 
+## API usage
+
+Open **API usage** in the left navigation to see input, output and total tokens, cache/reasoning breakdowns, daily usage, activity/model groups and paginated call history. Filter by the last 7/30/90 days or all time and model connection; dates follow your browser's timezone. The page itself never calls a model.
+
+Only workbench API requests made after tracking is enabled are recorded. Every report review round is counted; translations reused from saved versions and Codex/Claude subscription imports are excluded. Failed requests with reported usage still count. Unknown usage is visibly distinguished from zero, and partial totals are marked `≥`. No prices or past usage are guessed. Counts persist locally in the runtime data directory, without prompts, answers, API keys or endpoint URLs. See [the usage API contract](docs/API.md#api-token-usage) for accounting and storage limits.
+
 ## Model configuration and data
 
 Provider settings are supplied at runtime. HTTPS model endpoints are supported, including explicitly configured private inference services. Plain HTTP is restricted to localhost for local inference. This project has no hard-coded institutional endpoint or personal account requirement.
@@ -40,6 +46,8 @@ Provider settings are supplied at runtime. HTTPS model endpoints are supported, 
 Each profile also has a per-request timeout, from 15 to 600 seconds (default 90). Long visual or reasoning requests may need more time than a connection probe. A multi-stage reading can take several request timeouts in total. The CLI's separate overall timeout defaults to 300 seconds and can be set with `PAPER_WORKBENCH_TIMEOUT_MS`.
 
 Model settings, paper data, chat history, and imported PDFs are stored locally under `DATA_DIR`. Keys are stored in the local settings file as plaintext with restricted filesystem permissions; they are not returned by the settings API. The app does not provide a multi-user authentication layer or encrypted secret vault. Keep it bound to loopback. The default runtime directory and `.env` are excluded from Git. If you choose another `DATA_DIR`, keep it outside the checkout or add it to your own ignore rules.
+
+Saving a connection in the sidebar or CLI persists its key, endpoint, model list and selected model in `DATA_DIR/store.json`; restarting the server restores them automatically. There is no need to re-enter the key. The optional `.env` configures server/network options; it does not automatically populate provider credentials. `PAPER_WORKBENCH_API_KEY` is a CLI input for `config set`, which saves the configuration through the same settings API.
 
 When using a remote model, the selected paper excerpts and question are sent to that configured provider. External paper search and URL import contact their source services. No public commenting or publication feature is included.
 
