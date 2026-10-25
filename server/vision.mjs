@@ -62,17 +62,7 @@ function dimensions(buffer, mimeType) {
   throw new ApiError("JPEG dimensions could not be read.");
 }
 
-export function prepareVisionInput(body, paper, figureId) {
-  const figure = paper.figures?.find(item => item.id === figureId);
-  if (!paper.filePath || !figure?.crop || figure.kind === "page-preview")
-    throw new ApiError("Vision analysis requires an existing figure crop from this paper's local PDF.");
-  if (!paper.pages?.some(page => page.number === figure.page)) throw new ApiError("The figure references a missing PDF page.");
-  const crop = body.crop;
-  if (body.page !== figure.page || !crop || ["x", "y", "width", "height"].some(key => typeof crop[key] !== "number" || !Number.isFinite(crop[key]) || Math.abs(crop[key] - figure.crop[key]) > 0.000001))
-    throw new ApiError("The submitted page and crop must match the current source figure.");
-  if (body.focus !== undefined && (typeof body.focus !== "string" || body.focus.length > 3000))
-    throw new ApiError("Vision focus must be text of up to 3,000 characters.");
-  const image = body.image;
+export function validateRasterImage(image) {
   if (!image || !["image/png", "image/jpeg"].includes(image.mimeType) || typeof image.data !== "string")
     throw new ApiError("Provide image.mimeType (image/png or image/jpeg) and base64 image.data.");
   if (image.data.length > Math.ceil(4 * 1024 * 1024 / 3) * 4) throw new ApiError("The figure image exceeds the 4 MiB limit.", 413);
@@ -84,6 +74,20 @@ export function prepareVisionInput(body, paper, figureId) {
   const size = dimensions(buffer, image.mimeType);
   if (size.width < 1 || size.height < 1 || size.width > 12000 || size.height > 12000 || size.width * size.height > 24000000)
     throw new ApiError("Figure images are limited to 12,000 pixels per side and 24 megapixels.");
+  return {image:{mimeType:image.mimeType,data:image.data},buffer,...size};
+}
+
+export function prepareVisionInput(body, paper, figureId) {
+  const figure = paper.figures?.find(item => item.id === figureId);
+  if (!paper.filePath || !figure?.crop || figure.kind === "page-preview")
+    throw new ApiError("Vision analysis requires an existing figure crop from this paper's local PDF.");
+  if (!paper.pages?.some(page => page.number === figure.page)) throw new ApiError("The figure references a missing PDF page.");
+  const crop = body.crop;
+  if (body.page !== figure.page || !crop || ["x", "y", "width", "height"].some(key => typeof crop[key] !== "number" || !Number.isFinite(crop[key]) || Math.abs(crop[key] - figure.crop[key]) > 0.000001))
+    throw new ApiError("The submitted page and crop must match the current source figure.");
+  if (body.focus !== undefined && (typeof body.focus !== "string" || body.focus.length > 3000))
+    throw new ApiError("Vision focus must be text of up to 3,000 characters.");
+  const {image,buffer,...size} = validateRasterImage(body.image);
   return {
     figure,
     ...(paper.pdfRevision ? { pdfRevision: paper.pdfRevision } : {}),

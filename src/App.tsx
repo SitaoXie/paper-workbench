@@ -1,3 +1,4 @@
+import {clipboardImageFiles,readChatImage,type DraftChatImage} from './chat-images';
 import { CitationSourceContext } from "./CitationLink";
 import ReasoningPanel from "./ReasoningPanel";
 import { streamChat, applyChatEvent, completedChat } from "./chat-stream";
@@ -12,6 +13,7 @@ import { adoptChatScroll, readChatScroll, removePaperChatScroll } from "./chat-s
 import "./chat-scroll.css";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import {
+  ImagePlus,
   ArrowUp,
   BarChart3,
   ArrowDown,
@@ -185,6 +187,21 @@ export default function App() {
   const [dockWidth, setDockWidth] = useState(defaultAssistantWidth);
   const [draft, setDraft] = useState(() => readChatDraft(chatDraftKey()));
   const prompt = draft.text, selectedPassage = draft.passage;
+  const [chatImages,setChatImages]=useState<Record<string,DraftChatImage[]>>({});
+  const [readingImages,setReadingImages]=useState(false);
+  const imageInput=useRef<HTMLInputElement>(null);
+  const imageReading=useRef(false);
+  async function addChatImages(files:File[]) {
+    const key=chatContext.current.key;
+    if(imageReading.current||chatting||conversationBusy)return;
+    imageReading.current=true;setReadingImages(true);setError("");
+    try{
+      if((chatImages[key]?.length||0)+files.length>4)throw Error(t("最多附加 4 张图片","Attach up to 4 images"));
+      const added=await Promise.all(files.map(readChatImage)),all=[...(chatImages[key]||[]),...added];
+      if(all.reduce((sum,image)=>sum+image.data.length*3/4,0)>4*1024*1024)throw Error(t("图片总大小不能超过 4 MiB","Images must total at most 4 MiB"));
+      setChatImages(current=>({...current,[key]:all}));
+    }catch(reason){setError((reason as Error).message);}finally{imageReading.current=false;setReadingImages(false);}
+  }
   const [abstractOverflow, setAbstractOverflow] = useState(false);
   const abstractRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -249,6 +266,7 @@ export default function App() {
   const paperMutation = useRef(0);
   const annotationMutation = useRef(0);
   const chatContext = useRef({ paperId: undefined as string | undefined, conversationId: undefined as string | undefined, key: chatDraftKey() });
+  const attachedImages=chatImages[chatContext.current.key]||[];
   const pendingChats = useRef(new Set<string>());
   const chatScroll = useChatScroll(chatContext.current.key, chat, chatting);
   const navigationRevision = useRef(0);
@@ -734,10 +752,12 @@ export default function App() {
       setTranslating(false);
     }
   }
-  async function ask(text = prompt, branch?: { history: Message[] }) {
+  async function ask(text = prompt, branch?: { history: Message[]; images?:DraftChatImage[] }) {
     const context = chatContext.current;
     if (!text.trim() || pendingChats.current.has(context.key) || (conversationBusy && !branch)) return;
     chatScroll.followLatest(context.key);
+    const images=branch?.images||chatImages[context.key]||[];
+    if(images.length&&(questionMode!=="api"||settings.modelCapabilities?.[settings.model]!=="vision")){setError(t("图片问答需要选择支持视觉的模型 API；可在模型设置中配置视觉能力。","Image questions require a vision-capable model API. Configure its vision capability in model settings."));return;}
     const previous = completedChat(branch?.history || chat);
     const passage = readChatDraft(context.key).passage;
     // Keep the submitted draft until success. Editing while the request is in
@@ -749,13 +769,14 @@ export default function App() {
       : text.trim();
     const metadata = context.paperId && passage ? passageMetadata(passage) : submitted.contextPolicy === "omit" ? null : undefined;
     const pendingId = `stream-${crypto.randomUUID()}`;
-    setChat([...previous, { role: "user", content: message, ...(metadata ? { metadata } : {}) }, {id:pendingId,role:"assistant",content:"",streaming:true,streamStatus:"reading"}]);
+    setChat([...previous, { role: "user", content: message, ...(images.length?{images:images.map(image=>({id:image.id,name:image.name,url:`data:${image.mimeType};base64,${image.data}`}))}:{}), ...(metadata ? { metadata } : {}) }, {id:pendingId,role:"assistant",content:"",streaming:true,streamStatus:"reading"}]);
     pendingChats.current.add(context.key);
     setChatting(true);
     setError("");
     try {
       const r = await streamChat({
           stream: true,
+          images,
           paperId: context.paperId,
           conversationId: context.conversationId,
           message,
@@ -770,6 +791,7 @@ export default function App() {
           if (chatContext.current.key === context.key) setChat(xs => xs.map(item => item.id === pendingId ? applyChatEvent(item,event) : item));
         });
       clearChatDraft(context.key, submitted.revision);
+      setChatImages(current=>({...current,[context.key]:(current[context.key]||[]).filter(image=>!images.some(sent=>sent.id===image.id))}));
       if (!context.conversationId && r.conversationId)
         adoptChatDraft(context.key, chatDraftKey(context.paperId, r.conversationId));
       if (chatContext.current.key === context.key) {
@@ -793,12 +815,14 @@ export default function App() {
     if (!question.id || !context.conversationId || chatting || conversationBusy) return;
     setConversationBusy(true); setError("");
     try {
-      const response = await api<{ conversationId: string; messages: Message[]; draft: { message: string; metadata: Message["metadata"] | null; verbatim?: boolean } }>(
+      const response = await api<{ conversationId: string; messages: Message[]; draft: { message: string; metadata: Message["metadata"] | null; verbatim?: boolean; images?:DraftChatImage[] } }>(
         `/conversations/${encodeURIComponent(context.conversationId)}/branch`,
         { method: "POST", body: JSON.stringify({ paperId: context.paperId || null, messageId: question.id, action }) },
       );
       if (chatContext.current !== context) return;
       const next = activateChat(context.paperId, response.conversationId);
+      const images=(response.draft.images||[]).map(image=>({...image,id:crypto.randomUUID()}));
+      setChatImages(current=>({...current,[next.key]:images}));
       const metadata = response.draft.metadata;
       setDraft(writeChatDraft(next.key, {
         text: response.draft.message,
@@ -807,7 +831,7 @@ export default function App() {
       }));
       setChat(response.messages); setShowHistory(false);
       setNotice(t("已创建分支，原对话仍保留在历史中。", "Created a branch. The original conversation remains in history."));
-      if (action === "retry" && modelReady && questionMode==='api') await ask(response.draft.message, {history:response.messages});
+      if (action === "retry" && modelReady && questionMode==='api') await ask(response.draft.message, {history:response.messages,images});
       else requestAnimationFrame(() => composerRef.current?.focus({preventScroll:true}));
     } catch (reason) {
       if (chatContext.current === context) setError((reason as Error).message);
@@ -903,7 +927,9 @@ export default function App() {
     finally { preparingQuestion.current=false;setCopyingAgent(false); }
   }
   function submitQuestion(text=prompt){
-    if(!text.trim()||conversationBusy||chatting||copyingAgent)return;
+    if(!text.trim()&&attachedImages.length)text=t("请解释附加的图片。","Please explain the attached images.");
+    if(!text.trim()||conversationBusy||chatting||copyingAgent||readingImages)return;
+    if(attachedImages.length&&questionMode!=="api"){setError(t("图片附件目前用于模型 API 问答，请切换处理方式。","Image attachments currently require model API answering; switch the processing mode."));return;}
     if(text!==prompt)setPrompt(text);
     if(questionMode==='agent'){void copyAgentQuestion(text);return;}
     void ask(text);
@@ -1468,6 +1494,7 @@ export default function App() {
                   {m.role === "user" && view === "paper" && (m.metadata?.page || m.metadata?.sourceScope === 'reading' || m.metadata?.sourceScope === 'abstract') && <button className="message-source-link citation-link" onClick={() => openQuestionSource(m.metadata)}>
                     <FileText size={12}/>{m.metadata?.sourceScope === 'reading' ? t('AI 解读选文 · 查看版本','AI overview selection · View version') : m.metadata?.sourceScope === 'abstract' ? t('摘要选文','Abstract selection') : `${t("提问选文", "Question source")} · ${pageLabel(m.metadata!.page,m.metadata!.pages)}`}
                   </button>}
+                  {!!m.images?.length&&<div className="chat-image-previews">{m.images.map(image=><a key={image.id} href={image.url} target="_blank" rel="noreferrer"><img src={image.url} alt={image.name||t("附加图片","Attached image")}/></a>)}</div>}
                   {m.role === "assistant" && <ReasoningPanel message={m}/>}
                   <Mark onPage={view === "paper" ? goToPage : undefined} onSource={view === 'paper' ? openReadingSource : undefined}>
                     {m.content}
@@ -1528,8 +1555,13 @@ export default function App() {
               submitQuestion();
             }}
           >
+            {!!attachedImages.length&&<div className="chat-image-previews">{attachedImages.map(image=><div key={image.id}><img src={`data:${image.mimeType};base64,${image.data}`} alt={image.name}/><button type="button" aria-label={t("移除图片","Remove image")} onClick={()=>setChatImages(current=>({...current,[chatContext.current.key]:(current[chatContext.current.key]||[]).filter(item=>item.id!==image.id)}))}><X size={13}/></button></div>)}</div>}
+            {readingImages&&<small role="status">{t("正在准备图片…","Preparing image…")}</small>}
+            {!!attachedImages.length&&(questionMode!=="api"||settings.modelCapabilities?.[settings.model]!=="vision")&&<small className="attachment-notice">{t("请选择支持视觉的模型 API 后发送图片。","Select a vision-capable model API to send images.")}</small>}
+            <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={event=>{const files=Array.from(event.target.files||[]);event.target.value="";void addChatImages(files);}}/>
             <textarea
               aria-label={t("向研究助手提问")}
+              onPaste={event=>{const files=clipboardImageFiles(event.clipboardData);if(files.length){event.preventDefault();const text=event.clipboardData.getData("text/plain");if(text)setPrompt(prompt.slice(0,event.currentTarget.selectionStart)+text+prompt.slice(event.currentTarget.selectionEnd));void addChatImages(files);}}}
               ref={composerRef}
               placeholder={
                 questionMode==='agent'?t('输入问题，Enter 准备订阅任务…','Ask a question; Enter prepares a subscription task…'):questionMode==='extractive'?t('输入关键词，查找原文片段…','Enter keywords to find source passages…'):full ? t("问一个研究问题…") : t("询问有关这篇论文的问题…")
@@ -1549,6 +1581,7 @@ export default function App() {
               }}
             />
             <div className="composer-bottom">
+              <button type="button" className="icon-button" aria-label={t("添加图片（也可粘贴）","Attach image (or paste)")} title={t("添加图片，也可直接粘贴截图","Attach images or paste screenshots")} disabled={readingImages||chatting||conversationBusy} onClick={()=>imageInput.current?.click()}><ImagePlus size={18}/></button>
               <button
                 type="button"
                 className="icon-button"
@@ -1586,7 +1619,7 @@ export default function App() {
                 className="send-button"
                 aria-label={questionMode==='agent'?t('准备订阅任务','Prepare subscription task'):questionMode==='extractive'?t('查找原文','Find source passages'):t("发送问题")}
                 title={questionMode==='agent'?t('准备并复制订阅任务，不调用模型 API','Prepare and copy a subscription task; no model API call'):questionMode==='extractive'?t('查找原文片段，不调用模型','Find source passages; no model call'):t('发送问题')}
-                disabled={!prompt.trim() || chatting || conversationBusy||copyingAgent||(questionMode==='api'&&!modelReady)}
+                disabled={(!prompt.trim()&&!attachedImages.length) || readingImages || chatting || conversationBusy||copyingAgent||(questionMode==='api'&&!modelReady)}
               >
                 {chatting||copyingAgent ? (
                   <Loader2 size={16} className="spin" />

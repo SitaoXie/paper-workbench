@@ -4,3 +4,10 @@
 .chat-latest.has-unread { color:var(--accent); border-color:var(--accent); }
 .chat-latest:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 @media (max-width:999px) { .chat-latest { min-height:44px; bottom:8px; } }
+
+.chat-image-previews { display:flex; flex-wrap:wrap; gap:8px; margin:8px 0; }
+.composer .chat-image-previews { margin:8px 12px; }
+.chat-image-previews > div, .chat-image-previews > a { position:relative; display:block; }
+.chat-image-previews img { display:block; width:96px; height:76px; object-fit:contain; background:var(--subtle); border:1px solid var(--line); border-radius:8px; }
+.chat-image-previews button { position:absolute; top:2px; right:2px; display:grid; place-items:center; width:24px; height:24px; border-radius:50%; background:var(--panel); color:var(--text); box-shadow:0 1px 4px #0003; }
+.attachment-notice { display:block; padding:4px 12px; color:var(--accent); }

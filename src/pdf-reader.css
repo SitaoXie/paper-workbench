@@ -578,6 +578,8 @@
 }
 .pdf-figure-lightbox-scroll {
   flex: 1;
+  contain: size;
+  min-width: 0;
   overflow: auto;
   overscroll-behavior: contain;
   min-height: 100px;

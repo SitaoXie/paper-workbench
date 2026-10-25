@@ -3528,3 +3528,40 @@ test("question selection scopes reject cross-paper versions and non-PDF page cla
   }
   assert.equal(app.locals.store.data.chats.length, before);
 });
+
+for(const provider of ['openai','anthropic']) test(`chat image pixels survive tool rounds, history, persistence and retry branches (${provider})`,async t=>{
+ const calls=[];
+ const {api,app,base,directory}=await fixture(t,{fetchImpl:async(_url,options)=>{
+  const body=JSON.parse(options.body);calls.push(body);
+  const count=body.messages.flatMap(m=>Array.isArray(m.content)?m.content:[]).filter(p=>p.type==='image'||p.type==='image_url').length;
+  assert.ok(count>=1,'Provider receives actual pixels, not just an attachment label');
+  if(calls.length===1)return new Response(JSON.stringify(provider==='anthropic'
+   ? {content:[{type:'tool_use',id:'search-image',name:'search_papers',input:{query:'image interpretation'}}],stop_reason:'tool_use'}
+   : {choices:[{message:{role:'assistant',content:null,tool_calls:[{id:'search-image',type:'function',function:{name:'search_papers',arguments:JSON.stringify({query:'image interpretation'})}}]},finish_reason:'tool_calls'}]}));
+  return new Response(JSON.stringify(provider==='anthropic'?{content:[{type:'text',text:'Image received.'}],stop_reason:'end_turn'}:{choices:[{message:{content:'Image received.'},finish_reason:'stop'}]}));
+ }});
+ const settings=await api('/api/settings',{method:'PUT',body:{provider,apiKey:'fixture-image-key',baseUrl:'https://provider.example/v1',model:'vision-test',models:['vision-test'],modelCapabilities:{'vision-test':'vision'}}});
+ assert.equal(settings.status,200,JSON.stringify(settings.data));
+ const image={mimeType:'image/png',data:visionPng,name:'Pasted image.png'};
+ const first=await api('/api/chat',{method:'POST',body:{message:'Describe this image',processing:'api',images:[image]}});
+ assert.equal(first.status,200,JSON.stringify(first.data));assert.equal(calls.length,2);
+ assert.equal(first.data.message.source.pixelsProvided,true);
+ const saved=first.data.userMessage.images[0];assert.ok(saved.url.startsWith('/api/chat-images/'));assert.equal(saved.data,undefined);
+ const pixels=await fetch(base+saved.url);assert.equal(pixels.status,200);assert.deepEqual(Buffer.from(await pixels.arrayBuffer()),Buffer.from(visionPng,'base64'));
+ const store=JSON.parse(await readFile(path.join(directory,'store.json'),'utf8'));assert.ok(!JSON.stringify(store.chats).includes(visionPng),'Image bytes stay out of the main store');
+ const follow=await api('/api/chat',{method:'POST',body:{message:'What else is visible?',processing:'api',conversationId:first.data.conversationId}});
+ assert.equal(follow.status,200);assert.equal(follow.data.message.source.attachedImageCount,1);
+ const branch=await api(`/api/conversations/${first.data.conversationId}/branch`,{method:'POST',body:{paperId:null,messageId:first.data.userMessage.id,action:'retry'}});
+ assert.equal(branch.status,201);assert.equal(branch.data.draft.images[0].data,visionPng);
+ const history=(await api('/api/chats?conversationId='+first.data.conversationId)).data.messages;
+ assert.equal(history[0].images[0].id,saved.id);
+ const before=calls.length;
+ assert.equal((await api('/api/chat',{method:'POST',body:{message:'Invalid',images:[{...image,data:'bad'}]}})).status,400);
+ assert.equal((await api('/api/chat',{method:'POST',body:{message:'No image in extractive mode',processing:'extractive',images:[image]}})).status,409);
+ assert.equal(calls.length,before);
+ app.locals.store.data.settings.modelCapabilities={'vision-test':'text'};
+ assert.equal((await api('/api/chat',{method:'POST',body:{message:'Text only',images:[image]}})).status,409);
+ const another=await api('/api/chats/new',{method:'POST',body:{}});
+ const absent=await api('/api/chat-images/'+'0'.repeat(64));assert.equal(absent.status,404);
+ assert.equal(another.status,201);
+});

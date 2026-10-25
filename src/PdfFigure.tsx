@@ -272,7 +272,7 @@ export default function PdfFigure({
 }
 
 /** Re-render the same source crop at the requested display size, rather than enlarging a thumbnail. */
-function FigureLightbox({
+export function FigureLightbox({
   url,
   page,
   crop,
@@ -323,11 +323,16 @@ function FigureLightbox({
         ? document.activeElement
         : null;
     element.showModal();
-    const observer = new ResizeObserver(() => {
-      setAvailableWidth(Math.max(1, area.clientWidth - 32));
-      setAvailableHeight(Math.max(1, area.clientHeight - 32));
-    });
-    observer.observe(area);
+    // Measure the fixed viewport border box, not client dimensions that change
+    // when the new canvas adds/removes scrollbars. Reserve scrollbar space in
+    // both axes so rendering cannot feed back into its own fit measurement.
+    const measure = () => {
+      setAvailableWidth(Math.max(1, area.offsetWidth - 32 - 20));
+      setAvailableHeight(Math.max(1, area.offsetHeight - 32 - 20));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(area, {box:"border-box"});
     return () => {
       observer.disconnect();
       element.close();
@@ -340,6 +345,7 @@ function FigureLightbox({
     const shared = acquire(url);
     let disposed = false;
     let task: RenderTask | undefined;
+    let pendingCanvas: HTMLCanvasElement | undefined;
     setStatus("loading");
     (async () => {
       const pdf = await shared.document;
@@ -360,6 +366,7 @@ function FigureLightbox({
         Math.sqrt(8_000_000 / (displayWidth * displayHeight)),
       );
       const canvas = document.createElement("canvas");
+      pendingCanvas = canvas;
       canvas.width = Math.max(1, Math.round(displayWidth * density));
       canvas.height = Math.max(1, Math.round(displayHeight * density));
       canvas.style.width = `${displayWidth}px`;
@@ -367,15 +374,6 @@ function FigureLightbox({
       canvas.setAttribute("role", "img");
       canvas.setAttribute("aria-label", caption || t(`第 ${page} 页图表放大预览`, `Enlarged figure on page ${page}`));
       canvas.dataset.figurePage = String(page);
-      element.replaceChildren(canvas);
-      const area = scrollArea.current;
-      if (area && zoom === 1) {
-        area.scrollLeft = 0; area.scrollTop = 0; zoomCenter.current = undefined;
-      } else if (area && zoomCenter.current) {
-        area.scrollLeft = zoomCenter.current.x * area.scrollWidth - area.clientWidth/2;
-        area.scrollTop = zoomCenter.current.y * area.scrollHeight - area.clientHeight/2;
-        zoomCenter.current = undefined;
-      }
       task = pdfPage.render({
         canvas,
         viewport,
@@ -392,6 +390,17 @@ function FigureLightbox({
       await task.promise;
       if (!disposed) {
         canvas.dataset.rendered = "true";
+        const old = element.querySelector("canvas");
+        element.replaceChildren(canvas);
+        if (old) { old.width = 0; old.height = 0; }
+        const area = scrollArea.current;
+        if (area && zoom === 1) {
+          area.scrollLeft = 0; area.scrollTop = 0; zoomCenter.current = undefined;
+        } else if (area && zoomCenter.current) {
+          area.scrollLeft = zoomCenter.current.x * area.scrollWidth - area.clientWidth/2;
+          area.scrollTop = zoomCenter.current.y * area.scrollHeight - area.clientHeight/2;
+          zoomCenter.current = undefined;
+        }
         setStatus("ready");
       }
     })().catch(() => {
@@ -401,11 +410,9 @@ function FigureLightbox({
       disposed = true;
       task?.cancel();
       shared.release();
-      for (const canvas of element.querySelectorAll("canvas")) {
-        canvas.width = 0;
-        canvas.height = 0;
+      if (pendingCanvas && !pendingCanvas.isConnected) {
+        pendingCanvas.width = 0; pendingCanvas.height = 0;
       }
-      element.replaceChildren();
     };
   }, [
     url,
@@ -421,6 +428,10 @@ function FigureLightbox({
     caption,
     locale,
   ]);
+  useEffect(() => {
+    const element = canvasHost.current;
+    return () => { for (const canvas of element?.querySelectorAll("canvas") || []) { canvas.width = 0; canvas.height = 0; } element?.replaceChildren(); };
+  }, []);
   return (
     <dialog
       ref={dialog}

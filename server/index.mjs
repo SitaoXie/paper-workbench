@@ -1,3 +1,4 @@
+import {validateChatImages,saveChatImages,hydrateChatImages,chatImagePath} from './chat-images.mjs';
 import { DEFAULT_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
 import {registerCollections} from './collections.mjs';
 import { validatePaperMetadata } from './paper-metadata.mjs';
@@ -137,6 +138,7 @@ export async function createApp({
   // Only this local source-bound image route accepts a larger JSON payload.
   app.use("/api/papers/:id/figures/:figureId/analyze", express.json({ limit: "6mb" }));
   app.use("/api/papers/:id/insights", express.json({ limit: "256kb", verify: (_request, _response, buffer) => assertUniqueJsonKeys(buffer.toString("utf8")) }));
+  app.use("/api/chat", express.json({ limit: "6mb" }));
   app.use(express.json({ limit: "256kb" }));
   app.use((request, _response, next) => withUsage(usage, usageOperation(request), next));
   registerCollections(app,store,wrap);
@@ -1154,7 +1156,7 @@ export async function createApp({
     const hasQuestionText = typeof target.questionText === "string" && target.questionText.trim() && target.questionText.length <= 12000;
     response.status(201).json({
       conversation, conversationId: conversation.id, messages: copies,
-      draft: { message: hasQuestionText ? target.questionText : target.content, metadata: metadata || null, verbatim: !hasQuestionText },
+      draft: { message: hasQuestionText ? target.questionText : target.content, metadata: metadata || null, verbatim: !hasQuestionText, ...(target.images?.length?{images:(await hydrateChatImages(store.directory,[target],true))[0].images}:{} ) },
     });
   }));
   app.get("/api/conversations", (request, response) => {
@@ -1199,6 +1201,14 @@ export async function createApp({
       });
     }),
   );
+  app.get("/api/chat-images/:id", (request,response,next) => {
+    try {
+      const image=store.data.chats.flatMap(message=>message.images||[]).find(image=>image.id===request.params.id);
+      if(!image)throw new ApiError("Image not found.",404);
+      response.set({"Content-Type":image.mimeType,"X-Content-Type-Options":"nosniff","Cache-Control":"private, max-age=3600","Content-Security-Policy":"default-src 'none'"});
+      response.sendFile(chatImagePath(store.directory,image));
+    }catch(error){next(error);}
+  });
   app.post(
     "/api/chat",
     wrap(async (request, response) => {
@@ -1208,6 +1218,10 @@ export async function createApp({
       if (processing !== undefined && !["api", "extractive"].includes(processing))
         throw new ApiError("processing must be api or extractive; omit it for the compatible automatic behavior.");
       const settings = { ...store.data.settings };
+      if(!request.body.images?.length&&Buffer.byteLength(JSON.stringify(request.body))>256*1024)throw new ApiError("Request body too large.",413);
+      const images=validateChatImages(request.body.images);
+      if(images.length&&(processing==="extractive"||!canUseModel(settings)||settings.modelCapabilities?.[settings.model]!=="vision"))
+        throw new ApiError("此问题包含图片，请选择已配置视觉能力的模型 API / Choose a vision-capable model API for image questions.",409);
       if (processing === "api" && !canUseModel(settings))
         throw Object.assign(new ApiError("API answering is not configured. Use your Codex / Claude subscription session, configure a model API, or explicitly choose local source retrieval.", 409), { code: "chat_model_unconfigured" });
       const paperId = validatePaperContext(request.body.paperId ?? null);
@@ -1260,7 +1274,7 @@ export async function createApp({
       // the server's source metadata into history preparation.
       const previous = history
         ? history.map(({ role, content }) => ({ role, content }))
-        : conversationMessages(conversationId);
+        : await hydrateChatImages(store.directory,conversationMessages(conversationId),settings.modelCapabilities?.[settings.model]==="vision");
       const controller = new AbortController();
       const disconnected = () => { if (!response.writableEnded) controller.abort(); };
       const emit = event => { if (!response.destroyed) response.write(`data: ${JSON.stringify(event)}\n\n`); };
@@ -1276,7 +1290,7 @@ export async function createApp({
           message.trim(),
           previous,
           settings,
-          { fetchImpl, metadata, forceExtractive: processing === "extractive", webSearch, download, ...(stream ? {onEvent:emit,signal:controller.signal} : {}) },
+          { fetchImpl, images, metadata, forceExtractive: processing === "extractive", webSearch, download, ...(stream ? {onEvent:emit,signal:controller.signal} : {}) },
         );
         if (controller.signal.aborted) throw new ApiError("The client disconnected. No incomplete answer was saved.", 499);
         if (paperId && !store.paper(paperId))
@@ -1284,9 +1298,11 @@ export async function createApp({
             "The paper was deleted while answering this question.",
             409,
           );
+        const savedImages=await saveChatImages(store.directory,images);
         const userMessage = {
           id: randomUUID(),
           role: "user",
+          ...(savedImages.length?{images:savedImages}:{}),
           content: message.trim(),
           paperId,
           conversationId,

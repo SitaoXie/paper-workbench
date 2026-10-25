@@ -59,7 +59,7 @@ export function prepareConversationHistory(history = [], sourceBudget = 44000, {
       if (message.content.length > limits[index]) truncatedMessages++;
       if (message.visualEvidenceWithdrawn) withdrawnVisualMessages++;
       for (const id of message.historicalVisualEvidenceIds || []) visualEvidenceIds.add(id);
-      return { role: message.role, content: clipped(message.content, limits[index]) };
+      return { role: message.role, content: clipped(message.content, limits[index]), ...(message.role==="user"&&message.images?.length?{images:message.images}:{}) };
     });
     selected.unshift(...messages);
     characters += messages.reduce((sum, message) => sum + message.content.length, 0);

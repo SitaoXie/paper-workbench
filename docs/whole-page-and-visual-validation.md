@@ -23,3 +23,9 @@ Browser automation was unavailable for this turn. Hover positioning, touch/keybo
 Replaced the fixed 300px / 65vh frame toggle with SVG viewBox-based sizing. Diagrams start at their natural readable size, with native overflow scrolling and mouse dragging. Controls offer actual 10–400% scaling, fit width and 1:1 reset; keyboard plus/minus and Ctrl/Command + wheel also zoom. The viewport follows the scaled diagram height up to a bounded maximum, so wide, shallow diagrams do not reserve a large empty frame. Native touch scrolling is retained.
 
 455 automated tests and the production build passed. Added geometry regressions for wide/tall SVGs plus DOM component tests for zoom, fit/reset, wheel, keyboard and mouse dragging; the tests supply geometry because jsdom performs no browser layout. Browser visual acceptance remains outstanding.
+
+## Source-figure lightbox and pasted images
+
+The source-figure lightbox previously measured client dimensions changed by its own scrollbars, then removed the current canvas while redrawing. It now fits against a size-contained border box with scrollbar allowance and swaps an offscreen completed canvas into place. This removes the resize/render feedback loop and retains the visible image while a new zoom is rendering.
+
+461 automated tests and the production build passed. New tests simulate scrollbar client-width oscillation, retain the old canvas until completion, exercise clipboard file/item formats and image preparation, and verify image bytes through provider tool rounds, stored history and retry branches for both API protocols. A live check with Claude Opus 5.5 medium sent one MAE image and received a streamed interpretation (208 text events); the pixel-bearing request was verified. No personal credentials, runtime image files or conversation responses are included in source control. Live browser interaction acceptance remains outstanding.
