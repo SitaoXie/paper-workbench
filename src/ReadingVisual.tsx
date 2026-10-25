@@ -2,6 +2,7 @@ import {useEffect,useRef,useState} from 'react';
 import {parseChart,validateDiagram,type ChartData} from '../shared/reading-visuals.mjs';
 import {t} from './i18n';
 import './reading-visual.css';
+import DiagramViewport, {diagramSize, type DiagramSize} from './DiagramViewport';
 let renderQueue:Promise<unknown>=Promise.resolve();
 function Chart({data}:{data:ChartData}) {
   const [selected,setSelected]=useState<number>();
@@ -22,7 +23,7 @@ function Chart({data}:{data:ChartData}) {
   </svg></div><p className="chart-selection" aria-live="polite">{!point?t('悬停或点选数据查看数值','Hover or select a point to inspect its value'):`${point.label}: ${point.value} ${data.unit}`}</p><small>{t('数据来源：','Data source: ')}{data.source}</small><details><summary>{t('查看数据表','View data table')}</summary><table><thead><tr><th>{t('项目','Item')}</th><th>{data.unit}</th></tr></thead><tbody>{data.data.map(p=><tr key={p.label}><td>{p.label}</td><td>{p.value}</td></tr>)}</tbody></table></details></>;
 }
 export default function ReadingVisual({source,kind}:{source:string;kind:'mermaid'|'chart'}) {
-  const [svg,setSvg]=useState(''),[error,setError]=useState(''),[zoom,setZoom]=useState(false),[theme,setTheme]=useState(()=>typeof document==='undefined'?'light':document.documentElement.dataset.theme||'light');
+  const [svg,setSvg]=useState(''),[size,setSize]=useState<DiagramSize>({width:640,height:300}),[error,setError]=useState(''),[theme,setTheme]=useState(()=>typeof document==='undefined'?'light':document.documentElement.dataset.theme||'light');
   const slot=useRef<HTMLDivElement>(null);
   let data:ChartData|undefined,invalid='';try{if(kind==='chart')data=parseChart(source);else validateDiagram(source);}catch(e){invalid=(e as Error).message;}
   useEffect(()=>{const observer=new MutationObserver(()=>setTheme(document.documentElement.dataset.theme||'light'));observer.observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});return()=>observer.disconnect();},[]);
@@ -33,15 +34,14 @@ export default function ReadingVisual({source,kind}:{source:string;kind:'mermaid
       if(disposed)return;const {default:mermaid}=await import('mermaid');if(disposed)return;
       mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:theme==='dark'?'dark':'default',htmlLabels:false,maxTextSize:16000,maxEdges:150,suppressErrorRendering:true,flowchart:{htmlLabels:false}});
       const container=document.createElement('div');slot.current?.append(container);
-      try{const {svg}=await mermaid.render(`diagram-${crypto.randomUUID()}`,source,container);if(!disposed)setSvg(svg);}
+      try{const {svg}=await mermaid.render(`diagram-${crypto.randomUUID()}`,source,container);if(!disposed){setSize(diagramSize(svg));setSvg(svg);}}
       finally{container.remove();}
     }).catch(()=>{if(!disposed)setError(t('图形语法暂不可渲染，可展开源代码查看。','This diagram could not be rendered. Expand the source to inspect it.'));});},350);
     return()=>{disposed=true;clearTimeout(timer);};
   },[source,kind,theme,invalid]);
-  const doc=`<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none';"><style>html,body{margin:0;background:transparent}svg{display:block;width:100%;height:auto;max-width:100%!important}</style>${svg}`;
-  return <figure className={`reading-visual ${zoom?'is-expanded':''}`}>
-    <figcaption><span>{data?.title||t('示意图','Explanatory diagram')}</span><small>{t('AI 辅助绘制','AI-generated visual')}</small><button type="button" onClick={()=>setZoom(!zoom)} aria-expanded={zoom}>{zoom?t('缩小','Reduce'):t('放大','Enlarge')}</button></figcaption>
-    {invalid||error?<p role="status">{invalid||error}</p>:data?<Chart data={data}/>:svg?<iframe title={t('解释示意图','Explanatory diagram')} sandbox="" srcDoc={doc}/>:<p role="status">{t('正在绘图…','Drawing…')}</p>}
+  return <figure className="reading-visual">
+    <figcaption><span>{data?.title||t('示意图','Explanatory diagram')}</span><small>{t('AI 辅助绘制','AI-generated visual')}</small></figcaption>
+    {invalid||error?<p role="status">{invalid||error}</p>:data?<Chart data={data}/>:svg?<DiagramViewport svg={svg} size={size}/>:<p role="status">{t('正在绘图…','Drawing…')}</p>}
     <div ref={slot} className="diagram-render-slot" aria-hidden="true"/>
     <details><summary>{t('查看源代码','View source')}</summary><pre><code>{source}</code></pre></details>
   </figure>;

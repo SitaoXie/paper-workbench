@@ -17,3 +17,9 @@ Checks performed:
 - Skill structure validation passed.
 
 Browser automation was unavailable for this turn. Hover positioning, touch/keyboard interaction, dark/light theme appearance and six-second on-screen fading have not received live browser acceptance. This is not a judge-approved release and does not claim the absence of bugs. Runtime responses and personal configuration remain ignored and are not included here.
+
+## Diagram frame follow-up
+
+Replaced the fixed 300px / 65vh frame toggle with SVG viewBox-based sizing. Diagrams start at their natural readable size, with native overflow scrolling and mouse dragging. Controls offer actual 10–400% scaling, fit width and 1:1 reset; keyboard plus/minus and Ctrl/Command + wheel also zoom. The viewport follows the scaled diagram height up to a bounded maximum, so wide, shallow diagrams do not reserve a large empty frame. Native touch scrolling is retained.
+
+455 automated tests and the production build passed. Added geometry regressions for wide/tall SVGs plus DOM component tests for zoom, fit/reset, wheel, keyboard and mouse dragging; the tests supply geometry because jsdom performs no browser layout. Browser visual acceptance remains outstanding.

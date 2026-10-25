@@ -19,7 +19,7 @@ test('chart contract preserves exact numbers, labels, source and units without c
  assert.throws(()=>parseChart('{"type":"bar"}'));
 });
 test('charts render accessible values and source as escaped text in both languages',()=>{
- for(const chinese of [true,false]){const Visual=component('../src/ReadingVisual.tsx',{'./i18n':{t:(zh,en)=>chinese?zh:en},'../shared/reading-visuals.mjs':{parseChart,validateDiagram}});
+ for(const chinese of [true,false]){const Visual=component('../src/ReadingVisual.tsx',{'./DiagramViewport':{},'./i18n':{t:(zh,en)=>chinese?zh:en},'../shared/reading-visuals.mjs':{parseChart,validateDiagram}});
  const html=renderToStaticMarkup(React.createElement(Visual,{kind:'chart',source:JSON.stringify({type:'bar',title:'<script>test</script>',unit:'%',source:'p.4',data:[{label:'A',value:84.9},{label:'B',value:85}]})}));
  assert.ok(!html.includes('<script>'));assert.match(html,/84\.9/);assert.match(html,/<table>/);assert.match(html,/<svg/);assert.match(html,/p\.4/);assert.match(html,chinese?/AI 辅助绘制/:/AI-generated visual/);}
 });
