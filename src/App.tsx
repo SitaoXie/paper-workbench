@@ -1,3 +1,5 @@
+import AssistantPreferences from './AssistantPreferences';
+import {assistantStyle} from '../shared/assistant-prompts.mjs';
 import {clipboardImageFiles,readChatImage,type DraftChatImage} from './chat-images';
 import { CitationSourceContext } from "./CitationLink";
 import ReasoningPanel from "./ReasoningPanel";
@@ -758,6 +760,7 @@ export default function App() {
     chatScroll.followLatest(context.key);
     const images=branch?.images||chatImages[context.key]||[];
     if(images.length&&(questionMode!=="api"||settings.modelCapabilities?.[settings.model]!=="vision")){setError(t("图片问答需要选择支持视觉的模型 API；可在模型设置中配置视觉能力。","Image questions require a vision-capable model API. Configure its vision capability in model settings."));return;}
+    if(questionMode==='api'&&settings.assistant?.pdfMode==='images'&&settings.modelCapabilities?.[settings.model]!=="vision"){setError(t("逐页图像模式需要支持视觉的模型，或切回文字层模式。","Page image mode requires a vision-capable model, or switch to text mode."));return;}
     const previous = completedChat(branch?.history || chat);
     const passage = readChatDraft(context.key).passage;
     // Keep the submitted draft until success. Editing while the request is in
@@ -897,17 +900,17 @@ export default function App() {
       :text;
     const expectedQuestion=boundQuestion.trim()||t("这篇论文的核心贡献和证据边界是什么？", "What are the paper's main contributions and evidence limits?");
     const existing=questionTasksRef.current[context.key];
-    if(existing&&existing.draftRevision===currentDraft.revision&&existing.boundQuestion===expectedQuestion&&existing.language===language)return existing;
+    if(existing&&existing.draftRevision===currentDraft.revision&&existing.boundQuestion===expectedQuestion&&existing.language===language&&existing.stylePrompt===assistantStyle(settings.assistant).prompt)return existing;
     const metadata=currentDraft.contextPolicy==='omit'?null:currentDraft.passage?passageMetadata(currentDraft.passage):undefined;
     const result = await prepareAgentQuestionTask({
       origin: location.origin, paperId: paper.id, conversationId: context.conversationId,
-      sessionKey: context, question: expectedQuestion,
+      sessionKey: context, question: expectedQuestion, stylePrompt:assistantStyle(settings.assistant).prompt,
       language, locale, omitConversationSelection: currentDraft.contextPolicy === "omit",
       metadata: currentDraft.passage ? passageMetadata(currentDraft.passage) : undefined,
     }, body => api<{conversationId:string}>("/chats/new", {method:"POST",body:JSON.stringify(body)}));
     if (chatContext.current !== context) throw new Error(t("已切换会话，请在当前会话重新复制任务。", "The conversation changed. Copy a task from the current conversation."));
     if (!context.conversationId) activateChat(context.paperId, result.conversationId, true);
-    return {...result,boundQuestion:expectedQuestion,metadata,language,draftRevision:currentDraft.revision};
+    return {...result,boundQuestion:expectedQuestion,metadata,language,stylePrompt:assistantStyle(settings.assistant).prompt,draftRevision:currentDraft.revision};
   }
   async function copyAgentQuestion(text=prompt) {
     if(preparingQuestion.current||conversationBusy||!paper)return;
@@ -1499,7 +1502,7 @@ export default function App() {
                   <Mark onPage={view === "paper" ? goToPage : undefined} onSource={view === 'paper' ? openReadingSource : undefined}>
                     {m.content}
                   </Mark>
-                  {m.streaming && <div className="stream-progress" role="status"><Loader2 size={14} className="spin"/>{m.streamStatus === 'search_papers' ? t('已检索论文，继续阅读…','Papers searched, continuing…') : m.streamStatus === 'read_pages' ? t('已读取原文，正在整理…','Pages read, composing…') : m.streamStatus === 'search_web' || m.streamStatus === 'read_webpage' ? t('正在检索网页…','Researching the web…') : t('正在生成…','Generating…')}</div>}
+                  {m.streaming && <div className="stream-progress" role="status"><Loader2 size={14} className="spin"/>{['view_pdf_page','view_figure','view_pdf_region'].includes(m.streamStatus||'') ? t('正在查看论文图像…','Inspecting paper images…') : m.streamStatus === 'list_figures' ? t('已找到图表目录…','Figure list retrieved…') : m.streamStatus === 'search_papers' ? t('已检索论文，继续阅读…','Papers searched, continuing…') : m.streamStatus === 'read_pages' ? t('已读取原文，正在整理…','Pages read, composing…') : m.streamStatus === 'search_web' || m.streamStatus === 'read_webpage' ? t('正在检索网页…','Researching the web…') : t('正在生成…','Generating…')}</div>}
                   {m.streamError && <p className="stream-failure" role="alert">{t('回答未完成，未保存。问题已保留，可重新发送。','Answer incomplete and not saved. Your draft is retained; send again to retry.')}</p>}
                   {m.role === 'assistant' && <AgentEvidence evidence={m.source?.questionAgent as AgentEvidenceData | undefined} chinese={language.startsWith('zh')} paperId={view === 'paper' ? paper?.id : undefined} onPage={view === 'paper' ? goToPage : undefined}/>}
                   {!m.streaming && !m.streamError && <MessageActions message={m} paper={view === "paper" ? paper || undefined : undefined} question={chat.slice(0, i).reverse().find(item => item.role === "user")}
@@ -1601,6 +1604,7 @@ export default function App() {
                 onChange={setSettings}
                 disabled={chatting || reporting || translating}
               />}
+              {questionMode !== 'extractive' && <AssistantPreferences settings={settings} onChange={setSettings} chinese={language.startsWith('zh')} disabled={chatting||conversationBusy} apiMode={questionMode==='api'}/>}
               {questionMode === 'api' && <button type="button" className="agent-web-toggle" aria-pressed={webSearchEnabled}
                 disabled={chatting || conversationBusy} onClick={() => setWebSearchEnabled(enabled => !enabled)}
                 title={t('允许助手向外部搜索服务发送检索词，并读取公开网页；关闭时仅使用论文资料。','Allow the assistant to send search terms to an external search service and read public webpages. Off uses paper sources only.')}>

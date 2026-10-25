@@ -1,6 +1,7 @@
 /** Tab-local subscription handoffs. No provider configuration or credentials. */
 export type QuestionTaskMetadata = {quote?:string;page?:number;pages?:number[];sourceScope?:string;readingId?:string};
 export type PreparedQuestionTask = {
+  stylePrompt?: string;
   agentTaskId:string;task:string;question:string;boundQuestion:string;paperId:string;conversationId:string;language:string;
   metadata?:QuestionTaskMetadata|null;draftRevision:number;createdAt:number;updatedAt:number;
   status:'pending'|'completed';answerId?:string;copied:boolean;clipboardError?:boolean;
@@ -31,6 +32,7 @@ function valid(value:unknown):value is PreparedQuestionTask{
     typeof t.language==='string'&&/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8}){0,3}$/.test(t.language)&&metadataValid(t.metadata)&&
     finite(t.draftRevision)&&finite(t.createdAt)&&finite(t.updatedAt)&&['pending','completed'].includes(t.status)&&
     (t.status!=='completed'||id(t.answerId))&&(t.answerId===undefined||id(t.answerId))&&typeof t.copied==='boolean'&&
+    (t.stylePrompt===undefined||text(t.stylePrompt,12000))&&
     (t.clipboardError===undefined||typeof t.clipboardError==='boolean');
 }
 function bounded(input:unknown):Record<string,PreparedQuestionTask>{
@@ -42,7 +44,7 @@ function bounded(input:unknown):Record<string,PreparedQuestionTask>{
     // Copy only the declared fields; arbitrary stored properties cannot inflate
     // or carry configuration into the next serialization.
     const task:PreparedQuestionTask={agentTaskId:value.agentTaskId,task:value.task,question:value.question,boundQuestion:value.boundQuestion,paperId:value.paperId,conversationId:value.conversationId,language:value.language,draftRevision:value.draftRevision,createdAt:value.createdAt,updatedAt:value.updatedAt,status:value.status,copied:value.copied,
-      ...(value.metadata!==undefined?{metadata:value.metadata}:{}),...(value.answerId?{answerId:value.answerId}:{}),...(value.clipboardError?{clipboardError:true}:{})};
+      ...(value.stylePrompt?{stylePrompt:value.stylePrompt}:{}),...(value.metadata!==undefined?{metadata:value.metadata}:{}),...(value.answerId?{answerId:value.answerId}:{}),...(value.clipboardError?{clipboardError:true}:{})};
     const bytes=JSON.stringify(key).length+JSON.stringify(task).length+2;if(size+bytes>maxCharacters)continue;
     tasks[key]=task;size+=bytes;count++;
   }

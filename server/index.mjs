@@ -1219,6 +1219,7 @@ export async function createApp({
         throw new ApiError("processing must be api or extractive; omit it for the compatible automatic behavior.");
       const settings = { ...store.data.settings };
       if(!request.body.images?.length&&Buffer.byteLength(JSON.stringify(request.body))>256*1024)throw new ApiError("Request body too large.",413);
+      if(processing!=="extractive"&&canUseModel(settings)&&settings.assistant?.pdfMode==='images'&&settings.modelCapabilities?.[settings.model]!=="vision")throw new ApiError("逐页图像模式需要支持视觉的模型 / PDF image mode requires a vision-capable model.",409);
       const images=validateChatImages(request.body.images);
       if(images.length&&(processing==="extractive"||!canUseModel(settings)||settings.modelCapabilities?.[settings.model]!=="vision"))
         throw new ApiError("此问题包含图片，请选择已配置视觉能力的模型 API / Choose a vision-capable model API for image questions.",409);
@@ -1290,7 +1291,7 @@ export async function createApp({
           message.trim(),
           previous,
           settings,
-          { fetchImpl, images, metadata, forceExtractive: processing === "extractive", webSearch, download, ...(stream ? {onEvent:emit,signal:controller.signal} : {}) },
+          { fetchImpl, dataDir:store.directory, images, metadata, forceExtractive: processing === "extractive", webSearch, download, ...(stream ? {onEvent:emit,signal:controller.signal} : {}) },
         );
         if (controller.signal.aborted) throw new ApiError("The client disconnected. No incomplete answer was saved.", 499);
         if (paperId && !store.paper(paperId))

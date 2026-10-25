@@ -1,3 +1,4 @@
+import {DEFAULT_ASSISTANT_PREFERENCES} from '../shared/assistant-prompts.mjs';
 import {defaultCollections} from './collections.mjs';
 import { DEFAULT_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
 import { mkdir, readFile, writeFile, rename, chmod } from "node:fs/promises";
@@ -23,7 +24,7 @@ export const defaultSettings = {
 
 // Keep the active profile mirrored at top level for older clients and callers.
 export function normalizeProfiles(settings = defaultSettings) {
-  const { profiles: existing, activeProfileId, vision, recommendations, ...legacy } = settings;
+  const { profiles: existing, activeProfileId, vision, recommendations, assistant, ...legacy } = settings;
   const profiles =
     Array.isArray(existing) && existing.length
       ? existing
@@ -43,7 +44,7 @@ export function normalizeProfiles(settings = defaultSettings) {
   }
   const active =
     profiles.find((profile) => profile.id === activeProfileId) || profiles[0];
-  return { ...active, profiles, activeProfileId: active.id, vision: vision || { enabled: false }, recommendations: recommendations || { enabled: false, profileId: '', model: '' } };
+  return { ...active, profiles, assistant: assistant || structuredClone(DEFAULT_ASSISTANT_PREFERENCES), activeProfileId: active.id, vision: vision || { enabled: false }, recommendations: recommendations || { enabled: false, profileId: '', model: '' } };
 }
 
 export class Store {

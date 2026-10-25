@@ -8,7 +8,32 @@ Default origin: `http://127.0.0.1:4318`. JSON request bodies are limited to 256 
 
 `POST /api/chat` keeps its existing conversation, selection, processing and response contract, and adds optional boolean `webSearch` (default `false`; invalid types fail before session mutation). With a configured model, questions now use native tool calls. `processing: "extractive"` still makes no model or external-web calls even when `webSearch: true` is supplied.
 
-The internal tools are `search_papers({query,paperId?})`, `read_pages({paperId,pages})`, and, only when enabled, `search_web({query})` and `read_webpage({url,offset?})`. Paper-scoped chats restrict local tools to that paper; general research chats can search the library. Searches return exact source excerpts and offsets. Pages accept 1–3 one-based PDF indices, returned in ascending order with complete extracted text, `start:0`, `complete:true` and `nextOffset:null`. PDF pages are never shortened; offsets are no longer accepted. If the whole result exceeds the remaining budget, the tool fails explicitly and asks for fewer pages. `extractionIncomplete` distinguishes missing original extraction from transport truncation. Non-PDF source text uses input page 1 but returns `page: null`, and metadata-only results are labeled. Tools do not inspect image pixels.
+The internal tools are `search_papers({query,paperId?})`, `read_pages({paperId,pages})`, and, only when enabled, `search_web({query})` and `read_webpage({url,offset?})`. Paper-scoped chats restrict local tools to that paper; general research chats can search the library. Searches return exact source excerpts and offsets. Pages accept 1–3 one-based PDF indices, returned in ascending order with complete extracted text, `start:0`, `complete:true` and `nextOffset:null`. PDF pages are never shortened; offsets are no longer accepted. If the whole result exceeds the remaining budget, the tool fails explicitly and asks for fewer pages. `extractionIncomplete` distinguishes missing original extraction from transport truncation. Non-PDF source text uses input page 1 but returns `page: null`, and metadata-only results are labeled. `read_pages` does not inspect image pixels; the visual tools below do.
+
+### Assistant styles and PDF input
+
+`PUT /api/settings` accepts a partial `assistant` object, persisted in the ignored local store independently of model profiles:
+
+```json
+{"assistant":{"styleId":"concise","pdfMode":"text","customStyles":[]}}
+```
+
+Built-in styles are `balanced`, `concise`, `detailed`, and `teaching`. Their prompts are repository-owned, visible and read-only. Custom styles have `{id:"custom-…",name,prompt}`; up to 30, with names up to 80 characters and prompts up to 12,000 characters. These limits bound settings payloads, not answer length. Select an existing ID; delete a selected custom style with an atomic update to `styleId:"balanced"`. Built-in IDs cannot be replaced. Style preferences govern presentation, never source truth or tool authorization. Answers record the applied style and prompt snapshot. Subscription question handoffs also include the selected style.
+
+`pdfMode:"text"` retains the 15-page full-text policy. `pdfMode:"images"` requires the active model to be explicitly marked `vision`. When selected PDFs total at most 15 pages, each available local PDF is rasterized into one full-page image per page, in ascending order, in a stable source message before conversation history and the question. Full extracted page text is not duplicated in this mode; short abstract metadata remains. Longer papers start with brief metadata and use visual tools on demand. Non-PDF sources remain text. Image rendering failures are explicit errors, never silent text-only success. `source.pdfMode`, `initialPageImageCount`, `toolImageCount` and `pixelsProvided` describe what was actually delivered.
+
+In either input mode, vision-capable models also receive:
+
+- `list_figures({paperId})`: saved figure/table IDs, captions, page numbers, crop availability; also available to text models.
+- `view_pdf_page({paperId,page})`: a full original PDF page image.
+- `view_figure({paperId,figureId})`: a saved crop, or an explicitly labelled whole page if the entry has no crop.
+- `view_pdf_region({paperId,page,crop:{x,y,width,height}})`: a closer view of a table, figure or formula; coordinates are normalized to the displayed, rotated page. The region is model-requested, not a verified extraction.
+
+Successful tools return **image pixels** to the next model round. Anthropic receives native image blocks inside `tool_result`; OpenAI-compatible providers receive text tool results followed by a labelled multimodal source message after all pending tool-call results. The loop continues until a final answer or the existing budget limit. Up to six visual tool results are allowed per answer, separate from initial page images. Duplicate renders are cached within the loop. Images do not consume the source-character budget; image tokens are billed by the provider and recorded where its usage response reports them. JPEGs are bounded to 2,600 pixels on the longest edge, approximately six megapixels, and 4 MiB each; initial page images have a 40 MiB base64 transport budget. Tiny labels may need a region call. Rendering runs in disposable workers with a 30-second timeout and two-render concurrency cap. Files must be imported PDFs inside the local data directory.
+
+Provenance stores pages, crops and figure IDs, never base64 tool payloads. Earlier visual answers are marked as historical interpretations; images can be reread in a later turn. Text-only models do not receive visual tools or claim access to page pixels. Empty retrieval blocks remain hidden.
+
+### External search
 
 Web searches use DuckDuckGo HTML by default or Tavily when `TAVILY_API_KEY` is present in the server environment; `PAPER_WORKBENCH_SEARCH_PROVIDER` explicitly chooses `duckduckgo` or `tavily`. No runtime key is returned by public APIs or passed to the model. Web reads accept only URLs explicitly supplied in the current question or returned by search, enforce existing public-network download safeguards, extract HTML/plain text and reject PDF/binary responses. External search snippets never imply a full webpage was read. Provider failures are tool errors, not empty successful searches. No automatic provider fallback occurs.
 

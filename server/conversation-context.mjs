@@ -11,6 +11,7 @@ function clipped(text, limit) {
 }
 
 function historicalMessage(message, currentVisualEvidenceIds) {
+  if(message.role==='assistant'&&(message.source?.toolImageCount>0||message.source?.initialPageImageCount>0))message={...message,content:`[Earlier model interpretation of PDF images, not original evidence. Those earlier image pixels are not automatically replayed in this turn. Use the currently supplied page images or view_pdf_page/view_figure again to verify visual claims.]\n${message.content}`};
   if (message.role !== "assistant" || !message.source || !Object.hasOwn(message.source, "visualEvidenceIds")) return message;
   const ids = message.source.visualEvidenceIds;
   if (!Array.isArray(ids) || ids.length > 32 || ids.some(id => typeof id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(id)))
