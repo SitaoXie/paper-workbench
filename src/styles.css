@@ -19,7 +19,7 @@
   --hover: #f1eeee;
   --line: #ebe7e5;
   --text: #262422;
-  --muted: #8b8581;
+  --muted: #766e69;
   --secondary: #6c6662;
   --accent: #91414c;
   --accent-hover: #7d3540;
@@ -990,20 +990,6 @@ a svg {
 }
 .prose li {
   margin: 7px 0;
-}
-.prose table,
-.message table {
-  border-collapse: collapse;
-  display: block;
-  overflow: auto;
-  font-size: 12px;
-}
-.prose th,
-.prose td,
-.message th,
-.message td {
-  border: 1px solid var(--line);
-  padding: 8px;
 }
 .prose pre,
 .message pre {

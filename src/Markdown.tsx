@@ -8,12 +8,20 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import remarkCjkEmphasis from "./remark-cjk-emphasis";
 import "katex/dist/katex.min.css";
+import "./markdown-table.css";
 import { t } from "./i18n";
 import type { Figure } from "./types";
 import { figureCaption, type FigureCaptionPresentation } from "./figure-captions";
 import { readingFigureSlots } from "./reading-figures";
 import RecoverableFeature from "./RecoverableFeature";
 const PdfFigure = lazy(() => import("./PdfFigure"));
+// Keep the renderer identity stable so unrelated updates do not replace a
+// selected table's DOM nodes or discard its horizontal reading position.
+function MarkdownTable({ node: _node, ...props }: HTMLAttributes<HTMLTableElement> & ExtraProps) {
+  return <div className="markdown-table-scroll" role="region" aria-label={t("数据表格，可横向滚动", "Data table, horizontally scrollable")} tabIndex={0}>
+    <table {...props} className={["markdown-table", props.className].filter(Boolean).join(" ")} />
+  </div>;
+}
 export default function Mark({
   children,
   onPage,
@@ -93,6 +101,7 @@ export default function Mark({
       rehypePlugins={[rehypeKatex]}
       components={{
         ...headings,
+        table: MarkdownTable,
         img: ({ alt }) => (
           <span className="muted-label">
             [{t("图片", "Image")}: {alt || t("外部图片，未自动加载", "External image, not loaded automatically")}]

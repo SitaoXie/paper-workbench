@@ -5,6 +5,7 @@ import { LocaleProvider } from "./i18n";
 import "./styles.css";
 import "./assistant-dock.css";
 import "./reading-workspace.css";
+import "./workspace-polish.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <LocaleProvider>

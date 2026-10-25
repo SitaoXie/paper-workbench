@@ -765,6 +765,7 @@ export default function ReadingOverview({
         </>}
         <VisionTools compact paper={paper} settings={settings} language={language} onConfigure={onConfigure} onPage={onPage} onManageFigures={onManageFigures} onUpdated={value=>publish({...value,activeReadingId:selectedRef.current})}/>
         {version && <div className="reading-provenance" aria-label={t("当前阅读来源与语言", "Current reading source and language")}>
+          <span className="reading-style-badge">{styleLabel(version.style)}</span>
           <span className="reading-boundary">{version.mode === "extractive" ? t("原文摘录", "Source excerpts") : t("AI 解读", "AI-generated")}</span>
           <span>{(translated ? language : sourceLanguage).startsWith("zh") ? "中文" : (translated ? language : sourceLanguage).startsWith("en") ? "English" : translated ? language : sourceLanguage}{translated && sourceLanguage.toLowerCase() !== language.toLowerCase() ? ` · ${t("译文", "translation")}` : ""}</span>
         </div>}
@@ -818,7 +819,7 @@ export default function ReadingOverview({
           {needsInteractiveTranslation && translated?.interactiveTranslationError && translationJob?.status !== "error" && !translating && <p className="muted-label">{translated.interactiveTranslationError}</p>}
           {sectionIntent && (!sectionVersionAvailable || !sectionExists) && !sectionNoticeDismissed && <div className="reading-section-notice" role="status"><span>{!sectionVersionAvailable ? t("链接指向的解读版本不存在，当前显示已有版本。", "The linked reading version is unavailable; showing an existing version.") : t("链接指向的章节不存在，请从目录选择。", "The linked section is unavailable. Choose one from the contents.")}</span><button className="icon-button" aria-label={t("关闭章节提示", "Dismiss section notice")} onClick={() => setSectionNoticeDismissed(true)}><X size={13}/></button></div>}
           {visiblePresentation === "article" && <ReadingSections active={active} paperId={paper.id} readingId={version.id} contextKey={readingContextKey} sections={sections} contentRef={proseRef} intent={sectionVersionAvailable && sectionExists ? sectionIntent : undefined} onNavigate={navigateSection} onError={onError}/>}
-          <div ref={proseRef} className={`reading-prose ${visiblePresentation === "interactive" ? "" : "prose"}`} data-reading-id={version.id}>
+          <div ref={proseRef} className={`reading-prose ${visiblePresentation === "interactive" ? "" : "prose"}`} data-reading-id={version.id} lang={translated ? language : sourceLanguage}>
             <SelectionTools active={active} paperId={paper.id} readingId={version.id} scope="reading" language={language} model={settings.model} modelReady={!!modelReady} onAsk={onAskSelection}>
               {visiblePresentation === "interactive" && interactive ? <InteractiveReading interactive={interactive} figures={sourceFigures} pdfUrl={paper.localPdfUrl || paper.pdfUrl} onPage={onPage} onSource={onSource} language={translated ? language : sourceLanguage} {...captionPresentation}/> : <Mark sectionNavigation={sectionNavigation} onPage={onPage} onSource={onSource} figures={sourceFigures} pdfUrl={paper.localPdfUrl || paper.pdfUrl} {...captionPresentation}>{markdown}</Mark>}
             </SelectionTools>

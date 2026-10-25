@@ -971,16 +971,6 @@ html[data-theme="dark"] .pdf-reader[data-paper-colors="theme"] {
   padding: 9px;
   overflow-x: auto;
 }
-.pdf-inline-markdown table {
-  border-collapse: collapse;
-  max-width: 100%;
-  display: block;
-  overflow: auto;
-}
-.pdf-inline-markdown :is(th, td) {
-  padding: 5px;
-  border: 1px solid var(--line);
-}
 .pdf-inline-markdown a {
   color: var(--accent);
   text-decoration: underline;

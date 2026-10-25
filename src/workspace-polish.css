@@ -1,0 +1,105 @@
+/* Standalone research shares the canvas; only the composer is a raised surface. */
+.research-page { min-width: 0; }
+.research-page > .page-header { flex-shrink: 0; }
+.research-page .full-assistant {
+  width: min(100%, 880px);
+  padding-inline: 28px;
+  background: transparent;
+  isolation: isolate;
+}
+.research-page .assistant-header {
+  padding: 0 0 10px;
+  height: auto;
+  min-height: 52px;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.research-page .assistant-header > span { visibility: visible; color: var(--muted); font-size: 12px; }
+.research-page .assistant-header > div { gap: 6px; }
+.research-page .assistant-header .icon-button {
+  width: auto;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 7px 10px;
+  gap: 6px;
+  font-size: 12px;
+}
+.research-page .is-welcome .conversation-frame { flex: 0 1 auto; margin-top: auto; }
+.research-page .is-welcome .composer-wrap { margin-bottom: auto; }
+.research-welcome { padding: 28px 2px 6px; text-align: center; }
+.research-symbol { display: inline-grid; place-items: center; width: 48px; height: 48px; border-radius: 16px; background: var(--tint); color: var(--accent); margin-bottom: 20px; }
+.research-welcome h1 { font-size: clamp(25px, 2.6vw, 34px); font-weight: 600; line-height: 1.3; letter-spacing: -.035em; text-wrap: balance; margin: 0 0 14px; }
+.research-welcome > p { color: var(--secondary); font-size: 14px; line-height: 1.75; margin: 0 auto 28px; max-width: 540px; text-wrap: pretty; }
+.research-suggestions { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
+.research-suggestions button { display: flex; align-items: center; gap: 9px; padding: 14px 12px; min-height: 58px; border: 1px solid var(--line); border-radius: 12px; color: var(--secondary); background: var(--bg); text-align: start; font-size: 13px; line-height: 1.5; }
+.research-suggestions button > span { flex: 1; min-width: 0; }
+.research-suggestions button > svg:first-child { color: var(--accent); }
+.research-suggestions button > svg:last-child { width: 12px; color: var(--muted); }
+.research-suggestions button:hover { background: var(--subtle); border-color: var(--accent); color: var(--text); }
+.research-import { margin: 0 auto 12px; }
+.research-page .composer-wrap { padding: 20px 0 max(24px,env(safe-area-inset-bottom)); flex-shrink: 0; }
+.research-page .composer { border-radius: 18px; padding: 16px; background: var(--panel); box-shadow: 0 6px 24px #00000006; }
+.research-page .composer:focus-within { box-shadow: 0 0 0 3px var(--tint); }
+.research-page .composer textarea { font-size: 15px; height: 66px; max-height: min(180px,24dvh); line-height: 1.7; padding: 0 2px; }
+.research-page .composer-bottom { gap: 8px; }
+.research-page .composer-bottom .model-select-wrap { max-width: 300px; }
+.research-page .composer-bottom select { min-height: 36px; font-size: 12px; }
+.research-page .question-mode-wrap.mode-api { flex-basis: 112px; }
+.research-page .send-button { width: 36px; height: 36px; }
+.research-page .messages { padding: 24px 6px 12px; }
+.research-page .message { font-size: 15px; line-height: 1.85; margin-bottom: 30px; }
+.research-page .message.user { width: fit-content; max-width: 90%; margin-left: auto; padding: 12px 16px; }
+.research-page .message-label { font-size: 12px; }
+.research-page .setup-hint { font-size: 12px; line-height: 1.5; }
+
+/* Long translations wrap inside their own controls, rather than widening a pane. */
+.library-page { padding-bottom: 48px; }
+.library-page :is(.section-heading,.library-heading,.search-options) { flex-wrap: wrap; }
+.library-page .section-heading h2 { min-width: 0; }
+.library-page .paper-card h3 { overflow-wrap: anywhere; }
+.library-page :is(.card-authors,.card-meta,.muted-label) { font-size: 12px; }
+.library-page .discovery-prompts button { min-width: 0; }
+.library-page .discovery-prompts button > span { min-width: 0; overflow-wrap: anywhere; }
+.settings-drawer .profile-list { min-width: 0; }
+.settings-drawer .profile-list button { overflow-wrap: anywhere; }
+.reading-style-options small { font-size: 12px; line-height: 1.65; }
+.reading-prose:lang(en) { line-height: 1.8; }
+.reading-prose:lang(zh) { line-height: 1.95; }
+.reading-provenance .reading-style-badge { background: var(--subtle); color: var(--secondary); padding: 3px 7px; border-radius: 5px; }
+.reading-provenance .reading-style-badge::before { content: none; }
+@container (max-width: 560px) {
+  .reading-overview-heading { flex-wrap: wrap; }
+  .reading-style-options { grid-template-columns: minmax(0,1fr); }
+  .reading-style-options > button { display: grid; grid-template-columns: minmax(100px, .8fr) minmax(0,1.5fr); align-items: start; gap: 12px; padding: 12px; }
+  .reading-style-options strong { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+  .reading-preferences { padding: 13px; }
+  .reading-generate-actions .model-select-wrap { max-width: none; flex-basis: 100%; }
+}
+@container (max-width: 360px) {
+  .reading-style-options > button { grid-template-columns: minmax(0,1fr); gap: 5px; }
+}
+@media (max-width: 700px) {
+  .research-page .full-assistant { padding-inline: 18px; }
+  .research-page .assistant-header > span { display: none; }
+  .research-page .assistant-header { justify-content: flex-end; min-height: 46px; }
+  .research-suggestions { grid-template-columns: minmax(0,1fr); gap: 7px; }
+  .research-suggestions button { min-height: 44px; padding: 10px 12px; }
+  .research-welcome { padding-top: 16px; }
+  .research-symbol { margin-bottom: 14px; width: 40px; height: 40px; border-radius: 12px; }
+  .research-welcome > p { margin-bottom: 18px; font-size: 13px; }
+  .research-page .composer-wrap { padding-top: 16px; }
+  .research-page .composer { padding: 12px; }
+  .research-page .composer textarea { font-size: 16px; height: 60px; }
+  .research-page .messages { padding-inline: 2px; }
+}
+@media (max-height: 650px) {
+  .research-welcome { padding-top: 8px; }
+  .research-symbol { display: none; }
+  .research-welcome > p { margin-bottom: 14px; }
+  .research-page .composer-wrap { padding-block: 12px; }
+}
+@media (pointer: coarse) {
+  .research-page .assistant-header .icon-button,
+  .research-page .composer-bottom select,
+  .research-page .send-button { min-height: 44px; min-width: 44px; }
+}

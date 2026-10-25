@@ -64,6 +64,24 @@ test('extractive fallback does not claim model or policy execution', async () =>
   assert.equal(result.source?.readingPolicy, undefined);
 });
 
+test('Chinese and English preserve each reading style, focus and language throughout every report round', async () => {
+  const instructions = { quick: 'quick reading overview', deep: 'deep reading', critical: 'critical reading' };
+  for (const language of ['zh-CN', 'en']) for (const style of ['quick', 'deep', 'critical']) {
+    const text = language === 'zh-CN' ? '## 证据\n固定设置下的来源证据。[p.1]' : '## Evidence\nSource evidence under the stated setting. [p.1]';
+    const mock = provider(text);
+    const focus = language === 'zh-CN' ? '关注实验分母' : 'Focus on experimental denominators';
+    const result = await generateReport(paper, settings, { language, style, focus, adversarial: style !== 'quick', fetchImpl: mock.fetchImpl });
+    assert.equal(mock.calls.length, style === 'quick' ? 1 : 3);
+    assert.equal(result.language, language); assert.equal(result.style, style); assert.equal(result.focus, focus);
+    assert.equal(result.markdown, text);
+    for (const request of mock.calls) {
+      assert.ok(request.messages[0].content.includes(`requested language: ${language}`));
+      assert.ok(request.messages[0].content.includes(instructions[style]));
+      assert.ok(request.messages.some(message => message.content.includes(focus)));
+    }
+  }
+});
+
 test('standalone skill contains the exact shared policy and every local link resolves without checkout files', async () => {
   const bundle = await agentSkillBundle();
   assert.ok(bundle.includes(readingPolicyPrompt('overview')));

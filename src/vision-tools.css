@@ -307,15 +307,6 @@
   overflow-x: auto;
   border-radius: 6px;
 }
-.vision-markdown table {
-  display: block;
-  border-collapse: collapse;
-  overflow-x: auto;
-}
-.vision-markdown :is(th, td) {
-  border: 1px solid var(--line);
-  padding: 5px 8px;
-}
 .vision-markdown a {
   color: var(--accent);
 }

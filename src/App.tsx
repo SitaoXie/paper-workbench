@@ -75,6 +75,7 @@ import {
 } from "./types";
 import SettingsDialog from "./SettingsDialog";
 import UsagePage from "./UsagePage";
+import ResearchWelcome from "./ResearchWelcome";
 import AssistantDock, { defaultAssistantWidth } from "./AssistantDock";
 import { readCompanionMode, saveCompanionMode, type CompanionMode } from "./assistant-layout";
 import { selectionErrorMessage } from "./selection-errors";
@@ -93,10 +94,10 @@ const suggestions = () => [
   t("帮我制定一个复现清单"),
 ];
 const welcomeQueries = [
-  "Reinforcement learning",
-  "Reasoning & inference",
-  "Language models",
-  "Computer vision",
+  ["强化学习", "Reinforcement learning"],
+  ["推理与推断", "Reasoning & inference"],
+  ["语言模型", "Language models"],
+  ["计算机视觉", "Computer vision"],
 ];
 const exampleUrl = "https://arxiv.org/abs/1706.03762";
 
@@ -1320,12 +1321,12 @@ export default function App() {
   function assistantPanel(full = false) {
     return (
       <aside
-        className={`assistant-panel ${full ? "full-assistant" : "assistant-docked"}`}
+        className={`assistant-panel ${full ? "full-assistant" : "assistant-docked"} ${full && !chat.length && !showHistory && !questionTask ? "is-welcome" : ""}`}
         aria-label={t("研究助手")}
       >
         <div className="assistant-header">
           <span>
-            <Sparkles size={17} /> {t("研究助手")}
+            <Sparkles size={17} /> {full ? t("文库问答", "Library conversation") : t("研究助手")}
           </span>
           <div>
             <button
@@ -1336,6 +1337,7 @@ export default function App() {
               onClick={listConversations}
             >
               <History size={16} />
+              {full && <span>{t("对话历史")}</span>}
             </button>
             <button
               className="icon-button"
@@ -1345,6 +1347,7 @@ export default function App() {
               onClick={newConversation}
             >
               <Plus size={17} />
+              {full && <span>{t("新对话")}</span>}
             </button>
             {!full && (
               <button
@@ -1396,31 +1399,21 @@ export default function App() {
         </>
         <div className="conversation-frame">
         <div className="conversation" ref={chatScroll.ref} onScroll={chatScroll.onScroll} tabIndex={0} aria-label={t("对话消息", "Conversation messages")}>
-          {chat.length === 0 ? (
+          {chat.length === 0 ? full ? (
+            <ResearchWelcome hasPapers={papers.length > 0} disabled={chatting || conversationBusy || copyingAgent || importing}
+              onImport={() => setShowImport(true)}
+              onQuestion={question => { setPrompt(question); composerRef.current?.focus(); }}/>
+          ) : (
             <div className="assistant-welcome">
               <div className="assistant-symbol">
                 <Sparkles size={27} strokeWidth={1.2} />
               </div>
               <h2>
-                {full ? (
-                  <>
-                    {t("让好问题，")}
-                    <br />
-                    {t("带你走得更远。")}
-                  </>
-                ) : (
-                  <>
-                    {t("理解、质疑，")}
-                    <br />
-                    {t("或在这篇论文的基础上探索。")}
-                  </>
-                )}
+                {t("理解、质疑，")}
+                <br />
+                {t("或在这篇论文的基础上探索。")}
               </h2>
-              <p>
-                {full
-                  ? t("连接你的模型，探索文库中的想法与证据。")
-                  : t("从一个问题开始，找到值得深究的线索。")}
-              </p>
+              <p>{t("从一个问题开始，找到值得深究的线索。")}</p>
               <div className="suggestion-grid">
                 {suggestions().map((s, i) => (
                   <button key={s} onClick={() => submitQuestion(s)} disabled={chatting||conversationBusy||copyingAgent}>
@@ -2190,9 +2183,9 @@ export default function App() {
                   </div>
                   {results === null && (
                     <div className="topic-chips">
-                      {welcomeQueries.map((q) => (
-                        <button key={q} onClick={() => search(q)}>
-                          {q}
+                      {welcomeQueries.map(([zh, en]) => (
+                        <button key={en} onClick={() => search(en)}>
+                          {t(zh, en)}
                           <ArrowUpRight size={12} />
                         </button>
                       ))}
