@@ -25,7 +25,7 @@ function Chart({data}:{data:ChartData}) {
 export default function ReadingVisual({source,kind}:{source:string;kind:'mermaid'|'chart'}) {
   const [svg,setSvg]=useState(''),[size,setSize]=useState<DiagramSize>({width:640,height:300}),[error,setError]=useState(''),[theme,setTheme]=useState(()=>typeof document==='undefined'?'light':document.documentElement.dataset.theme||'light');
   const slot=useRef<HTMLDivElement>(null);
-  let data:ChartData|undefined,invalid='';try{if(kind==='chart')data=parseChart(source);else validateDiagram(source);}catch(e){invalid=(e as Error).message;}
+  let data:ChartData|undefined,invalid='',diagram='';try{if(kind==='chart')data=parseChart(source);else diagram=validateDiagram(source);}catch(e){invalid=(e as Error).message;}
   useEffect(()=>{const observer=new MutationObserver(()=>setTheme(document.documentElement.dataset.theme||'light'));observer.observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});return()=>observer.disconnect();},[]);
   useEffect(()=>{
     if(kind!=='mermaid'||invalid)return;let disposed=false;setSvg('');setError('');
@@ -34,11 +34,11 @@ export default function ReadingVisual({source,kind}:{source:string;kind:'mermaid
       if(disposed)return;const {default:mermaid}=await import('mermaid');if(disposed)return;
       mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:theme==='dark'?'dark':'default',htmlLabels:false,maxTextSize:16000,maxEdges:150,suppressErrorRendering:true,flowchart:{htmlLabels:false}});
       const container=document.createElement('div');slot.current?.append(container);
-      try{const {svg}=await mermaid.render(`diagram-${crypto.randomUUID()}`,source,container);if(!disposed){setSize(diagramSize(svg));setSvg(svg);}}
+      try{const {svg}=await mermaid.render(`diagram-${crypto.randomUUID()}`,diagram,container);if(!disposed){setSize(diagramSize(svg));setSvg(svg);}}
       finally{container.remove();}
     }).catch(()=>{if(!disposed)setError(t('图形语法暂不可渲染，可展开源代码查看。','This diagram could not be rendered. Expand the source to inspect it.'));});},350);
     return()=>{disposed=true;clearTimeout(timer);};
-  },[source,kind,theme,invalid]);
+  },[diagram,kind,theme,invalid]);
   return <figure className="reading-visual">
     <figcaption><span>{data?.title||t('示意图','Explanatory diagram')}</span><small>{t('AI 辅助绘制','AI-generated visual')}</small></figcaption>
     {invalid||error?<p role="status">{invalid||error}</p>:data?<Chart data={data}/>:svg?<DiagramViewport svg={svg} size={size}/>:<p role="status">{t('正在绘图…','Drawing…')}</p>}

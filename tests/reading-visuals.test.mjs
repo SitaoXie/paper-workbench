@@ -29,10 +29,44 @@ test('empty retrieval block is omitted while failed retrieval remains visible',(
  const html=renderToStaticMarkup(React.createElement(Evidence,{evidence:{...base,steps:[{tool:'search_papers',ok:false,error:'Unavailable',references:[]}]},chinese:false}));assert.match(html,/Unavailable/);assert.match(html,/Retrieval/);
 });
 
-test('bundled Mermaid parser accepts the supported bilingual mechanism diagrams',async()=>{
+test('bare Mermaid line breaks are normalized without allowing HTML attributes or executable content',()=>{
+ for(const br of ['<br>','<br/>','<br />','<BR/>','<Br >']){
+  const source=`flowchart LR\n A["编码器${br}🔥 参数更新"] --> B["Decoder"]`;
+  assert.equal(validateDiagram(source),'flowchart LR\n A["编码器<br/>🔥 参数更新"] --> B["Decoder"]');
+ }
+ for(const label of ['<br onclick="alert(1)">','<br style="color:red">','<br/onmouseover=alert(1)>','<br data-x="1"/>','<script>alert(1)</script>','<br/><img src=x>','<br/><a href="https://example.org">link</a>','<svg onload=alert(1)>','<scr<br/>ipt>alert(1)</script>'])assert.throws(()=>validateDiagram(`flowchart LR\n A["${label}"]`));
+});
+
+test('fine-tuning comparison with subgraphs, Chinese, emoji and line breaks renders SVG text in both themes',async()=>{
  const {JSDOM}=await import('jsdom');const dom=new JSDOM('<!doctype html><body></body>');
- globalThis.window=dom.window;globalThis.document=dom.window.document;
- try{const {default:mermaid}=await import('mermaid');mermaid.initialize({startOnLoad:false,securityLevel:'strict',htmlLabels:false});
- for(const graph of ['flowchart LR\n A["可见图块"] --> B["编码器"]\n B --> C["解码器"]','sequenceDiagram\n participant R as Reader\n participant A as Agent\n R->>A: Explain the evidence\n A-->>R: Source-grounded answer']){validateDiagram(graph);assert.ok((await mermaid.parse(graph)).diagramType);}
- }finally{dom.window.close();delete globalThis.window;delete globalThis.document;}
+ globalThis.window=dom.window;globalThis.document=dom.window.document;globalThis.Element=dom.window.Element;globalThis.CSSStyleSheet=dom.window.CSSStyleSheet;
+ // jsdom does not perform layout. Supply deterministic measurements while
+ // exercising the actual Mermaid parser, SVG renderer and sanitizer.
+ dom.window.SVGElement.prototype.getBBox=function(){return{x:0,y:0,width:Math.max(30,(this.textContent||'').length*8),height:20};};
+ dom.window.SVGElement.prototype.getComputedTextLength=function(){return (this.textContent||'').length*8;};
+ const source=`flowchart TB
+  subgraph FT["1. 端到端微调 (Fine-tuning, ft)"]
+    direction LR
+    E1["预训练编码器 (ViT)<br/>🔥 参数全部参与更新"] --> C1["线性分类头<BR />🔥 参数更新"] --> O1["输出分类准确率 (%)"]
+  end
+  subgraph LP["2. 线性探测 (Linear Probing, lin)"]
+    direction LR
+    E2["预训练编码器 (ViT)<br/>❄️ 参数完全冻结 (0 个块更新)"] --> C2["BN(无仿射) + 线性分类头<br/>🔥 仅训练分类头参数"] --> O2["输出分类准确率 (%)"]
+  end`;
+ try{
+  const {default:mermaid}=await import('mermaid');
+  mermaid.initialize({startOnLoad:false,securityLevel:'strict',htmlLabels:false});
+  for(const graph of ['flowchart LR\n A["可见图块"] --> B["编码器"]\n B --> C["解码器"]','sequenceDiagram\n participant R as Reader\n participant A as Agent\n R->>A: Explain the evidence\n A-->>R: Source-grounded answer'])assert.ok((await mermaid.parse(validateDiagram(graph))).diagramType);
+  for(const theme of ['default','dark']){
+   mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme,htmlLabels:false,flowchart:{htmlLabels:false},suppressErrorRendering:true});
+   const container=document.createElement('div');document.body.append(container);
+   const {svg}=await mermaid.render(`linebreak-${theme}`,validateDiagram(source),container);
+   const result=new dom.window.DOMParser().parseFromString(svg,'image/svg+xml');
+   assert.equal(result.querySelector('parsererror')?.textContent,undefined);assert.equal(result.querySelectorAll('.node').length,6);
+   const encoder=[...result.querySelectorAll('.node')].find(node=>node.textContent.includes('参数全部参与更新'));
+   assert.ok(encoder);assert.ok(encoder.querySelectorAll('tspan.text-outer-tspan').length>=2);
+   assert.match(svg,/参数完全冻结/);assert.match(svg,/🔥/);assert.equal(result.querySelector('foreignObject, script, a, image'),null);
+   container.remove();
+  }
+ }finally{dom.window.close();delete globalThis.window;delete globalThis.document;delete globalThis.Element;delete globalThis.CSSStyleSheet;}
 });
