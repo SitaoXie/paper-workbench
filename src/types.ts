@@ -123,6 +123,7 @@ export type Paper = {
   id: string;
   title: string;
   authors: string[];
+  institutions?: string[];
   abstract: string;
   text: string;
   url: string;

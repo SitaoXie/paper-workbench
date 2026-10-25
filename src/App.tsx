@@ -55,6 +55,7 @@ import QuestionTaskBridge,{type PreparedQuestionTask} from './QuestionTaskBridge
 import {completedQuestionTaskAnswer,loadQuestionTasks,saveQuestionTasks} from './question-task-store';
 import SelectionTools from "./SelectionTools";
 import ReadingOverview from "./ReadingOverview";
+import PaperByline from './PaperByline';
 import NotebookPanel from "./NotebookPanel";
 import ReadingHistory from "./ReadingHistory";
 import PaperCardExcerpt from "./PaperCardExcerpt";
@@ -1761,13 +1762,7 @@ export default function App() {
                       </span>
                     </div>
                     <h1>{paper.title}</h1>
-                    <div className="author-list">
-                      {paper.authors.length ? (
-                        paper.authors.map((a) => <span key={a}>{a}</span>)
-                      ) : (
-                        <span>{t("本地导入文献")}</span>
-                      )}
-                    </div>
+                    <PaperByline authors={paper.authors} institutions={paper.institutions}/>
                     <div className="tag-list">
                       {paper.tags?.slice(0, 4).map((t) => (
                         <span key={t}>{t}</span>

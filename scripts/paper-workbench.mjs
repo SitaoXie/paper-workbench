@@ -237,6 +237,7 @@ async function main() {
         id: paper.id,
         title: paper.title,
         authors: paper.authors,
+        institutions: paper.institutions || [],
         url: paper.url,
         abstract: paper.abstract,
         abstractIsExcerpt: Boolean(paper.abstractIsExcerpt),

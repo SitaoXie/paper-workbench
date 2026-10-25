@@ -218,6 +218,7 @@ export function publicReadingTranslation(translation, original, { language, page
 
 export function publicPaper(paper, full = true) {
   const { filePath, recommendationCache: _recommendationCache, ...result } = paper;
+  result.institutions = paper.institutions || [];
   result.recommendationSourceRevision = recommendationSourceRevision(paper);
   Object.assign(result, readingState(paper));
   result.readingVersions = result.readingVersions.map(version => ({ ...version,

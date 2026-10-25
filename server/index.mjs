@@ -1,5 +1,6 @@
 import { DEFAULT_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
 import {registerCollections} from './collections.mjs';
+import { validatePaperMetadata } from './paper-metadata.mjs';
 import express from "express";
 import { UsageLedger, withUsage, usageOperation } from "./usage.mjs";
 import packageMetadata from "../package.json" with { type: "json" };
@@ -373,8 +374,9 @@ export async function createApp({
     wrap(async (request, response) => {
       const paper = paperById(request.params.id);
       const body = bodyOf(request);
-      if (!["favorite", "activeReadingId", "tags", "title"].some(key => key in body))
-        throw new ApiError("Provide favorite, activeReadingId, tags or title.");
+      if (!["favorite", "activeReadingId", "tags", "title", "authors", "institutions"].some(key => key in body))
+        throw new ApiError("Provide favorite, activeReadingId, tags, title, authors or institutions.");
+      const metadata = validatePaperMetadata(body);
       if ("favorite" in body && typeof body.favorite !== "boolean") throw new ApiError("favorite must be true or false.");
       if ("activeReadingId" in body && !readingState(paper).readingVersions.some((version) => version.id === body.activeReadingId))
         throw new ApiError("Reading version not found in this paper.", 404);
@@ -385,6 +387,7 @@ export async function createApp({
       if ("favorite" in body) paper.favorite = body.favorite;
       if ("activeReadingId" in body) paper.activeReadingId = body.activeReadingId;
       if ('title' in body) paper.title = body.title.trim();
+      Object.assign(paper, metadata);
       if ('tags' in body) {
         const seen = new Set();
         paper.tags = body.tags.map(tag => tag.trim()).filter(tag => {

@@ -6,6 +6,10 @@ import { XMLParser } from "fast-xml-parser";
 import * as cheerio from "cheerio";
 import { ApiError, secureDownload } from "./network.mjs";
 import { extractPdfAbstract } from "./pdf-abstract.mjs";
+import { metadataNames } from './paper-metadata.mjs';
+
+const institutionMetadata = $ => metadataNames($('meta[name="citation_author_institution"],meta[name="citation_affiliation"]')
+  .map((_, node) => $(node).attr('content')).get());
 
 const clean = (value) =>
   String(value || "")
@@ -67,6 +71,8 @@ export function parseArxivFeed(xml) {
         authors: array(entry.author)
           .map((author) => clean(author.name))
           .filter(Boolean),
+        institutions: metadataNames(array(entry.author).flatMap(author => array(author['arxiv:affiliation'])
+          .map(value => typeof value === 'string' ? value : value?.['#text']))),
         abstract: clean(entry.summary),
         url: `https://arxiv.org/abs/${identifier}`,
         pdfUrl: `https://arxiv.org/pdf/${identifier}`,
@@ -229,6 +235,7 @@ export class Ingestor {
       id: randomUUID(),
       title: "",
       authors: [],
+      institutions: [],
       abstract: "",
       text: "",
       url: "",
@@ -328,6 +335,7 @@ export class Ingestor {
       ...this.base(),
       title,
       authors,
+      institutions: institutionMetadata($),
       abstract: abstract || clean(text).slice(0, 1800),
       abstractIsExcerpt: !abstract,
       text,
@@ -376,6 +384,7 @@ export class Ingestor {
         authors: $('meta[name="citation_author"]')
           .map((_, el) => $(el).attr("content"))
           .get(),
+        institutions: institutionMetadata($),
         tags: [],
         arxivId: identifier,
         url: `https://arxiv.org/abs/${identifier}`,

@@ -3009,3 +3009,28 @@ a svg {
 .message-source-link { display:inline-flex;align-items:center;gap:4px;font-size:11px;margin-bottom:8px; }
 
 .abstract-excerpt-notice { color:var(--secondary);font-size:12px;line-height:1.6;margin:0 0 12px; }
+
+/* Source attribution belongs under the title, separate from topic labels. */
+.paper-byline {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 9px 14px;
+  align-items: baseline;
+  margin: -6px 0 20px;
+  color: var(--secondary);
+  font-size: 13px;
+  line-height: 1.65;
+}
+.paper-byline > div {
+  display: contents;
+}
+.paper-byline dt { font-size: 12px; color: var(--muted); }
+.paper-byline dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.paper-byline .byline-missing { color: var(--muted); }
+.byline-more { margin-top: 4px; }
+.byline-more summary { width: fit-content; cursor: pointer; color: var(--accent); font-size: 12px; }
+.byline-more summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+.byline-more p { margin: 5px 0 0; }
+@media (max-width: 600px) {
+  .paper-byline { font-size: 12px; gap: 8px 10px; }
+}
