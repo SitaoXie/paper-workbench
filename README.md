@@ -87,6 +87,12 @@ Use the actual `paper.id` returned by import/list. `publish` saves only to the l
 
 Codex can read the repository skill directly, or you can copy its folder into your own configured skills directory. Claude Code can read `CLAUDE.md` and the same skill directly, or you can copy the skill folder to `.claude/skills/paper-workbench` in your checkout. When installed separately, locate and run commands from this application's checkout. Other agents can use the same Node.js CLI or HTTP API.
 
+### Shared reading policy and optional companion skills
+
+Both generation paths use the project's [shared reading contract](skills/paper-workbench/references/reading-contract.md): evidence-grounded explanations appropriate to the paper type, clear limitation provenance, and faithful translation. The API loads task-specific sections from that file; external agents read it through the skill. This is a prompt contract, not a guarantee of scientific accuracy.
+
+In overview generation settings, the optional **Codex / Claude assistance skills** selector adds Supervisor-Skills, ARS-Codex, or both to the copied subscription task. It preserves the selected language, style, focus and format. The agent uses separately available skills and reports missing capabilities; the site does not install them or execute their hooks. This selector does not change direct API generation. These upstream suites have separate noncommercial licenses and are not bundled MIT dependencies; see the [external-skill guide](skills/paper-workbench/references/external-skills.md) and source assessments in `docs/`. The default project workflow needs neither suite. Downloaded `/api/agent-skill` embeds the import protocol, shared contract and external-skill guide with internal links.
+
 ### Optional direct provider mode
 
 For model calls directly from the browser, configure provider profiles in the sidebar. Each profile stores one endpoint/key and a list of models. The CLI's `report`, `translate`, and `ask` commands use the currently active provider; they do **not** invoke your Codex/Claude subscription:

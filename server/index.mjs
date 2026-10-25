@@ -3,7 +3,8 @@ import packageMetadata from "../package.json" with { type: "json" };
 import multer from "multer";
 import path from "node:path";
 import { existsSync } from "node:fs";
-import { unlink, readFile } from "node:fs/promises";
+import { unlink } from "node:fs/promises";
+import { agentSkillBundle } from "./agent-skill.mjs";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import {
@@ -226,34 +227,15 @@ export async function createApp({
   app.get(
     "/api/agent-skill",
     wrap(async (_request, response) => {
-      const skillDirectory = path.resolve(
-        path.dirname(fileURLToPath(import.meta.url)),
-        "../skills/paper-workbench",
-      );
-      let skill, reference;
+      let bundle;
       try {
-        [skill, reference] = await Promise.all([
-          readFile(path.join(skillDirectory, "SKILL.md"), "utf8"),
-          readFile(
-            path.join(skillDirectory, "references/agent-import.md"),
-            "utf8",
-          ),
-        ]);
+        bundle = await agentSkillBundle();
       } catch {
         throw new ApiError("The agent skill bundle is unavailable.", 404);
       }
       response.type("text/markdown");
-      response.setHeader(
-        "Content-Disposition",
-        'attachment; filename="SKILL.md"',
-      );
-      const standalone = skill.replaceAll(
-        "[references/agent-import.md](references/agent-import.md)",
-        "the embedded protocol below（见下面内嵌协议）",
-      );
-      response.send(
-        `${standalone}\n\n---\n\n## Embedded agent import protocol\n\n${reference}`,
-      );
+      response.setHeader("Content-Disposition", 'attachment; filename="SKILL.md"');
+      response.send(bundle);
     }),
   );
   app.get("/api/settings", (_request, response) =>

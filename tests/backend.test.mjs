@@ -7,6 +7,7 @@ import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import http from "node:http";
 import { createApp } from "../server/index.mjs";
+import { readingPolicyIdentity } from "../server/reading-policy.mjs";
 import {
   isPublicAddress,
   validatePublicUrl,
@@ -2015,6 +2016,8 @@ test("reading generation honors style and focus, translates selected revisions, 
   const version = generated.data.readingVersion;
   assert.equal(version.style, "quick");
   assert.equal(version.focus, "Focus on baselines");
+  assert.deepEqual(version.source.readingPolicy, readingPolicyIdentity);
+  assert.deepEqual(generated.data.report.source.readingPolicy, readingPolicyIdentity);
   assert.match(calls[0].messages[0].content, /quick reading overview/);
   assert.match(calls[0].messages[1].content, /Focus on baselines/);
   assert.match(calls[2].messages[1].content, /at most 250 words/);
@@ -2025,6 +2028,10 @@ test("reading generation honors style and focus, translates selected revisions, 
   const original = translated.data.paper.readingVersions.find((item) => item.id === version.id);
   assert.equal(original.markdown, version.markdown);
   assert.equal(original.translations["zh-CN"].markdown, "Generated content 5");
+  assert.deepEqual(original.translations["zh-CN"].source.readingPolicy, readingPolicyIdentity);
+  const savedVersion = (await api(route)).data.paper.readingVersions.find(item => item.id === version.id);
+  assert.deepEqual(savedVersion.source.readingPolicy, readingPolicyIdentity);
+  assert.deepEqual(savedVersion.translations["zh-CN"].source.readingPolicy, readingPolicyIdentity);
   const agent = await api(`${route}/insights`, { method: "PUT", body: {
     source: { agent: "Codex" }, translations: [{ target: "reading", readingId: version.id, language: "en", markdown: "External translation" }],
   } });

@@ -110,7 +110,7 @@ export default function ReadingTools({
   currentTask.current = { key: taskKey, conversationId };
   const hasQuestion = Boolean(question?.trim());
   const preparedPrompt = prepared?.key === taskKey && prepared.conversationId === conversationId ? prepared.task : "";
-  const prompt = hasQuestion ? preparedPrompt : buildAgentReadingTask({ origin: location.origin, paperId: paper.id, language, locale, abstractIsExcerpt: paper.abstractIsExcerpt });
+  const prompt = hasQuestion ? preparedPrompt : buildAgentReadingTask({ origin: location.origin, paperId: paper.id, language, locale, abstractIsExcerpt: paper.abstractIsExcerpt, style: "quick", format: "article", focus: "" });
   const copied = Boolean(prompt) && copiedTask === prompt;
   async function copyPrompt() {
     const context = { key: taskKey, conversationId };
@@ -244,6 +244,7 @@ export default function ReadingTools({
           <p>
             {t("在已登录的 Codex 或 Claude Code 中打开这个项目，粘贴下面的任务。代理使用当前会话完成解读，再经通用 skill 写回此处。工作台会自动刷新。")}
           </p>
+          {!hasQuestion && <small>{t("此入口默认生成速读图文版；需要精读、侧重点或辅助 skill 时，请在阅读解读的生成设置中复制任务。", "This entry creates a quick reading article. For a deep read, a specific focus or assistance skills, copy the task from the overview generation settings.")}</small>}
           <textarea aria-label={t("代理任务")} value={prompt} placeholder={t("点击复制任务后，将固定本次会话并显示可手动复制的任务。", "Copy the task to bind this conversation and display a manually copyable task.")} readOnly rows={6} />
           <div className="agent-bridge-actions">
             <button className="primary-button" onClick={copyPrompt} disabled={preparing}>

@@ -1,4 +1,5 @@
 import { ApiRequestError } from "./selection-errors";
+export type ReadingPolicyIdentity = { id: string; version: string; sha256: string };
 export type Report = {
   figuresRevision?: string;
   pdfRevision?: string;
@@ -13,7 +14,7 @@ export type Report = {
   sourceCharacters?: number;
   stages?: { role: string; content: string }[];
   language?: string;
-  source?: { kind?: string; agent?: string; model?: string };
+  source?: { kind?: string; agent?: string; model?: string; readingPolicy?: ReadingPolicyIdentity };
   /** Original article attribution, distinct from a derived interactive companion. */
   articleSource?: { kind?: string; agent?: string; model?: string };
 };
@@ -27,7 +28,7 @@ export type Insight = {
   markdown: string;
   language: string;
   createdAt?: string;
-  source?: { kind?: string; agent?: string; model?: string };
+  source?: { kind?: string; agent?: string; model?: string; readingPolicy?: ReadingPolicyIdentity };
   stale?: boolean;
 };
 export type Figure = {

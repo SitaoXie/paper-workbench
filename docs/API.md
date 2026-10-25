@@ -126,6 +126,10 @@ Provider-driven article translation protects these bindings programmatically. A 
 
 ## Reports and questions
 
+Model reports and questions load the repository-owned reading contract from `skills/paper-workbench/references/reading-contract.md`. Reports load common evidence rules and the overview section; questions load their scoped section alongside the base evidence prompt. Translation uses only the faithful-translation section. New report, question and full-content translation model results record `source.readingPolicy: { id, version, sha256 }`, identifying the contract snapshot, not a certification of the output. Existing versions, extractive fallbacks and agent-authored content are not retroactively stamped. Passage assistance also receives the scoped guidance but retains its existing source metadata shape.
+
+No external skill registry, user installation directory, remote prompt or upstream hooks are loaded by the API. Optional Supervisor/ARS collaboration belongs to copied subscription-agent tasks. `GET /api/agent-skill` returns a self-contained Markdown bundle with the import protocol, shared contract and external-skill guidance; local reference links become internal anchors.
+
 `POST /api/papers/:id/report`
 
 ```json

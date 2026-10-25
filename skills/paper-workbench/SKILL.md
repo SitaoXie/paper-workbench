@@ -7,6 +7,8 @@ description: Read papers, create versioned reading overviews and translations, a
 
 Use this skill from the application's checkout with Node.js 22.13+. If installed separately, locate the checkout first. `node scripts/paper-workbench.mjs health` checks the local instance; `PAPER_WORKBENCH_URL` defaults to `http://127.0.0.1:4318`. Start the server using the checkout README when needed and authorized. When a copied task supplies an origin, paper ID, conversation ID or `agentTaskId`, keep those exact bindings. Explicitly set `PAPER_WORKBENCH_URL` for every command (or in that shell); do not silently fall back to the default instance.
 
+Before composing an overview, paper answer, or translation, read [the shared reading contract](references/reading-contract.md), applying its common evidence rules and the section for that task. The application's API route uses the same contract. When the user explicitly requests Supervisor-Skills or ARS-Codex assistance, also read [external skill cooperation](references/external-skills.md); those suites are optional, separately licensed dependencies, not bundled generators.
+
 ## Use the current agent session
 
 When the user wants to use their Codex/Claude subscription or asks you to produce a summary, translation, or answer, **perform the reasoning in this current agent session**, then save the result locally. Do not call the application's `report`, `translate`, or `ask` generation commands for this mode: those call a separately configured model provider. A local import endpoint requires no API key. The application does not extract agent login tokens; the user's existing agent session supplies inference under its own access limits.
