@@ -111,3 +111,19 @@ test('HTTP paths count each review round, coalesce translations, exclude extract
  const reopened=await new UsageLedger(dir).init();assert.equal((await reopened.summary({days:'all'})).requests,5);
  assert.equal((await api('/usage?days=999')).status,400);assert.equal(calls,5,'Viewing/filtering stats never invokes a model');
 });
+
+test('dashboard connection grouping uses IDs and cache ratios use the same reporting sample',async t=>{
+ const ledger=await new UsageLedger(await directory(t)).init();
+ const add=(id,profileId,model,usage)=>ledger.record({id,startedAt:'2026-10-28T01:00:00Z',provider:'openai',profileId,profileName:'Same visible name',model,operation:'question',status:'success',durationMs:1,...normalizeUsage('openai',usage)});
+ await add('one','a','m1',{prompt_tokens:100,completion_tokens:10,prompt_tokens_details:{cached_tokens:80}});
+ await add('two','a','m2',{prompt_tokens:900,completion_tokens:20});
+ await add('three','b','m1',{prompt_tokens:300,completion_tokens:30,prompt_tokens_details:{cached_tokens:0}});
+ await add('four','b','m1',null);
+ let report=await ledger.summary({days:'all'},new Date('2026-10-28T12:00:00Z'));
+ assert.equal(report.byProfile.length,2,'Duplicate display names are distinct connections');
+ assert.equal(report.byProfile.find(p=>p.profileId==='a').requests,2);
+ assert.equal(report.byProfile.find(p=>p.profileId==='a').totals.totalTokens,1030);
+ assert.deepEqual(report.cache,{requests:2,inputTokens:400,cachedInputTokens:80,rate:0.2});
+ report=await ledger.summary({days:'all',model:report.models.find(m=>m.model==='m2').key},new Date('2026-10-28T12:00:00Z'));
+ assert.equal(report.cache.rate,null);assert.equal(report.cache.requests,0);assert.equal(report.byProfile.length,1);
+});

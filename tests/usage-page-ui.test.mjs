@@ -1,0 +1,40 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {createRequire} from 'node:module';
+import vm from 'node:vm';
+import ts from 'typescript';
+import React,{act} from 'react';
+import {createRoot} from 'react-dom/client';
+import {JSDOM} from 'jsdom';
+const require=createRequire(import.meta.url);
+for(const zh of [true,false])test(`usage ${zh?'Chinese':'English'} configuration access, chart metric switch and partial counts`,async()=>{
+ const dom=new JSDOM('<div id="root"></div>');globalThis.window=dom.window;globalThis.document=dom.window.document;globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+ const totals={inputTokens:80,outputTokens:20,totalTokens:100,cachedInputTokens:null,cacheWriteTokens:null,reasoningTokens:null};
+ const summary={requests:3,failed:1,unknownUsage:1,totals,reported:{inputTokens:2,outputTokens:2,totalTokens:2,cachedInputTokens:0,cacheWriteTokens:0,reasoningTokens:0}};
+ const model={key:'one',provider:'openai',profileName:'Fixture',model:'test-model'};
+ const data={...summary,from:'2026-10-26',to:'2026-10-28',byProfile:[{...summary,key:'profile',profileName:'Connection fixture',provider:'openai',profileId:'one'}],cache:{requests:0,rate:null,inputTokens:0,cachedInputTokens:0},models:[model],byModel:[{...model,...summary}],byOperation:[{key:'question',...summary}],daily:[{key:'2026-10-28',...summary}],recent:[],offset:0,hasMore:false,trackingSince:'2026-10-01T00:00:00Z',generatedAt:'2026-10-28T00:00:00Z',storage:{}};
+ let opened=0;const calls=[],exports={};
+ const code=ts.transpileModule(readFileSync(new URL('../src/UsagePage.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022}}).outputText;
+ const mocks=name=>name.endsWith('.css')?{}:name==='./i18n'?{useLocale:()=>({locale:zh?'zh':'en',t:(cn,en)=>zh?cn:en})}:name==='./types'?{api:async path=>{calls.push(path);return data;}}:name==='./UsageDashboard'?dashboard:require(name);
+ const dashboard={};vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../src/UsageDashboard.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,target:ts.ScriptTarget.ES2022}}).outputText,{exports:dashboard,require:mocks});
+ vm.runInNewContext(code,{exports,AbortController,URLSearchParams,require:mocks});
+ const root=createRoot(document.getElementById('root'));
+ try{
+  await act(async()=>root.render(React.createElement(exports.default,{settings:{provider:'openai',model:'test-model',modelConfigured:true,activeProfileId:'one',profiles:[{id:'one',name:'Fixture',models:['test-model']}]},onConfigure:()=>opened++})));
+  assert.match(document.querySelector('.usage-configuration').textContent,/test-model/);
+  assert.match(document.querySelector('.usage-trend-readout').textContent,/≥ 100/);
+  assert.equal(document.querySelectorAll('.usage-trend-bars button').length,3,'Calendar gaps are filled');
+  assert.equal(dashboard.calendarTrend(data)[0].requests,0);
+  await act(async()=>document.querySelectorAll('.usage-trend .usage-chart-toggle button')[1].click());assert.match(document.querySelector('.usage-trend-readout').textContent,/3/);
+  assert.equal(document.querySelectorAll('.usage-trend .usage-chart-toggle button')[1].getAttribute('aria-pressed'),'true');
+  await act(async()=>document.querySelector('.usage-configuration button').click());assert.equal(opened,1);
+  assert.equal(calls.length,1);assert.ok(calls.every(path=>path.startsWith('/usage?')),'Viewing charts and configuration never calls inference');
+  assert.match(document.querySelector('.usage-cache').textContent,zh?/未返回/:/Unreported/);
+  assert.equal(document.querySelector('.usage-cache-gauge strong').textContent,'—');
+  await act(async()=>document.querySelectorAll('.usage-ranking .usage-chart-toggle button')[1].click());
+  assert.match(document.querySelector('.usage-rank-list').textContent,/Connection fixture/);
+  await act(async()=>document.querySelector('.usage-donut-legend button').focus());
+  assert.equal(document.querySelector('.usage-donut-center small').textContent,'test-model');
+ }finally{await act(async()=>root.unmount());dom.window.close();delete globalThis.window;delete globalThis.document;delete globalThis.IS_REACT_ACT_ENVIRONMENT;}
+});

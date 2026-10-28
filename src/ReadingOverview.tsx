@@ -20,6 +20,7 @@ import { parseReadingSectionLocation, readingSections, readingSectionUrl, type R
 import SelectionTools from "./SelectionTools";
 import VisionTools from "./VisionTools";
 import {ReportInputOptions, ReportInputRecord, loadReportInputMode, loadReportImageBatchSize, type ReportInputMode} from './ReportInputOptions';
+import {selectWorkspaceModel} from './model-selection';
 import {ReadingGenerationProgress, InteractiveGenerationConfirm} from './ReadingGenerationFeedback';
 import InteractiveReading from "./InteractiveReading";
 import { ModelSelect } from "./ReadingTools";
@@ -461,17 +462,18 @@ export default function ReadingOverview({
       onUpdated({...current,translations:{...current.translations,[binding.language]:{...current.translations?.[binding.language],[target]:result}}});
     }else onUpdated({...current,readingVersions:current.readingVersions?.map(item=>item.id===binding.readingId?{...item,translations:{...item.translations,[binding.language]:result}}:item)});
   }
-  const interactiveConfirmationKey=JSON.stringify([paper.id,version?.id,settings.activeProfileId,settings.model]);
+  const interactiveConfirmationKey=JSON.stringify([paper.id,version?.id]);
   function requestInteractive(){
     if(!version||generating||translating)return;
     if(!modelReady){void makeInteractive();return;}
     setInteractiveConfirmation(interactiveConfirmationKey);
   }
-  function confirmInteractive(){
-    const unchanged=interactiveConfirmation===interactiveConfirmationKey;
+  async function confirmInteractive(selection:{profileId:string;model:string}){
+    if(interactiveConfirmation!==interactiveConfirmationKey){setInteractiveConfirmation(null);setError(t('版本已变化，请重新确认。','The reading changed. Please confirm again.'));return false;}
+    if(!await selectWorkspaceModel(selection.profileId,selection.model,onSettings))return false;
     setInteractiveConfirmation(null);
-    if(!unchanged){setError(t('版本或模型已变化，请重新确认。','The reading or model changed. Please confirm again.'));return;}
     void makeInteractive();
+    return true;
   }
   async function makeInteractive() {
     if (!version || generating || translating) return;
@@ -615,7 +617,7 @@ export default function ReadingOverview({
         </div>
       </div>
       {generating && <ReadingGenerationProgress paperId={paper.id}/>}
-      {interactiveConfirmation && <InteractiveGenerationConfirm model={settings.model} onCancel={()=>setInteractiveConfirmation(null)} onConfirm={confirmInteractive}/>}
+      {interactiveConfirmation && <InteractiveGenerationConfirm settings={settings} onCancel={()=>setInteractiveConfirmation(null)} onConfirm={confirmInteractive}/>}
       {configure && (
         <div className="reading-preferences">
           <div

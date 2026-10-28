@@ -80,6 +80,7 @@ export async function createApp({
     limits: { fileSize: 25 * 1024 * 1024, files: 1, fields: 2 },
   });
   const reportJobs = new Map();
+  let settingsWrites = Promise.resolve();
   const translationJobs = new Map();
   const recommendationJobs = new Map();
   let recommendationRequests = [];
@@ -259,12 +260,17 @@ export async function createApp({
   app.put(
     "/api/settings",
     wrap(async (request, response) => {
-      store.data.settings = validateSettings(
-        bodyOf(request),
-        store.data.settings,
-      );
-      await store.save();
-      response.json(store.publicSettings());
+      const input = bodyOf(request);
+      const work = settingsWrites.catch(()=>{}).then(async()=>{
+        const previous=store.data.settings;
+        const next=validateSettings(input,previous);
+        store.data.settings=next;
+        try { await store.save(); }
+        catch(error){ if(store.data.settings===next)store.data.settings=previous; throw error; }
+        return store.publicSettings();
+      });
+      settingsWrites=work;
+      response.json(await work);
     }),
   );
   app.post(

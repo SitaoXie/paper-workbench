@@ -22,9 +22,11 @@ for(const zh of [true,false])test(`generation feedback ${zh?'Chinese':'English'}
   assert.equal(document.querySelector('[role=progressbar]').hasAttribute('aria-valuenow'),false);
   await act(async()=>next());assert.match(document.body.textContent,zh?/暂时无法获取进度/:/temporarily unavailable/);
   await act(async()=>next());assert.match(document.querySelector('[role=status]').textContent,zh?/最终解读/:/final overview/);
-  await act(async()=>root.render(React.createElement(exports.InteractiveGenerationConfirm,{model:'fixture-model',onConfirm:()=>confirmed++,onCancel:()=>cancelled++})));
+  await act(async()=>root.render(React.createElement(exports.InteractiveGenerationConfirm,{settings:{model:'fixture-model',activeProfileId:'one',profiles:[{id:'one',name:'Fixture',model:'fixture-model',models:['fixture-model','second-model']}]},onConfirm:selection=>{assert.equal(selection.model,'second-model');assert.equal(selection.profileId,'one');confirmed++;return true;},onCancel:()=>cancelled++})));
   assert.equal(next,undefined,'Progress polling stops when generation finishes');
   assert.equal(confirmed,0);assert.match(document.querySelector('dialog').textContent,/fixture-model/);
+  await act(async()=>{const select=document.querySelector('dialog select');select.value=JSON.stringify(['one','second-model']);select.dispatchEvent(new dom.window.Event('change',{bubbles:true}));});
+  assert.equal(confirmed,0,'Changing the model does not call the API before confirmation');
   await act(async()=>document.querySelector('dialog .soft-button').click());assert.equal(cancelled,1);assert.equal(confirmed,0);
   await act(async()=>document.querySelector('dialog').dispatchEvent(new dom.window.Event('cancel',{bubbles:true,cancelable:true})));assert.equal(cancelled,2);assert.equal(confirmed,0);
   await act(async()=>document.querySelector('dialog .primary-button').click());assert.equal(confirmed,1);

@@ -101,6 +101,7 @@ export default function SettingsDialog({
     : [];
   const [busy, setBusy] = useState("");
   const [feedback, setFeedback] = useState("");
+  const [dirty,setDirty]=useState(false);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     if (!openedDuringWrite.current || sharedWrite.pending || busy) return;
@@ -115,6 +116,15 @@ export default function SettingsDialog({
   }, [current, sharedWrite.pending, busy]);
   const draft = profiles.find((p) => p.id === selected) || profiles[0];
   const update = (patch: Partial<Draft>) => {
+    setDirty(true);
+    if (patch.modelText !== undefined) {
+      const models = [...new Set(patch.modelText.split(/[\n,，]+/).map(value=>value.trim()).filter(Boolean))];
+      if (!models.includes(draft.model)) patch.model = models[0] || '';
+      patch.modelCapabilities = {...draft.modelCapabilities};
+      for (const entry of draft.disabledModels || []) if(models.includes(entry.model) && !draft.models.includes(entry.model)) patch.modelCapabilities[entry.model]=entry.capability;
+      if(vision.profileId===draft.id&&!models.includes(vision.model||''))setVision(old=>({...old,enabled:false}));
+      if(recommendations.profileId===draft.id&&!models.includes(recommendations.model||''))setRecommendations(old=>({...old,enabled:false}));
+    }
     const origin = (url: string) => {
       try {
         return new URL(url).origin;
@@ -207,7 +217,8 @@ export default function SettingsDialog({
           setActive(s.activeProfileId || active);
           setVision(s.vision || { enabled: false });
           setRecommendations(s.recommendations || { enabled: false });
-          setFeedback(t("配置已保存"));
+          setDirty(false);
+          setFeedback(t("配置已保存到本机服务端，重启后仍保留。", "Saved on the local server and retained after restart."));
         });
         if (!result.ok) throw new Error(result.error || t("其他模型配置正在保存，请稍后重试。", "Another model setting is being saved. Try again shortly."));
       } else {
@@ -225,7 +236,19 @@ export default function SettingsDialog({
       setBusy("");
     }
   }
+  async function restore(body: {restoreProfileId?:string;restoreModel?:{profileId:string;model:string}}){
+    if(dirty||busy||sharedWrite.pending)return;
+    setBusy('restore');setFeedback('');
+    const result=await writeWorkspaceSettings(()=>api<Settings>('/settings',{method:'PUT',body:JSON.stringify(body)}),value=>{
+      onSaved(value);setProfiles(profileList(value).map(toDraft));
+      if(body.restoreProfileId)setSelected(body.restoreProfileId);
+      setFeedback(t('已恢复并保存到本机服务端。','Restored and saved on the local server.'));setFailed(false);
+    });
+    if(!result.ok){setFeedback(result.error||t('恢复失败，请重试。','Restore failed. Please retry.'));setFailed(true);}
+    setBusy('');
+  }
   function add() {
+    setDirty(true);
     const id = crypto.randomUUID();
     setProfiles((ps) => [
       ...ps,
@@ -245,6 +268,7 @@ export default function SettingsDialog({
   function remove() {
     const remaining = profiles.filter((p) => p.id !== draft.id);
     if (!remaining.length) return;
+    setDirty(true);
     setProfiles(remaining);
     setSelected(remaining[0].id);
     if (active === draft.id) setActive(remaining[0].id);
@@ -254,6 +278,7 @@ export default function SettingsDialog({
   return (
     <div
       className="modal-backdrop settings-backdrop"
+      onChangeCapture={()=>setDirty(true)}
       onClick={(e) => {
         if (e.target === e.currentTarget && !busy) onClose();
       }}
@@ -306,6 +331,11 @@ export default function SettingsDialog({
             <Plus size={15} /> {t("添加连接")}
           </button>
         </div>
+        <p className="field-hint" role="status">{dirty?t('有未保存的更改，请点击「保存配置」。','Unsaved changes. Choose Save configuration to persist them.'):t('配置保存在本机服务端；助手里的模型切换、风格、联网与阅读方式自动保存。','Configuration is stored on the local server. Assistant model, style, Web search and reading-mode changes save automatically.')}</p>
+        {!!current.disabledProfiles?.length && <details className="settings-disabled-list"><summary>{t('已停用的连接','Disabled connections')} ({current.disabledProfiles.length})</summary>
+          {current.disabledProfiles.map(profile=><div key={profile.id}><span>{profile.name} · {profile.models.length} {t('个模型','models')}</span><button className="text-button" disabled={dirty||!!busy||sharedWrite.pending} onClick={()=>void restore({restoreProfileId:profile.id})}>{t('恢复','Restore')}</button></div>)}
+          {dirty&&<small>{t('请先保存当前更改再恢复。','Save current changes before restoring.')}</small>}
+        </details>}
         <label htmlFor="profile-name">{t("连接名称")}</label>
         <input disabled={!!busy || sharedWrite.pending}
           id="profile-name"
@@ -350,8 +380,11 @@ export default function SettingsDialog({
           )}
         />
         <p className="field-hint">
-          {t("同一 URL 与 API Key 共用；每行或逗号分隔一个模型 ID。")}
+          {t("同一 URL 与 API Key 共用；每行或逗号分隔一个模型 ID。移除后停用，可恢复；编辑后请保存。", "Models share the URL and API key. Separate IDs with lines or commas. Removed models are disabled and recoverable; save after editing.")}
         </p>
+        {!!draft.disabledModels?.length && <details className="settings-disabled-list"><summary>{t('已停用的模型','Disabled models')} ({draft.disabledModels.length})</summary>
+          {draft.disabledModels.map(entry=><div key={entry.model}><span>{entry.model}</span><button className="text-button" disabled={dirty||!!busy||sharedWrite.pending} onClick={()=>void restore({restoreModel:{profileId:draft.id,model:entry.model}})}>{t('恢复','Restore')}</button></div>)}
+        </details>}
         <label htmlFor="model">{t("模型名称")}</label>
         <input disabled={!!busy || sharedWrite.pending}
           id="model"
@@ -448,7 +481,7 @@ export default function SettingsDialog({
             disabled={profiles.length < 2 || !!busy || sharedWrite.pending}
             onClick={remove}
           >
-            <Trash2 size={13} /> {t("删除连接")}
+            <Trash2 size={13} /> {t("停用连接", "Disable connection")}
           </button>
         </div>
         <section

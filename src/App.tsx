@@ -84,6 +84,7 @@ import {
 } from "./types";
 import SettingsDialog from "./SettingsDialog";
 import UsagePage from "./UsagePage";
+import {useModelSelection,writeWorkspaceSettings} from "./model-selection";
 import ResearchWelcome from "./ResearchWelcome";
 import PaperRecommendations from "./PaperRecommendations";
 import LibraryTagFilter from "./LibraryTagFilter";
@@ -250,7 +251,13 @@ export default function App() {
   const [copyingAgent, setCopyingAgent] = useState(false);
   const preparingQuestion=useRef(false);
   const [questionModes,setQuestionModes]=useState<Record<string,'api'|'agent'|'extractive'>>({});
-  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const sharedSettingsWrite=useModelSelection();
+  const webSearchEnabled=settings.assistant?.webSearch===true;
+  async function toggleWebSearch(){
+    if(sharedSettingsWrite.pending)return;
+    const result=await writeWorkspaceSettings(()=>api<Settings>('/settings',{method:'PUT',body:JSON.stringify({assistant:{webSearch:!webSearchEnabled}})}),setSettings);
+    if(!result.ok)setError(result.error||t('设置未保存，请重试。','Settings were not saved. Please retry.'));
+  }
   const [questionTaskStore,setQuestionTaskStore]=useState(loadQuestionTasks);
   const questionTasks=questionTaskStore.tasks;
   const questionTasksRef=useRef(questionTasks);
@@ -756,7 +763,7 @@ export default function App() {
   }
   async function ask(text = prompt, branch?: { history: Message[]; images?:DraftChatImage[] }) {
     const context = chatContext.current;
-    if (!text.trim() || pendingChats.current.has(context.key) || (conversationBusy && !branch)) return;
+    if (sharedSettingsWrite.pending || !text.trim() || pendingChats.current.has(context.key) || (conversationBusy && !branch)) return;
     chatScroll.followLatest(context.key);
     const images=branch?.images||chatImages[context.key]||[];
     if(images.length&&(questionMode!=="api"||settings.modelCapabilities?.[settings.model]!=="vision")){setError(t("图片问答需要选择支持视觉的模型 API；可在模型设置中配置视觉能力。","Image questions require a vision-capable model API. Configure its vision capability in model settings."));return;}
@@ -1606,7 +1613,7 @@ export default function App() {
               />}
               {questionMode !== 'extractive' && <AssistantPreferences settings={settings} onChange={setSettings} chinese={language.startsWith('zh')} disabled={chatting||conversationBusy} apiMode={questionMode==='api'}/>}
               {questionMode === 'api' && <button type="button" className="agent-web-toggle" aria-pressed={webSearchEnabled}
-                disabled={chatting || conversationBusy} onClick={() => setWebSearchEnabled(enabled => !enabled)}
+                disabled={chatting || conversationBusy || sharedSettingsWrite.pending} onClick={()=>void toggleWebSearch()}
                 title={t('允许助手向外部搜索服务发送检索词，并读取公开网页；关闭时仅使用论文资料。','Allow the assistant to send search terms to an external search service and read public webpages. Off uses paper sources only.')}>
                 <Globe2 size={14}/><span>{t('联网','Web')}</span>
               </button>}
@@ -1623,7 +1630,7 @@ export default function App() {
                 className="send-button"
                 aria-label={questionMode==='agent'?t('准备订阅任务','Prepare subscription task'):questionMode==='extractive'?t('查找原文','Find source passages'):t("发送问题")}
                 title={questionMode==='agent'?t('准备并复制订阅任务，不调用模型 API','Prepare and copy a subscription task; no model API call'):questionMode==='extractive'?t('查找原文片段，不调用模型','Find source passages; no model call'):t('发送问题')}
-                disabled={(!prompt.trim()&&!attachedImages.length) || readingImages || chatting || conversationBusy||copyingAgent||(questionMode==='api'&&!modelReady)}
+                disabled={sharedSettingsWrite.pending || (!prompt.trim()&&!attachedImages.length) || readingImages || chatting || conversationBusy||copyingAgent||(questionMode==='api'&&!modelReady)}
               >
                 {chatting||copyingAgent ? (
                   <Loader2 size={16} className="spin" />
@@ -2119,7 +2126,7 @@ export default function App() {
               ) : null}
             </div>
           </>
-        ) : view === "library" ? <LibraryWorkspace papers={papers} onOpen={openPaper} onFavorite={favorite} onImport={()=>setShowImport(true)}/> : view === "usage" ? <UsagePage/> : view === "research" ? (
+        ) : view === "library" ? <LibraryWorkspace papers={papers} onOpen={openPaper} onFavorite={favorite} onImport={()=>setShowImport(true)}/> : view === "usage" ? <UsagePage settings={settings} onConfigure={()=>setShowSettings(true)}/> : view === "research" ? (
           <div className="research-page">
             <header className="page-header">
               <div className="breadcrumb">

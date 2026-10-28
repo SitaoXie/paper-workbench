@@ -764,3 +764,12 @@
 .reading-generation-confirm p { font-size: 13px; line-height: 1.7; color: var(--secondary); }
 .reading-confirm-model { padding: 10px 12px; border-radius: 8px; background: var(--subtle); color: var(--text) !important; overflow-wrap: anywhere; }
 .reading-confirm-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+
+.reading-confirm-model-label { display: grid; gap: 8px; font-size: 12px; color: var(--secondary); }
+.reading-confirm-model-label select { width:100%; min-width:0; padding:10px; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:8px; }
+.settings-disabled-list { margin:14px 0; padding:12px; border:1px solid var(--line); border-radius:10px; color:var(--secondary); font-size:12px; }
+.settings-disabled-list summary { cursor:pointer; }
+.settings-disabled-list > div { display:flex; justify-content:space-between; align-items:center; gap:12px; padding-top:10px; }
+.settings-disabled-list span { overflow-wrap:anywhere; min-width:0; }
+
+.reading-confirm-model-label + p { margin-top:12px; }

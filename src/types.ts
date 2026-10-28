@@ -164,6 +164,8 @@ export type Settings = {
   requestTimeoutSeconds?: number;
   activeProfileId?: string;
   profiles?: ModelProfile[];
+  disabledProfiles?: ModelProfile[];
+  disabledModels?: {model:string;capability:ModelCapability}[];
   modelCapabilities?: Record<string, ModelCapability>;
   vision?: VisionSettings;
   recommendations?: RecommendationSettings;
@@ -171,7 +173,7 @@ export type Settings = {
 };
 export type ModelProfile = Omit<
   Settings,
-  "profiles" | "activeProfileId" | "vision" | "recommendations" | "assistant"
+  "profiles" | "disabledProfiles" | "activeProfileId" | "vision" | "recommendations" | "assistant"
 > & {
   id: string;
   name: string;

@@ -152,8 +152,15 @@ export class UsageLedger {
       for (const record of records) { const id = key(record); if (!groups.has(id)) groups.set(id, []); groups.get(id).push(record); }
       return [...groups].map(([key, entries]) => ({ key, ...aggregate(entries) }));
     };
+    const cacheRecords = records.filter(record => record.inputTokens !== null && record.cachedInputTokens !== null && record.cachedInputTokens <= record.inputTokens);
+    const cacheInput = sum(cacheRecords.map(record => record.inputTokens));
+    const cacheRead = sum(cacheRecords.map(record => record.cachedInputTokens));
+    const profileKey = record => JSON.stringify([record.provider, record.profileId]);
+    const profiles = new Map(records.map(record => [profileKey(record), {profileId:record.profileId,profileName:record.profileName,provider:record.provider}]));
     return { trackingSince: this.trackingSince, generatedAt: now.toISOString(), timeZone, from, to: today,
       ...aggregate(records), models: [...models.values()],
+      cache: {requests:cacheRecords.length, inputTokens:cacheInput, cachedInputTokens:cacheRead, rate:cacheInput > 0 && cacheRead !== null ? cacheRead/cacheInput : null},
+      byProfile: grouped(profileKey).map(group=>({...profiles.get(group.key),...group})).sort((a,b)=>(b.totals.totalTokens || 0)-(a.totals.totalTokens || 0)),
       byModel: grouped(groupKey).map(group => ({ ...models.get(group.key), ...group })).sort((a, b) => (b.totals.totalTokens || 0) - (a.totals.totalTokens || 0)),
       byOperation: grouped(record => record.operation), daily: grouped(record => dateKey(new Date(record.startedAt))).sort((a, b) => a.key.localeCompare(b.key)),
       recent: [...records].sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(offset, offset + 50), offset,

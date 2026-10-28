@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { api } from './types';
+import { api, type Settings } from './types';
 import { t } from './i18n';
 
 type Progress = { running: boolean; stage?: string; completed?: number; total?: number; batch?: number };
@@ -41,7 +41,16 @@ export function ReadingGenerationProgress({paperId}:{paperId:string}) {
   </div>;
 }
 
-export function InteractiveGenerationConfirm({model,onCancel,onConfirm}:{model:string;onCancel:()=>void;onConfirm:()=>void}) {
+export function InteractiveGenerationConfirm({settings,onCancel,onConfirm}:{settings:Settings;onCancel:()=>void;onConfirm:(selection:{profileId:string;model:string})=>Promise<boolean>|boolean}) {
+  const profiles=settings.profiles?.length?settings.profiles:[{...settings,id:settings.activeProfileId||'default',name:t('当前连接','Current connection'),models:[settings.model]}];
+  const [selection,setSelection]=useState(JSON.stringify([settings.activeProfileId||profiles[0].id,settings.model]));
+  const [busy,setBusy]=useState(false),[error,setError]=useState('');
+  async function confirm(){
+    if(busy)return;
+    setBusy(true);setError('');
+    try{const [profileId,model]=JSON.parse(selection);if(!await onConfirm({profileId,model})){setError(t('模型设置未能保存，请重试。','Could not save the model selection. Please retry.'));setBusy(false);}}
+    catch(reason){setError((reason as Error).message);setBusy(false);}
+  }
   const dialog=useRef<HTMLDialogElement>(null);
   const title=useId(),description=useId();
   useEffect(()=>{
@@ -49,16 +58,22 @@ export function InteractiveGenerationConfirm({model,onCancel,onConfirm}:{model:s
     dialog.current?.showModal();
     return ()=>previous?.focus();
   },[]);
-  return <dialog className="reading-generation-confirm" ref={dialog} aria-labelledby={title} aria-describedby={description} onCancel={event=>{event.preventDefault();onCancel();}}>
+  return <dialog className="reading-generation-confirm" ref={dialog} aria-labelledby={title} aria-describedby={description} onCancel={event=>{event.preventDefault();if(!busy)onCancel();}}>
     <h3 id={title}>{t('生成互动导读？','Generate an interactive reading?')}</h3>
     <div id={description}>
       <p>{t('将调用当前模型 API，消耗 token，并可能产生费用。','This calls the current model API, consumes tokens and may incur charges.')}</p>
-      <p className="reading-confirm-model">{model}</p>
+      <label className="reading-confirm-model-label">{t('本次使用的模型','Model for this conversion')}
+        <select aria-label={t('互动导读模型','Interactive reading model')} value={selection} disabled={busy} onChange={event=>setSelection(event.target.value)}>
+          {profiles.map(profile=><optgroup key={profile.id} label={profile.name}>{profile.models.map(model=><option key={model} value={JSON.stringify([profile.id,model])}>{model}</option>)}</optgroup>)}
+        </select>
+      </label>
+      <p>{t('确认后保存模型选择；取消不会更改当前模型。','The model choice is saved on confirmation; cancelling keeps the current model.')}</p>
       <p>{t('根据当前解读生成概念卡、图表解读与自测题，保留原版。格式校验失败时可能额外调用一次模型修复。','Creates concept cards, figure explanations and self-checks from this reading, preserving the original. Invalid output may require one additional model call for format repair.')}</p>
     </div>
+    {error&&<p role="alert">{error}</p>}
     <div className="reading-confirm-actions">
-      <button className="soft-button" autoFocus onClick={onCancel}>{t('取消','Cancel')}</button>
-      <button className="primary-button" onClick={onConfirm}>{t('确认调用模型','Confirm model call')}</button>
+      <button className="soft-button" autoFocus disabled={busy} onClick={onCancel}>{t('取消','Cancel')}</button>
+      <button className="primary-button" disabled={busy} onClick={()=>void confirm()}>{busy?t('正在保存…','Saving…'):t('确认调用模型','Confirm model call')}</button>
     </div>
   </dialog>;
 }

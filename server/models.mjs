@@ -146,6 +146,23 @@ export function validateSettings(input, current) {
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw new ApiError("Settings must be an object.");
   const normalized = normalizeProfiles(current);
+  if (input.restoreProfileId !== undefined || input.restoreModel !== undefined) {
+    if ('profiles' in input) throw new ApiError('Restore cannot be combined with a profile replacement.');
+    let restored = normalized.profiles;
+    if (input.restoreProfileId !== undefined) {
+      const entry = normalized.disabledProfiles.find(p => p.id === input.restoreProfileId);
+      if (!entry) throw new ApiError('Disabled connection not found.', 404);
+      restored = [...restored, entry];
+    }
+    if (input.restoreModel !== undefined) {
+      const {profileId, model} = input.restoreModel || {};
+      const profile = restored.find(p => p.id === profileId);
+      const entry = profile?.disabledModels?.find(item => item.model === model);
+      if (!entry) throw new ApiError('Disabled model not found.', 404);
+      restored = restored.map(p => p.id === profileId ? {...p, models:[...p.models,model], modelCapabilities:{...p.modelCapabilities,[model]:entry.capability}} : p);
+    }
+    input = {...input, profiles: restored};
+  }
   let profiles = normalized.profiles.map((profile) => ({ ...profile }));
   if ("profiles" in input) {
     if (
@@ -178,7 +195,7 @@ export function validateSettings(input, current) {
         throw new ApiError(
           "Each profile needs a name of up to 100 characters.",
         );
-      const prior = normalized.profiles.find(
+      const prior = [...normalized.profiles, ...normalized.disabledProfiles].find(
         (profile) => profile.id === entry.id,
       );
       const profile = validateProfile(entry, prior || defaultSettings);
@@ -201,7 +218,14 @@ export function validateSettings(input, current) {
         throw new ApiError(
           "Selected model must belong to the profile's models list.",
         );
-      profile.modelCapabilities = validateModelCapabilities(entry.modelCapabilities, profile.models, prior?.modelCapabilities);
+      const sameDestination = prior && profile.provider === prior.provider && profile.baseUrl === prior.baseUrl;
+      const previousCapabilities = sameDestination ? {...Object.fromEntries((prior.disabledModels || []).map(item => [item.model,item.capability])), ...prior.modelCapabilities} : {};
+
+      profile.modelCapabilities = validateModelCapabilities(entry.modelCapabilities, profile.models, previousCapabilities);
+      profile.disabledModels = sameDestination ? [
+        ...(prior?.disabledModels || []),
+        ...(prior?.models || []).filter(model => !profile.models.includes(model)).map(model => ({model, capability:prior.modelCapabilities?.[model] || 'text'})),
+      ].filter((item,index,all) => !profile.models.includes(item.model) && all.findIndex(other=>other.model===item.model)===index) : [];
       return { ...profile, id: entry.id, name: entry.name.trim() };
     });
   }
@@ -236,7 +260,10 @@ export function validateSettings(input, current) {
         );
       updated.models = [...updated.models, updated.model]; // Legacy clients can add a model.
     }
-    updated.modelCapabilities = validateModelCapabilities(flat.modelCapabilities, updated.models, active.modelCapabilities);
+    const sameDestination = updated.provider === active.provider && updated.baseUrl === active.baseUrl;
+    const previousCapabilities = sameDestination ? {...Object.fromEntries((active.disabledModels || []).map(item=>[item.model,item.capability])), ...active.modelCapabilities} : {};
+    updated.modelCapabilities = validateModelCapabilities(flat.modelCapabilities, updated.models, previousCapabilities);
+    updated.disabledModels = sameDestination ? (active.disabledModels || []).filter(item => !updated.models.includes(item.model)) : [];
     profiles = profiles.map((profile) =>
       profile.id === active.id ? updated : profile,
     );
@@ -244,7 +271,9 @@ export function validateSettings(input, current) {
   }
   const vision = validateVisionSettings(input.vision, normalized.vision, profiles);
   const recommendations = validateRecommendationSettings(input.recommendations, normalized.recommendations, profiles);
-  return normalizeProfiles({ ...active, profiles, activeProfileId: active.id, vision, recommendations, assistant:validateAssistantPreferences(input.assistant,normalized.assistant) });
+  const disabledProfiles = [...normalized.disabledProfiles, ...normalized.profiles.filter(p=>!profiles.some(next=>next.id===p.id))]
+    .filter((p,index,all)=>!profiles.some(next=>next.id===p.id) && all.findIndex(other=>other.id===p.id)===index);
+  return normalizeProfiles({ ...active, profiles, disabledProfiles, activeProfileId: active.id, vision, recommendations, assistant:validateAssistantPreferences(input.assistant,normalized.assistant) });
 }
 
 export function validateLanguage(language = "zh-CN") {

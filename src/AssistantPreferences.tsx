@@ -4,9 +4,11 @@ import {Palette, Plus, Trash2} from 'lucide-react';
 import {BUILTIN_ASSISTANT_STYLES,DEFAULT_ASSISTANT_PREFERENCES,assistantStyle,type AssistantPreferences as Preferences} from '../shared/assistant-prompts.mjs';
 import type {Settings} from './types';
 import {api} from './types';
+import {useModelSelection,writeWorkspaceSettings} from './model-selection';
 import './assistant-preferences.css';
 
 export default function AssistantPreferences({settings,onChange,chinese,disabled=false,apiMode=true}:{settings:Settings;onChange:(s:Settings)=>void;chinese:boolean;disabled?:boolean;apiMode?:boolean}) {
+  const sharedWrite=useModelSelection();
   const anchor=useRef<HTMLButtonElement>(null),panel=useRef<HTMLElement>(null);
   const [position,setPosition]=useState({left:16,bottom:100,maxHeight:500});
   const [open,setOpen]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState('');
@@ -14,8 +16,11 @@ export default function AssistantPreferences({settings,onChange,chinese,disabled
   const preferences=settings.assistant||DEFAULT_ASSISTANT_PREFERENCES,active=assistantStyle(preferences);
   const t=(zh:string,en:string)=>chinese?zh:en;
   async function save(value:Preferences){
+    if(saving||sharedWrite.pending)return;
     setSaving(true);setError('');
-    try{onChange(await api<Settings>('/settings',{method:'PUT',body:JSON.stringify({assistant:value})}));setDraft(null);}catch(e){setError((e as Error).message);}finally{setSaving(false);}
+    const result=await writeWorkspaceSettings(()=>api<Settings>('/settings',{method:'PUT',body:JSON.stringify({assistant:value})}),onChange);
+    if(result.ok)setDraft(null);else setError(result.error||t('其他配置正在保存，请稍后重试。','Another setting is being saved. Try again shortly.'));
+    setSaving(false);
   }
   useLayoutEffect(()=>{
     if(!open)return;
@@ -25,7 +30,7 @@ export default function AssistantPreferences({settings,onChange,chinese,disabled
     place();window.addEventListener('resize',place);document.addEventListener('pointerdown',outside);document.addEventListener('keydown',escape);
     return()=>{window.removeEventListener('resize',place);document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);};
   },[open]);
-  const busy=disabled||saving;
+  const busy=disabled||saving||sharedWrite.pending;
   return <div className="assistant-preferences">
     <button ref={anchor} type="button" className="agent-web-toggle" disabled={disabled} aria-expanded={open} aria-label={t('回答风格与提示词','Answer styles and prompts')} onClick={()=>setOpen(!open)}><Palette size={14}/><span>{chinese?active.name:active.nameEn||active.name}</span></button>
     {open&&createPortal(<section ref={panel} style={position} className="assistant-preferences-panel" aria-label={t('助手提示词','Assistant prompts')}>
@@ -46,6 +51,7 @@ export default function AssistantPreferences({settings,onChange,chinese,disabled
       <label>{t('PDF 输入方式','PDF input mode')}<select value={preferences.pdfMode} disabled={busy||!apiMode||!!draft} onChange={e=>void save({...preferences,pdfMode:e.target.value as Preferences['pdfMode']})}><option value="text">{t('文字层 · 可按需看图','Text layer · images on demand')}</option><option value="images">{t('逐页图像 · 需要视觉模型','Page images · vision model required')}</option></select></label>
       <p>{!apiMode?t('订阅任务会带上风格提示；PDF 输入模式用于模型 API。','Subscription tasks include the style prompt; PDF input mode applies to model APIs.'):t('15 页以内按页序发送；更长论文先给简要资料，由助手按需读页。图像模式发送完整页图，文字模式保留原文文本。','Up to 15 pages are sent in order. Longer papers start with a brief; the assistant reads pages on demand. Image mode sends full-page rasters; text mode sends extracted text.')}</p>
       {apiMode&&preferences.pdfMode==='images'&&settings.modelCapabilities?.[settings.model]!=='vision'&&<p role="alert">{t('请切换到支持视觉的模型后提问。','Choose a vision-capable model before asking.')}</p>}
+      <p role="status">{saving?t('正在保存…','Saving…'):t('模型、风格、联网与 PDF 阅读方式自动保存到本机，重启后仍保留。','Model, style, Web search and PDF mode save automatically on this server and survive restarts.')}</p>
       {error&&<p role="alert">{error}</p>}
     </section>,document.body)}
   </div>;

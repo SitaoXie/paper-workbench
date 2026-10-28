@@ -24,7 +24,7 @@ export const defaultSettings = {
 
 // Keep the active profile mirrored at top level for older clients and callers.
 export function normalizeProfiles(settings = defaultSettings) {
-  const { profiles: existing, activeProfileId, vision, recommendations, assistant, ...legacy } = settings;
+  const { profiles: existing, activeProfileId, vision, recommendations, assistant, disabledProfiles = [], ...legacy } = settings;
   const profiles =
     Array.isArray(existing) && existing.length
       ? existing
@@ -44,7 +44,7 @@ export function normalizeProfiles(settings = defaultSettings) {
   }
   const active =
     profiles.find((profile) => profile.id === activeProfileId) || profiles[0];
-  return { ...active, profiles, assistant: assistant || structuredClone(DEFAULT_ASSISTANT_PREFERENCES), activeProfileId: active.id, vision: vision || { enabled: false }, recommendations: recommendations || { enabled: false, profileId: '', model: '' } };
+  return { ...active, profiles, disabledProfiles, assistant: assistant || structuredClone(DEFAULT_ASSISTANT_PREFERENCES), activeProfileId: active.id, vision: vision || { enabled: false }, recommendations: recommendations || { enabled: false, profileId: '', model: '' } };
 }
 
 export class Store {
@@ -131,7 +131,7 @@ export class Store {
   }
   publicSettings() {
     const sanitize = (profile) => {
-      const { apiKey, profiles: _profiles, ...settings } = profile;
+      const { apiKey, profiles: _profiles, disabledProfiles: _disabledProfiles, ...settings } = profile;
       const local = ["localhost", "127.0.0.1", "[::1]"].includes(
         new URL(settings.baseUrl).hostname,
       );
@@ -144,6 +144,7 @@ export class Store {
     return {
       ...sanitize(this.data.settings),
       profiles: this.data.settings.profiles.map(sanitize),
+      disabledProfiles: (this.data.settings.disabledProfiles || []).map(sanitize),
     };
   }
 }
