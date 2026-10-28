@@ -105,16 +105,7 @@
   flex-wrap: wrap;
   gap: 9px;
 }
-.reading-agent-options {
-  margin: 4px 0 14px;
-  color: var(--secondary);
-  font-size: 12px;
-}
-.reading-agent-options summary {
-  cursor: pointer;
-  padding: 8px 0;
-}
-.reading-agent-options select,
+.reading-skill-control select,
 .report-input-options select,
 .report-input-options input {
   display: block;
@@ -129,9 +120,7 @@
   color: var(--text);
   font: inherit;
 }
-.reading-agent-options p { line-height: 1.6; }
-.reading-agent-options summary:focus-visible,
-.reading-agent-options select:focus-visible,
+.reading-skill-control select:focus-visible,
 .report-input-options select:focus-visible,
 .report-input-options input:focus-visible {
   outline: 2px solid var(--accent);
@@ -751,3 +740,12 @@
 
 .report-input-options { margin: 16px 0; }
 .report-input-options .reading-format-hint { margin: 8px 0; font-size: 12px; }
+
+.reading-generation-route { margin-top: 18px; min-width: 0; }
+.reading-route-label { margin: 0 0 9px; color: var(--text); font-size: 12px; font-weight: 600; }
+.reading-route-hint { margin: 9px 0 0; color: var(--secondary); font-size: 11px; line-height: 1.7; }
+.reading-subscription-route { border-top: 1px solid var(--line); padding-top: 16px; }
+.reading-subscription-actions { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 10px; }
+.reading-subscription-actions > button { flex: 0 0 auto; min-height: 38px; font-size: 12px; }
+.reading-skill-control { flex: 1 1 180px; min-width: 0; max-width: 320px; color: var(--secondary); font-size: 12px; }
+.reading-skill-control select { margin-top: 5px; min-width: 0; text-overflow: ellipsis; }

@@ -669,62 +669,46 @@ export default function ReadingOverview({
             />
           </label>
           <ReportInputOptions imageBatchSize={imageBatchSize} onImageBatchSizeChange={setImageBatchSize} settings={settings} value={inputMode} onChange={setInputMode} onConfigure={onConfigure} hasPdf={!!paper.localPdfUrl} disabled={generating}/>
-          <details className="reading-agent-options">
-            <summary>{t("Codex / Claude 辅助 skill（可选）", "Codex / Claude assistance skills (optional)")}</summary>
-            <label className="reading-focus-label">
-              {t("仅用于复制的订阅代理任务", "Only for copied subscription-agent tasks")}
-              <select aria-label={t("订阅代理辅助 skill", "Subscription assistance skills")} value={agentAssistance} onChange={event => setAgentAssistance(event.target.value as AgentReadingAssistance)}>
-                <option value="none">{t("项目阅读规范", "Project reading policy")}</option>
-                <option value="supervisor">Supervisor-Skills</option>
-                <option value="ars">ARS-Codex</option>
-                <option value="both">Supervisor-Skills + ARS-Codex</option>
-              </select>
-            </label>
-            <p className="muted-label">{t("只使用代理环境中可用且许可适用的 skill，不会自动安装。缺少时代理会说明，并使用项目阅读规范；不改变网站 API 生成。", "Uses skills available in the agent environment under applicable licenses; nothing is installed automatically. If unavailable, the agent discloses this and uses the project reading policy. Website API generation is unchanged.")}</p>
-          </details>
-          <div className="reading-generate-actions">
-            <ModelSelect
-              settings={settings}
-              onChange={onSettings}
-              disabled={generating || translating}
-            />
-            <button
-              className="primary-button"
-              onClick={() => void generate()}
-              disabled={generating}
-            >
-              {generating ? (
-                <Loader2 className="spin" size={15} />
-              ) : (
-                <Sparkles size={15} />
-              )}{" "}
-              {generating
-                ? t("正在研读…", "Reading…")
-                : modelReady
-                  ? t("生成解读", "Generate overview")
-                  : t("生成原文摘录", "Create source excerpts")}
-            </button>
-            <button className="soft-button" onClick={prepareAgent}>
-              <Code2 size={15} />
-              {t("用 Codex / Claude", "Use Codex / Claude")}
-            </button>
-          </div>
-          {!modelReady && (
-            <p className="muted-label">
-              {t("可用已有订阅生成，或", "Use an existing subscription, or ")}
-              <button className="text-button" onClick={onConfigure}>
-                {t("配置模型 API", "configure a model API")}
+          <div className="reading-generation-route" role="group" aria-label={t("模型 API 生成", "Generate with a model API")}>
+            <p className="reading-route-label">{t("模型 API", "Model API")}</p>
+            <div className="reading-generate-actions">
+              <ModelSelect settings={settings} onChange={onSettings} disabled={generating || translating}/>
+              <button className="primary-button" onClick={() => void generate()} disabled={generating}>
+                {generating ? <Loader2 className="spin" size={15}/> : <Sparkles size={15}/>} {generating
+                  ? t("正在研读…", "Reading…")
+                  : modelReady ? t("生成解读", "Generate overview") : t("生成原文摘录", "Create source excerpts")}
               </button>
-            </p>
-          )}
-          {style !== "quick" && (
-            <small className="muted-label">
-              {t(
-                "包含研究者、质疑者和编辑复核；多角色可能使用同一模型。",
-                "Includes researcher, skeptic and editor review; roles may use the same model.",
-              )}
-            </small>
-          )}
+            </div>
+            {!modelReady && <p className="reading-route-hint">
+              {t("可用已有订阅生成，或", "Use an existing subscription, or ")}
+              <button className="text-button" onClick={onConfigure}>{t("配置模型 API", "configure a model API")}</button>
+            </p>}
+            {style !== "quick" && <p className="reading-route-hint">{t(
+              "包含研究者、质疑者和编辑复核；多角色可能使用同一模型。",
+              "Includes researcher, skeptic and editor review; roles may use the same model.",
+            )}</p>}
+          </div>
+          <div className="reading-generation-route reading-subscription-route" role="group" aria-label={t("Codex / Claude 订阅生成", "Generate with a Codex / Claude subscription")}>
+            <p className="reading-route-label">{t("已有订阅", "Existing subscription")}</p>
+            <div className="reading-subscription-actions">
+              <button className="soft-button" onClick={prepareAgent}>
+                <Code2 size={15}/>{t("用 Codex / Claude", "Use Codex / Claude")}
+              </button>
+              <label className="reading-skill-control">
+                <span>{t("辅助 skill", "Assistance skill")}</span>
+                <select aria-label={t("订阅代理辅助 skill", "Subscription assistance skills")} value={agentAssistance} onChange={event => setAgentAssistance(event.target.value as AgentReadingAssistance)}>
+                  <option value="none">{t("项目阅读规范", "Project reading policy")}</option>
+                  <option value="supervisor">Supervisor-Skills</option>
+                  <option value="ars">ARS-Codex</option>
+                  <option value="both">Supervisor-Skills + ARS-Codex</option>
+                </select>
+              </label>
+            </div>
+            <p className="reading-route-hint">{t(
+              "skill 仅用于此按钮复制的任务，不影响 API 生成；需在代理环境中可用。",
+              "Skills apply only to the task copied by this button, not API generation, and must be available in the agent environment.",
+            )}</p>
+          </div>
           {agentTask && (
             <div className="reading-agent-task">
               <textarea
