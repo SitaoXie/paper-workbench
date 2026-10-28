@@ -44,6 +44,10 @@ export function reasoningBody(settings){
  // Explicit per-model controls own these fields; unrelated provider options stay.
  delete body.reasoning_effort;
  if(config.protocol==='openai-effort'){
+  // On documented Ark endpoints effort owns the thinking mode. A saved
+  // thinking.disabled otherwise conflicts with low/high, and Kimi rejects it.
+  // Default above still preserves the user's original extra parameters.
+  if(documentedReasoning(settings))delete body.thinking;
   if(body.output_config){const {effort,...rest}=body.output_config;body.output_config=rest;}
   return {...body,reasoning_effort:value};
  }

@@ -61,3 +61,19 @@ test('documented controls are scoped to exact Ark model IDs and endpoint, with n
  settings=validateSettings({modelReasoning:{[ark.model]:{...config,value:'none'}}},settings);
  assert.equal(reasoningBody(settings).reasoning_effort,'none');
 });
+
+test('explicit Ark effort removes contradictory legacy thinking flags without changing default or unrelated gateways',async()=>{
+ for(const model of ['doubao-seed-2-1-lite-260915','deepseek-v4-1-flash-261017','glm-5-3-flash-260828','kimi-k3-1-pro-261024']){
+  const settings={...profile,baseUrl:'https://ark.cn-beijing.volces.com/api/v3',model,extraBody:{thinking:{type:'disabled'},temperature:.3}};
+  const config=documentedReasoning(settings);
+  for(const value of config.levels){
+   let sent;
+   await callModel({...settings,modelReasoning:{[model]:{...config,value}}},[{role:'user',content:'Test'}],{fetchImpl:async(url,options)=>{sent=JSON.parse(options.body);return new Response(JSON.stringify({choices:[{message:{content:'OK'}}]}));}});
+   assert.equal(sent.reasoning_effort,value);assert.equal(sent.thinking,undefined);assert.equal(sent.temperature,.3);assert.equal(sent.model,model);
+  }
+  const modelReasoning={[model]:{...config,value:'default'}};
+  assert.deepEqual(reasoningBody({...settings,modelReasoning}),settings.extraBody);
+  modelReasoning[model].value='low';
+  assert.equal(reasoningBody({...settings,baseUrl:'https://example.com/v1',modelReasoning}).thinking.type,'disabled');
+ }
+});

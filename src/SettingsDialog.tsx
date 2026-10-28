@@ -163,11 +163,11 @@ export default function SettingsDialog({
       ),
     );
   };
-  const payload = () => ({
+  const payload = (excludedProfileId?: string) => ({
     activeProfileId: active,
     vision,
     recommendations,
-    profiles: profiles.map(({ extra, modelText, ...p }) => {
+    profiles: profiles.filter(profile => profile.id !== excludedProfileId).map(({ extra, modelText, ...p }) => {
       const models = [
         ...new Set(
           modelText
@@ -193,17 +193,23 @@ export default function SettingsDialog({
       };
     }),
   });
-  async function run(action: "save" | "test") {
+  async function run(action: "save" | "test", removeProfileId?: string) {
     if (busy || sharedWrite.pending) return;
     setBusy(action);
     setFeedback("");
     try {
-      const body = payload();
+      const body = payload(removeProfileId);
+      if (removeProfileId) {
+        if (!body.profiles.length) throw new Error(t('至少保留一个连接。', 'Keep at least one connection.'));
+        if (body.activeProfileId === removeProfileId) body.activeProfileId = body.profiles[0].id;
+        if (body.vision.profileId === removeProfileId) body.vision = { enabled: false };
+        if (body.recommendations.profileId === removeProfileId) body.recommendations = { enabled: false };
+      }
       if (action === "save") {
-        if (recommendations.enabled && !profiles.some(profile => profile.id === recommendations.profileId && declaredModels(profile).includes(recommendations.model || '')))
+        if (body.recommendations.enabled && !body.profiles.some(profile => profile.id === body.recommendations.profileId && profile.models.includes(body.recommendations.model || '')))
           throw new Error(t('请选择推荐问题使用的连接与模型。', 'Choose a connection and model for question recommendations.'));
         if (
-          vision.enabled &&
+          body.vision.enabled &&
           (!visionProfile || !visionModels.includes(vision.model || ""))
         )
           throw new Error(
@@ -218,6 +224,7 @@ export default function SettingsDialog({
           onSaved(s);
           setProfiles(profileList(s).map(toDraft));
           setActive(s.activeProfileId || active);
+          if (removeProfileId) setSelected(body.activeProfileId);
           setVision(s.vision || { enabled: false });
           setRecommendations(s.recommendations || { enabled: false });
           setDirty(false);
@@ -269,14 +276,9 @@ export default function SettingsDialog({
     setFeedback("");
   }
   function remove() {
-    const remaining = profiles.filter((p) => p.id !== draft.id);
-    if (!remaining.length) return;
-    setDirty(true);
-    setProfiles(remaining);
-    setSelected(remaining[0].id);
-    if (active === draft.id) setActive(remaining[0].id);
-    if (vision.profileId === draft.id) setVision({ enabled: false });
-    if (recommendations.profileId === draft.id) setRecommendations({ enabled: false });
+    if (profiles.length < 2) return;
+    // Persist before removing from the form, so closing the drawer cannot undo it.
+    void run("save", draft.id);
   }
   return (
     <div
@@ -499,7 +501,7 @@ export default function SettingsDialog({
             disabled={profiles.length < 2 || !!busy || sharedWrite.pending}
             onClick={remove}
           >
-            <Trash2 size={13} /> {t("停用连接", "Disable connection")}
+            <Trash2 size={13} /> {t("停用并保存", "Disable and save")}
           </button>
         </div>
         <section

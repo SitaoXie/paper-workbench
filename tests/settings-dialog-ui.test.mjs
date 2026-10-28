@@ -33,4 +33,26 @@ for(const zh of [true,false])test(`settings ${zh?'Chinese':'English'} removes ac
   assert.ok(requests.at(-1).restoreModel);assert.match(document.querySelector('.form-success').textContent,zh?/已恢复/:/Restored/);
  }finally{await act(async()=>root.unmount());}
 });
+for (const fail of [false,true]) test(`disabling a connection persists immediately and ${fail?'keeps the form on failure':'clears dependent selections and can be restored'}`,async()=>{
+ const make=(id)=>({id,name:id,provider:'openai',baseUrl:'http://localhost:9999/v1',model:'visual',models:['visual'],modelCapabilities:{visual:'vision'}});
+ let settings=validateSettings({profiles:[make('one'),make('two')],activeProfileId:'one',vision:{enabled:true,profileId:'one',model:'visual'},recommendations:{enabled:true,profileId:'one',model:'visual'}},defaultSettings);
+ settings.disabledProfiles=[];
+ const requests=[],exports={}; const root=createRoot(document.getElementById('root'));
+ const render=()=>root.render(React.createElement(exports.default,{current:settings,onClose:()=>{},onSaved:value=>{settings=value;render();}}));
+ vm.runInNewContext(code,{exports,window,document,crypto:globalThis.crypto,require:name=>name.endsWith('.css')?{}:name==='./i18n'?{t:(cn,en)=>en||cn,useLocale:()=>({})}:name==='../shared/model-limits.mjs'?limits:name==='./model-selection'?{useModelSelection:()=>({pending:false}),writeWorkspaceSettings:async(load,callback)=>{try{callback(await load());return {ok:true};}catch(error){return {ok:false,error:error.message};}}}:name==='./types'?{api:async(route,opts)=>{const body=JSON.parse(opts.body);requests.push(body);if(fail)throw Error('Save failed');return validateSettings(body,settings);}}:require(name)});
+ try{
+  await act(async()=>render());
+  const extra=document.querySelector('#extra-body');
+  await act(async()=>{Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set.call(extra,'{invalid');extra.dispatchEvent(new window.Event('input',{bubbles:true}));});
+  await act(async()=>document.querySelector('.profile-actions .danger').click());
+  assert.equal(requests.length,1,'Disable saves without an additional Save click');
+  if(fail){assert.equal(settings.profiles.length,2);assert.equal(document.querySelector('#profile-name').value,'one');assert.match(document.querySelector('.form-error').textContent,/Save failed/);}
+  else{
+   assert.deepEqual(settings.profiles.map(p=>p.id),['two']);assert.equal(settings.activeProfileId,'two');assert.equal(settings.vision.enabled,false);assert.equal(settings.recommendations.enabled,false);
+   assert.equal(settings.disabledProfiles[0].id,'one');
+   const restore=[...document.querySelectorAll('.settings-disabled-list button')].find(b=>b.parentElement.textContent.includes('one'));
+   await act(async()=>restore.click());assert.equal(settings.profiles.length,2);assert.equal(settings.disabledProfiles.length,0);
+  }
+ }finally{await act(async()=>root.unmount());}
+});
 test.after(()=>{dom.window.close();delete globalThis.window;delete globalThis.document;delete globalThis.IS_REACT_ACT_ENVIRONMENT;});
