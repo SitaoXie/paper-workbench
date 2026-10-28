@@ -174,7 +174,7 @@ async function main() {
           headers:
             body && !isForm ? { "Content-Type": "application/json" } : {},
           body: body ? (isForm ? body : JSON.stringify(body)) : undefined,
-          signal: AbortSignal.timeout(timeout),
+          signal: method === "POST" && /\/report$/.test(path) && !process.env.PAPER_WORKBENCH_TIMEOUT_MS ? undefined : AbortSignal.timeout(timeout),
           redirect: "error",
         },
       );

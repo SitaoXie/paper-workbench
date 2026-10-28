@@ -24,7 +24,7 @@ export function ComposerAttachments({disabled,onImage,onPdf}:{disabled:boolean;o
  return <><button ref={anchor} type="button" className="icon-button composer-attach" aria-label={t('添加附件','Add attachment')} aria-expanded={open} aria-haspopup="dialog" disabled={disabled} onClick={()=>setOpen(!open)}><Plus size={19}/></button>
  {open&&createPortal(<div ref={panel} style={position} className="composer-popover composer-attachments" role="dialog" aria-label={t('添加附件','Add attachment')}><button type="button" disabled={disabled} onClick={()=>{setOpen(false);onImage();}}><ImagePlus size={18}/><span>{t('图片或截图','Image or screenshot')}<small>{t('也可直接粘贴到输入框','You can also paste into the composer')}</small></span></button><button type="button" disabled={disabled} onClick={()=>{setOpen(false);onPdf();}}><FileUp size={18}/><span>{t('导入 PDF 论文','Import a PDF paper')}<small>{t('加入文库并打开论文','Add to the library and open the paper')}</small></span></button></div>,document.body)}</>;
 }
-function ReasoningControl({settings,onSettings,disabled}:{settings:Settings;onSettings:(s:Settings)=>void;disabled:boolean}){
+export function ReasoningControl({settings,onSettings,disabled,persist=true}:{settings:Settings;onSettings:(s:Settings)=>void;disabled:boolean;persist?:boolean}){
  const {t}=useLocale();const active=settings.profiles?.find(p=>p.id===settings.activeProfileId)||settings;
  const control=reasoningControl({...active,model:settings.model});
  const [draft,setDraft]=useState(control?.value||'default'),[error,setError]=useState('');const committing=useRef(false);
@@ -35,7 +35,13 @@ function ReasoningControl({settings,onSettings,disabled}:{settings:Settings;onSe
   if(!control||value===control.value||disabled||committing.current)return;
   committing.current=true;setError('');let ok=false;
   try{
-   if(control.kind==='variants')ok=await selectWorkspaceModel(settings.activeProfileId||'default',control.models![value],onSettings);
+   if(!persist){
+    const model=control.kind==='variants'?control.models![value]:settings.model;
+    const config=active.modelReasoning?.[settings.model]||{protocol:control.protocol!,levels:control.levels.filter(level=>level!=='default'),value:'default'};
+    const profile={...active,model,...(control.kind!=='variants'?{modelReasoning:{...active.modelReasoning,[model]:{...config,value}}}:{})};
+    onSettings({...settings,...profile,profiles:settings.profiles?.map(p=>p.id===settings.activeProfileId?{...p,model:profile.model,modelReasoning:profile.modelReasoning}:p)});ok=true;
+   }
+   else if(control.kind==='variants')ok=await selectWorkspaceModel(settings.activeProfileId||'default',control.models![value],onSettings);
    else {const config=active.modelReasoning?.[settings.model]||{protocol:control.protocol!,levels:control.levels.filter(level=>level!=='default'),value:'default'};const result=await writeWorkspaceSettings(()=>api<Settings>('/settings',{method:'PUT',body:JSON.stringify({modelReasoning:{...active.modelReasoning,[settings.model]:{...config,value}}})}),onSettings);ok=result.ok;if(!result.ok&&result.error)setError(result.error);}
    if(!ok){setDraft(control.value);setError(t('思考设置未保存，请重试。','Reasoning setting was not saved. Try again.'));}
   }finally{committing.current=false;}

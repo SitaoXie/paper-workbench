@@ -861,8 +861,8 @@ test("context keeps dense pages whole when the source fits and reports actual tr
 
 test("context character budget is validated, public and persistent", async (t) => {
   const { api, directory } = await fixture(t);
-  assert.equal((await api("/api/settings")).data.contextChars, 44000);
-  for (const contextChars of [7999, 300001, 10000.5, "150000", null])
+  assert.equal((await api("/api/settings")).data.contextChars, 1000000);
+  for (const contextChars of [7999, 8000001, 10000.5, "150000", null])
     assert.equal(
       (await api("/api/settings", { method: "PUT", body: { contextChars } }))
         .status,
@@ -870,14 +870,14 @@ test("context character budget is validated, public and persistent", async (t) =
     );
   const saved = await api("/api/settings", {
     method: "PUT",
-    body: { contextChars: 150000 },
+    body: { contextChars: 8000000 },
   });
   assert.equal(saved.status, 200);
-  assert.equal(saved.data.contextChars, 150000);
+  assert.equal(saved.data.contextChars, 8000000);
   assert.equal(
     (await createApp({ dataDir: directory })).locals.store.publicSettings()
       .contextChars,
-    150000,
+    8000000,
   );
 });
 
@@ -2753,14 +2753,15 @@ test("model request timeouts are profile-scoped, public, validated and default t
 
 test("OpenAI and Anthropic request abort signals use the configured timeout while omitted settings retain 90 seconds", async (t) => {
   const requestedTimeouts = [];
-  const signal = new AbortController().signal;
-  t.mock.method(AbortSignal, "timeout", milliseconds => { requestedTimeouts.push(milliseconds); return signal; });
+  const originalTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback,milliseconds,...args) => { requestedTimeouts.push(milliseconds); return originalTimeout(callback,milliseconds,...args); });
   for (const [provider, seconds] of [["openai", undefined], ["openai", 240], ["anthropic", 600], ["anthropic", 15]]) {
     const settings = { ...defaultSettings, provider, apiKey: "fixture-key" };
     if (seconds === undefined) delete settings.requestTimeoutSeconds;
     else settings.requestTimeoutSeconds = seconds;
     const output = await callModel(settings, [{ role: "user", content: "Test timeout configuration." }], { fetchImpl: async (_url, options) => {
-      assert.equal(options.signal, signal);
+      assert.ok(options.signal instanceof AbortSignal);
+      assert.equal(options.signal.aborted,false);
       return new Response(JSON.stringify(provider === "anthropic" ? { content: [{ type: "text", text: "Ready" }] } : { choices: [{ message: { content: "Ready" } }] }));
     } });
     assert.equal(output, "Ready");

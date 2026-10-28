@@ -1,5 +1,5 @@
 /** Bounded SSE decoder: handles UTF-8 splits, CRLF, comments and multiline data. */
-export async function* readSse(body) {
+export async function* readSse(body, onActivity) {
   if (!body) throw new Error('Missing event stream.');
   const reader = body.getReader(), decoder = new TextDecoder();
   let buffer = '', event = '', data = [], size = 0;
@@ -14,7 +14,7 @@ export async function* readSse(body) {
   };
   try {
     while (true) {
-      const { done, value } = await reader.read(); buffer += decoder.decode(value, { stream: !done });
+      const { done, value } = await reader.read(); if(value?.byteLength)onActivity?.(); buffer += decoder.decode(value, { stream: !done });
       let index;
       while ((index = buffer.indexOf('\n')) >= 0) { const line = buffer.slice(0, index).replace(/\r$/, ''); buffer = buffer.slice(index + 1); const item = consume(line); if (item) yield item; }
       if (buffer.length > 4_000_000) throw new Error('Event too large.');

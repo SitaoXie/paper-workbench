@@ -1,12 +1,15 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { api, type Settings } from './types';
 import { t } from './i18n';
+import {ReasoningControl} from './ComposerControls';
 
-type Progress = { running: boolean; stage?: string; completed?: number; total?: number; batch?: number };
+type Progress = { running: boolean; stage?: string; completed?: number; total?: number; batch?: number; text?:string; reasoning?:string };
 export function ReadingGenerationProgress({paperId}:{paperId:string}) {
   const container=useRef<HTMLDivElement>(null);
   const [progress,setProgress]=useState<Progress>({running:true,stage:'preparing'});
   const [seconds,setSeconds]=useState(0);
+  const [cancelling,setCancelling]=useState(false);
+  const [cancelError,setCancelError]=useState('');
   const [unavailable,setUnavailable]=useState(false);
   useEffect(()=>{
     container.current?.scrollIntoView?.({block:'center',behavior:'smooth'});
@@ -37,18 +40,23 @@ export function ReadingGenerationProgress({paperId}:{paperId:string}) {
   return <div ref={container} className="reading-generation-progress" aria-busy="true">
     <div className="reading-progress-heading"><span role="status">{label}</span><span aria-live="off">{t(`已用时 ${seconds} 秒`,`${seconds}s elapsed`)}</span></div>
     <div className="reading-progress-track" role="progressbar" aria-label={label}><span/></div>
+    {progress.reasoning&&<details className="reading-stream-reasoning"><summary>{t('模型思考','Model reasoning')}</summary><pre>{progress.reasoning}</pre></details>}
+    {progress.text&&<div className="reading-stream-preview" aria-label={t('当前阶段实时输出','Live output from the current stage')}><small>{t('当前阶段预览 · 完成复核后保存最终版本','Stage preview · the final version is saved after review')}</small><pre>{progress.text}</pre></div>}
+    <button type="button" className="text-button" disabled={cancelling} onClick={async()=>{setCancelling(true);setCancelError('');try{await api(`/papers/${encodeURIComponent(paperId)}/report/cancel`,{method:'POST'});}catch(error){setCancelError((error as Error).message);setCancelling(false);}}}>{cancelling?t('正在停止…','Stopping…'):t('停止生成','Stop generation')}</button>
+    {cancelError&&<p role="alert">{cancelError}</p>}
     <p>{unavailable?t('暂时无法获取进度，仍在等待生成结果。','Progress is temporarily unavailable; still waiting for the generation result.'):t('正在等待模型处理，完成后会自动显示。','Waiting for the model; the result will appear automatically.')}</p>
   </div>;
 }
 
-export function InteractiveGenerationConfirm({settings,onCancel,onConfirm}:{settings:Settings;onCancel:()=>void;onConfirm:(selection:{profileId:string;model:string})=>Promise<boolean>|boolean}) {
+export function InteractiveGenerationConfirm({settings,onCancel,onConfirm}:{settings:Settings;onCancel:()=>void;onConfirm:(selection:{profileId:string;model:string;modelReasoning?:Settings["modelReasoning"]})=>Promise<boolean>|boolean}) {
   const profiles=settings.profiles?.length?settings.profiles:[{...settings,id:settings.activeProfileId||'default',name:t('当前连接','Current connection'),models:[settings.model]}];
+  const [draftSettings,setDraftSettings]=useState(settings);
   const [selection,setSelection]=useState(JSON.stringify([settings.activeProfileId||profiles[0].id,settings.model]));
   const [busy,setBusy]=useState(false),[error,setError]=useState('');
   async function confirm(){
     if(busy)return;
     setBusy(true);setError('');
-    try{const [profileId,model]=JSON.parse(selection);if(!await onConfirm({profileId,model})){setError(t('模型设置未能保存，请重试。','Could not save the model selection. Please retry.'));setBusy(false);}}
+    try{const [profileId,model]=JSON.parse(selection);if(!await onConfirm({profileId,model,modelReasoning:draftSettings.profiles?.find(p=>p.id===profileId)?.modelReasoning||draftSettings.modelReasoning})){setError(t('模型设置未能保存，请重试。','Could not save the model selection. Please retry.'));setBusy(false);}}
     catch(reason){setError((reason as Error).message);setBusy(false);}
   }
   const dialog=useRef<HTMLDialogElement>(null);
@@ -63,11 +71,12 @@ export function InteractiveGenerationConfirm({settings,onCancel,onConfirm}:{sett
     <div id={description}>
       <p>{t('将调用当前模型 API，消耗 token，并可能产生费用。','This calls the current model API, consumes tokens and may incur charges.')}</p>
       <label className="reading-confirm-model-label">{t('本次使用的模型','Model for this conversion')}
-        <select aria-label={t('互动导读模型','Interactive reading model')} value={selection} disabled={busy} onChange={event=>setSelection(event.target.value)}>
+        <select aria-label={t('互动导读模型','Interactive reading model')} value={selection} disabled={busy} onChange={event=>{setSelection(event.target.value);const [id,model]=JSON.parse(event.target.value);const profile=(draftSettings.profiles||profiles).find(p=>p.id===id)!;setDraftSettings({...draftSettings,...profile,activeProfileId:id,model,profiles:draftSettings.profiles});}}>
           {profiles.map(profile=><optgroup key={profile.id} label={profile.name}>{profile.models.map(model=><option key={model} value={JSON.stringify([profile.id,model])}>{model}</option>)}</optgroup>)}
         </select>
       </label>
-      <p>{t('确认后保存模型选择；取消不会更改当前模型。','The model choice is saved on confirmation; cancelling keeps the current model.')}</p>
+      <ReasoningControl settings={draftSettings} onSettings={value=>{setDraftSettings(value);setSelection(JSON.stringify([value.activeProfileId,value.model]));}} disabled={busy} persist={false}/>
+      <p>{t('确认后保存模型与思考等级；取消不会更改当前设置。','Model and reasoning choices are saved on confirmation; cancelling keeps the current settings.')}</p>
       <p>{t('根据当前解读生成概念卡、图表解读与自测题，保留原版。格式校验失败时可能额外调用一次模型修复。','Creates concept cards, figure explanations and self-checks from this reading, preserving the original. Invalid output may require one additional model call for format repair.')}</p>
     </div>
     {error&&<p role="alert">{error}</p>}

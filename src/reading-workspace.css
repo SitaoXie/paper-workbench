@@ -773,3 +773,11 @@
 .settings-disabled-list span { overflow-wrap:anywhere; min-width:0; }
 
 .reading-confirm-model-label + p { margin-top:12px; }
+.reading-generation-model-controls { display:grid; grid-template-columns:minmax(180px,1fr) minmax(170px,230px); align-items:center; gap:16px; min-width:0; flex:1 1 520px; max-width:740px; }
+.reading-generation-model-controls .model-select-wrap { width:100%; max-width:none; }
+.reading-generation-model-controls .composer-reasoning { width:100%; }
+.reading-generation-confirm .composer-reasoning { margin:14px 0; }
+.reading-stream-preview,.reading-stream-reasoning { margin:12px 0; }
+.reading-stream-preview small { color:var(--secondary); }
+.reading-stream-preview pre,.reading-stream-reasoning pre { max-height:300px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; font-size:13px; line-height:1.7; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
+@media(max-width:580px){.reading-generation-model-controls { grid-template-columns:minmax(0,1fr); gap:10px; flex-basis:100%; }.reading-generation-model-controls .composer-reasoning { max-width:none; }}

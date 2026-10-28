@@ -22,7 +22,7 @@ export function imageEvidenceParts(items, provider) {
 const numberLabel = figure => String(figure.label || figure.caption || '').match(/^(?:Figure|Fig\.?|Table|图|表)\s*(?:(?:[A-Z]\.?)?\d+(?:\.\d+)*[A-Z]?|[IVXLCDM]+)(?=$|[\s.:：、()[\]—-])/i)?.[0] || 'Unnumbered source figure';
 
 export async function prepareReportEvidence(paper, settings, {
-  inputMode = 'text-images', imageBatchSize = 0, language = 'zh-CN', focus = '', dataDir, renderImage = renderPdfImage, call, configured, onProgress,
+  inputMode = 'text-images', imageBatchSize = 0, language = 'zh-CN', focus = '', dataDir, renderImage = renderPdfImage, call, configured, onProgress, signal,
 } = {}) {
   const mode = reportInputMode(inputMode);
   imageBatchSize = reportImageBatchSize(imageBatchSize);
@@ -39,8 +39,9 @@ export async function prepareReportEvidence(paper, settings, {
   const pageText = new Map((paper.pages || []).map(page => [page.number, page.text || '']));
   const cache = new Map();
   async function raster(target) {
+    signal?.throwIfAborted();
     const key = JSON.stringify([target.page, target.crop]);
-    if (!cache.has(key)) cache.set(key, await renderImage(paper, dataDir, { page: target.page, ...(target.crop ? { crop: target.crop } : {}) }));
+    if (!cache.has(key)) cache.set(key, await renderImage(paper, dataDir, { signal, page: target.page, ...(target.crop ? { crop: target.crop } : {}) }));
     return cache.get(key);
   }
   const targets = [];
@@ -77,7 +78,7 @@ export async function prepareReportEvidence(paper, settings, {
     onProgress?.({ stage: "images", completed: index, total: targets.length });
     let rendered;
     try { rendered = await raster(target); }
-    catch { metadata.unavailable.push({ page: target.page, ...(target.figureId ? { figureId: target.figureId } : {}) }); continue; }
+    catch { signal?.throwIfAborted(); metadata.unavailable.push({ page: target.page, ...(target.figureId ? { figureId: target.figureId } : {}) }); continue; }
     if (imageBatchSize > 0 && batch.length >= imageBatchSize) { batched = true; await interpret(); }
     const sourceText = mode === 'text-images' ? pageText.get(target.page) || '' : '';
     const label = JSON.stringify({ paperId: paper.id, paperTitle: paper.title, pdfPage: target.page,

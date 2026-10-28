@@ -80,6 +80,7 @@ export async function createApp({
     limits: { fileSize: 25 * 1024 * 1024, files: 1, fields: 2 },
   });
   const reportJobs = new Map();
+  const reportControllers = new Map();
   let settingsWrites = Promise.resolve();
   const translationJobs = new Map();
   const recommendationJobs = new Map();
@@ -799,6 +800,13 @@ export async function createApp({
     response.json(reportJobs.get(request.params.id) || { running: false });
   }));
 
+  app.post('/api/papers/:id/report/cancel', wrap(async (request,response)=>{
+    paperById(request.params.id);
+    const controller=reportControllers.get(request.params.id);
+    if(!controller)throw new ApiError('No report is currently running.',409);
+    controller.abort();response.json({cancelled:true});
+  }));
+
   app.post(
     "/api/papers/:id/report",
     wrap(async (request, response) => {
@@ -830,7 +838,17 @@ export async function createApp({
       const readingFigures = structuredClone(original?.figures || sourcePaper.figures);
       const sourceFiguresRevision = original?.figuresRevision || figuresRevision({ ...sourcePaper, figures: readingFigures });
       const startedAt = new Date().toISOString();
-      const onProgress = progress => reportJobs.set(paper.id, { running: true, startedAt, ...progress });
+      const controller=new AbortController();
+      reportControllers.set(paper.id,controller);
+      const onProgress = ({event,...progress}) => {
+        const previous=reportJobs.get(paper.id);
+        const same=previous?.stage===progress.stage;
+        const next={running:true,startedAt,...(same?previous:{}),...progress,updatedAt:new Date().toISOString()};
+        if(!same){next.text='';next.reasoning='';}
+        if(event?.type==='text')next.text=(next.text||'')+event.delta;
+        if(event?.type==='reasoning')next.reasoning=(next.reasoning||'')+event.delta;
+        reportJobs.set(paper.id,next);
+      };
       onProgress({ stage: "preparing" });
       try {
         if (sourcePaper.filePath) {
@@ -859,7 +877,7 @@ export async function createApp({
             adversarial: body.adversarial !== false,
             language: validateLanguage(body.language),
             ...preferences,
-            inputMode, imageBatchSize, dataDir: store.directory, onProgress,
+            inputMode, imageBatchSize, dataDir: store.directory, onProgress, signal:controller.signal,
             fetchImpl,
           },
         );
@@ -874,13 +892,13 @@ export async function createApp({
             report.interactive = await generateInteractiveReading({
               markdown: report.markdown, language: report.language, ...preferences,
               figures: readingFigures, pageCount: sourcePaper.pages?.length,
-              callModel: (prompt) => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens ?? DEFAULT_OUTPUT_TOKENS, usageStage: "interactive" }),
+              callModel: (prompt) => callModel(settings, [{ role: "user", content: prompt }], { fetchImpl, maxTokens: settings.maxOutputTokens ?? DEFAULT_OUTPUT_TOKENS, usageStage: "interactive", signal:controller.signal, onEvent:event=>onProgress({stage:"interactive",event}) }),
             });
           } catch (error) {
             // A conversion failure must not append a duplicate article. A fresh
             // generation, however, already completed a valuable article: retain
             // it transparently without presenting failed structure as success.
-            if (original || !(error instanceof ApiError)) throw error;
+            if (controller.signal.aborted || original || !(error instanceof ApiError)) throw error;
             report.format = "article";
             report.requestedFormat = "interactive";
             report.interactiveGenerationError = "Interactive generation did not complete. The finished article was saved; retry conversion to create the interactive version.";
@@ -891,6 +909,7 @@ export async function createApp({
             "The paper was deleted while its report was being generated.",
             409,
           );
+        controller.signal.throwIfAborted();
         onProgress({ stage: "saving" });
         materializeReadingVersions(paper);
         if (paper.report)
@@ -900,8 +919,12 @@ export async function createApp({
         await store.save();
         const published = publicPaper(paper);
         response.json({ report, readingVersion: published.readingVersions.find(version => version.id === readingVersion.id), paper: published });
+      } catch(error) {
+        if(controller.signal.aborted)throw new ApiError('Report generation was cancelled. No incomplete report was saved.',499);
+        throw error;
       } finally {
         reportJobs.delete(paper.id);
+        reportControllers.delete(paper.id);
       }
     }),
   );

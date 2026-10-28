@@ -1,6 +1,6 @@
 import {DEFAULT_ASSISTANT_PREFERENCES} from '../shared/assistant-prompts.mjs';
 import {defaultCollections} from './collections.mjs';
-import { DEFAULT_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
+import { DEFAULT_CONTEXT_CHARS, MIN_CONTEXT_CHARS, MAX_CONTEXT_CHARS, DEFAULT_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
 import { mkdir, readFile, writeFile, rename, chmod } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID, createHash } from "node:crypto";
@@ -17,7 +17,7 @@ export const defaultSettings = {
   model: "gpt-4.1-mini",
   apiKey: "",
   extraBody: {},
-  contextChars: 44000,
+  contextChars: DEFAULT_CONTEXT_CHARS,
   maxOutputTokens: DEFAULT_OUTPUT_TOKENS,
   requestTimeoutSeconds: 90,
 };

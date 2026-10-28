@@ -2,7 +2,7 @@ import { readSse } from '../shared/sse.mjs';
 import { ApiError } from './network.mjs';
 
 /** Reconstruct the native turn for tool continuation; expose only explicit display text. */
-export async function readModelStream(response, anthropic, emit, recordUsage) {
+export async function readModelStream(response, anthropic, emit, recordUsage, onActivity) {
   const message = { role: 'assistant', content: '' }, blocks = [], calls = [];
   let usage = {}, stop, complete = false, characters = 0, received = 0;
   const delta = (type, value) => {
@@ -11,7 +11,7 @@ export async function readModelStream(response, anthropic, emit, recordUsage) {
     emit({ type, delta: value });
   };
   try {
-    for await (const frame of readSse(response.body)) {
+    for await (const frame of readSse(response.body, onActivity)) {
       received += frame.data.length;
       if (received > 16_000_000) throw new ApiError('Model stream exceeded the response size limit.', 502);
       if (frame.data === '[DONE]') { complete = true; break; }

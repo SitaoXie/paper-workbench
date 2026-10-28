@@ -1,6 +1,6 @@
 import {EFFORT_LEVELS, type ModelReasoning, type ReasoningProtocol} from '../shared/model-reasoning.mjs';
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
+import { DEFAULT_CONTEXT_CHARS, MIN_CONTEXT_CHARS, MAX_CONTEXT_CHARS, DEFAULT_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
 import { useModelSelection, writeWorkspaceSettings } from "./model-selection";
 import { t, useLocale } from "./i18n";
 import "./locale-polish.css";
@@ -644,18 +644,19 @@ export default function SettingsDialog({
             value={draft.requestTimeoutSeconds || 90}
             onChange={(event) => update({ requestTimeoutSeconds: Number(event.target.value) })}
           />
-          <p className="field-hint">{t("慢速推理或高清图像可增加等待时间；每个连接独立设置，最多10分钟。", "Allow more time for slow reasoning or high-resolution images. Each connection has its own limit, up to 10 minutes.")}</p>
+          <p className="field-hint">{t("流式生成按连续无数据时间计时；持续输出不会因总时长被切断。每个连接可设置最多 10 分钟的无响应等待。", "Streaming calls time out only after inactivity; active output extends the wait. Each connection allows up to 10 minutes without data.")}</p>
           <p className="field-hint">{t("PDF 问答：15 页以内按页序提供完整提取原文；更长论文先给简要资料，再按需读整页。此字符预算用于报告和其他来源，不截断 PDF 问答的单页。", "PDF questions: up to 15 pages are supplied in full order; longer papers start with a brief and load whole pages on demand. This character budget applies to reports and other sources, not truncation within PDF question pages.")}</p>
           <label htmlFor="context-budget">{t("论文上下文预算（字符）")}</label>
           <input disabled={!!busy || sharedWrite.pending}
             id="context-budget"
             type="number"
-            min="8000"
-            max="300000"
+            min={MIN_CONTEXT_CHARS}
+            max={MAX_CONTEXT_CHARS}
             step="1000"
-            value={draft.contextChars || 44000}
+            value={draft.contextChars || DEFAULT_CONTEXT_CHARS}
             onChange={(e) => update({ contextChars: Number(e.target.value) })}
           />
+          <p className="field-hint">{t("可调至 800 万字符。字符不等于 tokens；总上下文还包含历史、图像、提示词和模型输出。1M / 2M token 模型可按语言与服务端报错手动调整。", "Up to 8 million characters. Characters are not tokens; history, images, prompts and output also consume context. Adjust for your language and provider's 1M / 2M token limits.")}</p>
           <label htmlFor="max-output">{t("模型输出上限（Tokens）")}</label>
           <input disabled={!!busy || sharedWrite.pending}
             id="max-output"

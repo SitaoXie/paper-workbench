@@ -27,8 +27,8 @@ test("the newest pair shares the bounded allowance and retains both question and
 test("arbitrarily long history remains capped, and orphaned assistant replies are clearly marked", () => {
   const history = Array.from({ length: 10000 }, (_, index) => ({ role: index % 2 ? "assistant" : "user", content: `${index}: ` + "A".repeat(30000) }));
   const result = prepareConversationHistory(history, 300000);
-  assert.equal(result.budget, 24000); assert.ok(result.characters <= 24000);
-  assert.ok(result.messages.length <= 12); assert.ok(result.messages.every(message => message.content.length <= 8000));
+  assert.equal(result.budget, 150000); assert.ok(result.characters <= 150000);
+  assert.ok(result.messages.length <= 48); assert.ok(result.messages.every(message => message.content.length <= 37500));
   assert.equal(result.omittedMessages, history.length - result.messages.length);
   const orphan = prepareConversationHistory([{ role: "assistant", content: "A reply without the original question." }], 8000);
   assert.equal(orphan.incomplete, true); assert.match(orphan.notice, /no paired user message/);

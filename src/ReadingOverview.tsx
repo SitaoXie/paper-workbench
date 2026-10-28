@@ -20,7 +20,8 @@ import { parseReadingSectionLocation, readingSections, readingSectionUrl, type R
 import SelectionTools from "./SelectionTools";
 import VisionTools from "./VisionTools";
 import {ReportInputOptions, ReportInputRecord, loadReportInputMode, loadReportImageBatchSize, type ReportInputMode} from './ReportInputOptions';
-import {selectWorkspaceModel} from './model-selection';
+import {useModelSelection,writeWorkspaceSettings} from './model-selection';
+import {ReasoningControl} from './ComposerControls';
 import {ReadingGenerationProgress, InteractiveGenerationConfirm} from './ReadingGenerationFeedback';
 import InteractiveReading from "./InteractiveReading";
 import { ModelSelect } from "./ReadingTools";
@@ -298,6 +299,7 @@ export default function ReadingOverview({
     !sourceLanguage
       .toLowerCase()
       .startsWith(language.split("-")[0].toLowerCase());
+  const {pending:settingsPending}=useModelSelection();
   const modelReady = settings.modelConfigured ?? settings.apiKeyConfigured;
   useEffect(() => {
     if (!version || translationJob?.status !== "success") return;
@@ -468,9 +470,10 @@ export default function ReadingOverview({
     if(!modelReady){void makeInteractive();return;}
     setInteractiveConfirmation(interactiveConfirmationKey);
   }
-  async function confirmInteractive(selection:{profileId:string;model:string}){
+  async function confirmInteractive(selection:{profileId:string;model:string;modelReasoning?:Settings["modelReasoning"]}){
     if(interactiveConfirmation!==interactiveConfirmationKey){setInteractiveConfirmation(null);setError(t('版本已变化，请重新确认。','The reading changed. Please confirm again.'));return false;}
-    if(!await selectWorkspaceModel(selection.profileId,selection.model,onSettings))return false;
+    const saved=await writeWorkspaceSettings(()=>api<Settings>('/settings',{method:'PUT',body:JSON.stringify({activeProfileId:selection.profileId,model:selection.model,...(selection.modelReasoning?{modelReasoning:selection.modelReasoning}:{})})}),onSettings);
+    if(!saved.ok)return false;
     setInteractiveConfirmation(null);
     void makeInteractive();
     return true;
@@ -690,8 +693,8 @@ export default function ReadingOverview({
           <div className="reading-generation-route" role="group" aria-label={t("模型 API 生成", "Generate with a model API")}>
             <p className="reading-route-label">{t("模型 API", "Model API")}</p>
             <div className="reading-generate-actions">
-              <ModelSelect settings={settings} onChange={onSettings} disabled={generating || translating}/>
-              <button className="primary-button" onClick={() => void generate()} disabled={generating}>
+              <div className="reading-generation-model-controls"><ModelSelect settings={settings} onChange={onSettings} disabled={generating || translating}/><ReasoningControl settings={settings} onSettings={onSettings} disabled={generating || translating || settingsPending}/></div>
+              <button className="primary-button" onClick={() => void generate()} disabled={generating || settingsPending}>
                 {generating ? <Loader2 className="spin" size={15}/> : <Sparkles size={15}/>} {generating
                   ? t("正在研读…", "Reading…")
                   : modelReady ? t("生成解读", "Generate overview") : t("生成原文摘录", "Create source excerpts")}

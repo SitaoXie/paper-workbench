@@ -30,9 +30,9 @@ function historicalMessage(message, currentVisualEvidenceIds) {
 }
 
 export function prepareConversationHistory(history = [], sourceBudget = 44000, { currentVisualEvidenceIds = new Set() } = {}) {
-  const budget = Math.min(24000, Math.floor(sourceBudget / 2));
+  const budget = Math.floor(sourceBudget / 2);
   const originalCount = Array.isArray(history) ? history.length : 0;
-  const recent = (Array.isArray(history) ? history.slice(-12) : []).filter(message =>
+  const recent = (Array.isArray(history) ? history.slice(-48) : []).filter(message =>
     message && ["user", "assistant"].includes(message.role) && typeof message.content === "string")
     .map(message => historicalMessage(message, currentVisualEvidenceIds));
   const groups = [];
@@ -49,7 +49,8 @@ export function prepareConversationHistory(history = [], sourceBudget = 44000, {
   const visualEvidenceIds = new Set();
   for (const group of groups) {
     const remaining = budget - characters;
-    const lengths = group.map(message => Math.min(8000, message.content.length));
+    const messageBudget = Math.max(8000, Math.floor(budget / 4));
+    const lengths = group.map(message => Math.min(messageBudget, message.content.length));
     if (remaining <= 0 || (remaining < 160 * group.length && lengths.reduce((sum, length) => sum + length, 0) > remaining)) break;
     let allowance = remaining;
     // Allocate short questions first; a long answer cannot squeeze its paired
