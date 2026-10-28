@@ -461,8 +461,8 @@ export default function SettingsDialog({
           </div>
           <p>
             {t(
-              "文字研读和图像分析可以使用不同连接。只有主动点击分析图表才会发送裁切图像。",
-              "Text reading and image analysis can use separate connections. A cropped figure is sent only when you explicitly analyze it.",
+              "文字研读和图像分析可使用不同连接。此模型可为纯文本摘要模型先读图，也可单独分析选中的图表。",
+              "Text reading and image analysis can use separate connections. This model can read images for text-only overview models, and analyze selected figures.",
             )}
           </p>
           <label className="checkbox-label">

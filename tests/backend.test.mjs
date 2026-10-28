@@ -2230,11 +2230,15 @@ test("OpenAI vision sends local crop pixels to the independent model and records
   assert.equal(included.status, 200); assert.equal(included.data.evidence.modelUnverified, true);
   const generated = await api(`/api/papers/${paper.id}/report`, { method: "POST", body: { adversarial: false, style: "quick" } });
   assert.equal(generated.status, 200);
-  assert.equal(calls[1].headers.Authorization, "Bearer writer-private-key");
-  assert.equal(calls[1].body.model, "writer-v1");
-  assert.ok(calls[1].body.messages.every(message => typeof message.content === "string"));
-  assert.match(calls[1].body.messages[1].content, /Visual model evidence/);
-  assert.match(calls[1].body.messages[1].content, /UNVERIFIED/);
+  assert.equal(calls[1].body.model, "reader-v1");
+  assert.ok(calls[1].body.messages[1].content.some(part => part.type === "image_url"));
+  assert.equal(generated.data.report.source.visualInput.imageCount, 1);
+  assert.equal(generated.data.report.source.visualInput.effectiveMode, "visual-notes");
+  assert.equal(calls[2].headers.Authorization, "Bearer writer-private-key");
+  assert.equal(calls[2].body.model, "writer-v1");
+  assert.ok(calls[2].body.messages.every(message => typeof message.content === "string"));
+  assert.match(calls[2].body.messages[1].content, /Visual model evidence/);
+  assert.match(calls[2].body.messages[1].content, /UNVERIFIED/);
   assert.equal(generated.data.report.source.pixelsProvided, false);
   assert.deepEqual(generated.data.report.source.visualEvidenceIds, [evidence.id]);
   assert.equal(generated.data.report.source.visualEvidenceMode, "prior-vision-observations");
@@ -3564,4 +3568,30 @@ for(const provider of ['openai','anthropic']) test(`chat image pixels survive to
  const another=await api('/api/chats/new',{method:'POST',body:{}});
  const absent=await api('/api/chat-images/'+'0'.repeat(64));assert.equal(absent.status,404);
  assert.equal(another.status,201);
+});
+
+test('overview screenshot API passes original page pixels and preserves saved versions on invalid mode or vision failure',async t=>{
+  let fail=false;const calls=[];
+  const {api,base}=await fixture(t,{fetchImpl:async(_url,options)=>{
+    if(fail)throw new Error('visual provider unavailable');
+    calls.push(JSON.parse(options.body));
+    return new Response(JSON.stringify({choices:[{message:{content:'A source-bound overview. [p.1]'}}]}));
+  }});
+  const paper=await visionPaper(api,base);await enableVision(api);
+  const route=`/api/papers/${paper.id}/report`;
+  const result=await api(route,{method:'POST',body:{inputMode:'page-images',style:'quick',adversarial:false}});
+  assert.equal(result.status,200);
+  assert.equal(result.data.report.source.visualInput.requestedMode,'page-images');
+  assert.deepEqual(result.data.report.source.visualInput.pages,[1]);
+  assert.equal(result.data.report.coverage,'full-page-images');
+  const image=calls[0].messages[1].content.find(p=>p.type==='image_url');
+  assert.ok(image.image_url.url.startsWith('data:image/jpeg;base64,'));
+  assert.ok(!JSON.stringify(result.data).includes(image.image_url.url));
+  assert.equal(calls[1].model,'writer-v1');
+  assert.ok(!calls[1].messages[1].content.includes('Exact values require readable axes and labels.'));
+  const snapshot=(await api(`/api/papers/${paper.id}`)).data.paper.readingVersions;
+  assert.equal((await api(route,{method:'POST',body:{inputMode:'other'}})).status,400);
+  assert.equal(calls.length,2);
+  fail=true;assert.notEqual((await api(route,{method:'POST',body:{inputMode:'page-images',style:'quick',adversarial:false}})).status,200);
+  assert.deepEqual((await api(`/api/papers/${paper.id}`)).data.paper.readingVersions,snapshot);
 });

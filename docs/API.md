@@ -234,10 +234,14 @@ No external skill registry, user installation directory, remote prompt or upstre
 `POST /api/papers/:id/report`
 
 ```json
-{ "adversarial": true, "language": "zh-CN" }
+{ "adversarial": true, "language": "zh-CN", "inputMode": "text-images" }
 ```
 
 Returns `{ "report": ..., "paper": {...} }`. Report `coverage` distinguishes `full-text-extracted`, `source-excerpts`, and `abstract-only`; `contextCharacters` records source-context characters actually sent, and `sourceCharacters` records the complete source representation, including metadata and page markers. Extractive reports make no model call and use `contextCharacters: 0`. With adversarial review enabled, analyst, reviewer, and editor passes inspect the available paper content. They can share the same model; this is a critique process, not independent empirical replication. An unconfigured-provider fallback is explicitly labeled.
+
+Report `inputMode` accepts `text-images` (default: source text plus original figure/table crops, with full-page images when a crop is unavailable) or `page-images` (every actual PDF page rendered in order, without extracted body text). Images carry paper ID/title, one-based PDF page and saved original Figure/Table labels; unknown numbering is not invented. A vision-capable writing model receives the same image packet in each critique pass. Otherwise the configured independent visual reader supplies explicitly unverified reading notes to the text model. With no usable visual model or local PDF, generation falls back to extracted text.
+
+Image preparation uses application budgets of 12 images and 20 MiB encoded image content per request, not provider-limit claims. Larger inputs are read in sequential visual batches and their notes supplied to all writing passes. `source.visualInput` records requested/effective mode, pages, image count, original figure labels, visual model, batch count, unavailable inputs and fallback reason. `source.pixelsProvided` describes the writing pass; it is false when only preliminary visual notes are supplied. Screenshot coverage is `full-page-images` or `partial-page-images`. Image bytes are transient and never saved in report metadata. Configured vision-provider errors fail generation rather than silently producing a text-only version.
 
 `POST /api/chat`
 

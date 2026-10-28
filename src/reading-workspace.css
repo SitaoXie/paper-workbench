@@ -114,7 +114,8 @@
   cursor: pointer;
   padding: 8px 0;
 }
-.reading-agent-options select {
+.reading-agent-options select,
+.report-input-options select {
   display: block;
   width: 100%;
   max-width: 100%;
@@ -129,7 +130,8 @@
 }
 .reading-agent-options p { line-height: 1.6; }
 .reading-agent-options summary:focus-visible,
-.reading-agent-options select:focus-visible {
+.reading-agent-options select:focus-visible,
+.report-input-options select:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -744,3 +746,6 @@
 .pdf-export-recovery label { display:flex;gap:8px;align-items:flex-start;margin:12px 0; }
 .pdf-export-recovery input { flex:none;margin-top:4px;accent-color:var(--accent); }
 .pdf-export-recovery button { min-height:36px; }
+
+.report-input-options { margin: 16px 0; }
+.report-input-options .reading-format-hint { margin: 8px 0; font-size: 12px; }

@@ -14,7 +14,7 @@ export type Report = {
   sourceCharacters?: number;
   stages?: { role: string; content: string }[];
   language?: string;
-  source?: { kind?: string; agent?: string; model?: string; readingPolicy?: ReadingPolicyIdentity };
+  source?: { kind?: string; agent?: string; model?: string; readingPolicy?: ReadingPolicyIdentity; visualInput?: import('./ReportInputOptions').ReportVisualInput };
   /** Original article attribution, distinct from a derived interactive companion. */
   articleSource?: { kind?: string; agent?: string; model?: string };
 };

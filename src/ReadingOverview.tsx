@@ -19,6 +19,7 @@ import ReadingSections from "./ReadingSections";
 import { parseReadingSectionLocation, readingSections, readingSectionUrl, type ReadingSectionLocation } from "./reading-sections";
 import SelectionTools from "./SelectionTools";
 import VisionTools from "./VisionTools";
+import {ReportInputOptions, ReportInputRecord, loadReportInputMode, type ReportInputMode} from './ReportInputOptions';
 import InteractiveReading from "./InteractiveReading";
 import { ModelSelect } from "./ReadingTools";
 import {
@@ -199,11 +200,12 @@ export default function ReadingOverview({
   },[historyNavigation?.revision]);
   const [exporting, setExporting] = useState(false);
   const [style, setStyle] = useState<ReadingStyle>("quick");
+  const [inputMode, setInputMode] = useState<ReportInputMode>(loadReportInputMode);
   const [focus, setFocus] = useState("");
   const [copied, setCopied] = useState(false);
   const [agentAssistance, setAgentAssistance] = useState<AgentReadingAssistance>('none');
   const [preparedAgentTask, setPreparedAgentTask] = useState<{ key: string; task: string } | null>(null);
-  const agentTaskKey = JSON.stringify([paper.id, language, getLocale(), style, format, focus.trim(), agentAssistance, paper.abstractIsExcerpt]);
+  const agentTaskKey = JSON.stringify([paper.id, language, getLocale(), style, format, focus.trim(), agentAssistance, inputMode, paper.abstractIsExcerpt]);
   const agentTask = preparedAgentTask?.key === agentTaskKey ? preparedAgentTask.task : '';
   const [translationTasks,setTranslationTasks]=useState<Record<string,SubscriptionTranslation>>({});
   const [interactiveTasks,setInteractiveTasks]=useState<Record<string,SubscriptionInteractive>>({});
@@ -378,6 +380,7 @@ export default function ReadingOverview({
             style,
             format,
             focus: focus.trim(),
+            inputMode,
             adversarial: style !== "quick",
           }),
         },
@@ -568,7 +571,7 @@ export default function ReadingOverview({
   function prepareAgent() {
     const instruction = buildAgentReadingTask({
       origin: location.origin, paperId: paper.id, language, locale: getLocale(),
-      abstractIsExcerpt: paper.abstractIsExcerpt, style, format, focus, assistance: agentAssistance,
+      abstractIsExcerpt: paper.abstractIsExcerpt, style, format, focus, assistance: agentAssistance, inputMode,
     });
     setPreparedAgentTask({ key: agentTaskKey, task: instruction });
     void copy(instruction);
@@ -664,6 +667,7 @@ export default function ReadingOverview({
               disabled={generating}
             />
           </label>
+          <ReportInputOptions settings={settings} value={inputMode} onChange={setInputMode} onConfigure={onConfigure} hasPdf={!!paper.localPdfUrl} disabled={generating}/>
           <details className="reading-agent-options">
             <summary>{t("Codex / Claude 辅助 skill（可选）", "Codex / Claude assistance skills (optional)")}</summary>
             <label className="reading-focus-label">
@@ -759,6 +763,7 @@ export default function ReadingOverview({
                 {version.derivedFromReadingId&&<div><dt>{t("原文章来源", "Original article")}</dt><dd>{version.articleSource?.agent||version.articleSource?.model||t("来源未记录", "Source not recorded")}</dd></div>}
                 <div><dt>{version.derivedFromReadingId?t("互动内容来源", "Interactive companion"):t("生成来源", "Created with")}</dt><dd>{source}</dd></div><div><dt>{t("生成时间", "Created")}</dt><dd>{new Date(version.createdAt).toLocaleString(language)}</dd></div><div><dt>{t("原始语言", "Original language")}</dt><dd>{sourceLanguage}</dd></div></dl>
               {version.mode === "extractive" && <p>{t("原文摘录 · 未调用模型，不是独立分析。", "Source excerpts · No model used; this is not an independent analysis.")}</p>}
+              <ReportInputRecord value={version.source?.visualInput}/>
               {version.focus && <div className="reading-focus-record"><strong>{t("本版关注点", "Focus for this version")}</strong><p>{version.focus}</p></div>}
             </div>
           </details>
