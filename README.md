@@ -14,6 +14,8 @@ npm start
 
 Open http://127.0.0.1:4318. For development, run `npm run dev` and open the Vite URL printed in the terminal (normally http://127.0.0.1:5173). The Vite development server proxies API requests to port 4318.
 
+On macOS, double-click **启动文库.command** to start the background service and open the library, or **重启文库.command** to rebuild changed frontend files and restart it. The scripts locate the checkout automatically, load its ignored `.env`, reuse an already running service, and never terminate a different project's process. Node.js must already be installed; missing dependencies are installed with `npm ci`. Logs and process records stay in the ignored `.local-data/` directory. Closing the Terminal window does not stop the service. From a terminal, use `npm run service:start`, `npm run service:restart`, `npm run service:status`, or `npm run service:stop`. A restart interrupts active model requests; wait for generation to finish first.
+
 The server listens on loopback. The default runtime directory is `.local-data` in the working directory. To use another port or directory, provide `PORT` and `DATA_DIR` in the process environment. `.env.example` describes the variables. `npm start` and `npm run dev` automatically load an optional `.env` file; copy the example to `.env` and set only what your environment needs. Neither setup nor startup reads personal model accounts, institutional credentials, or sibling projects.
 
 ## Read, search, and ask
