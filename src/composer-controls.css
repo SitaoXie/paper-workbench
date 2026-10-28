@@ -36,6 +36,30 @@
 .model-reasoning-editor { margin:18px 0; padding:12px; border:1px solid var(--line); border-radius:10px; }
 .model-reasoning-editor summary { cursor:pointer; font-size:12px; overflow-wrap:anywhere; }
 .model-reasoning-editor label { display:grid; gap:6px; margin-top:12px; }
-.composer .composer-bottom { gap:7px; }
+.composer .composer-bottom { gap:7px; flex-wrap:wrap; }
 .composer .composer-bottom .send-button { margin-left:auto; }
 @media(max-width:600px) { .composer-model-menu { flex-basis:130px; min-width:95px; } .composer-model-trigger { min-height:40px; } .composer .composer-bottom { gap:5px; } .composer .composer-bottom .agent-web-toggle { padding:7px; min-width:32px; } .composer .composer-bottom .agent-web-toggle > span { display:none; } }
+
+/* Keep model selection and reasoning visible together, including narrow docks. */
+.composer-model-controls { order:-1; display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px; flex:0 0 100%; align-items:center; }
+.composer-model-controls.is-subscription { grid-template-columns:minmax(0,1fr); }
+.composer-model-controls .composer-model-menu { min-width:0; max-width:none; }
+.composer-model-controls .composer-model-trigger { min-height:38px; }
+.composer-model-controls .composer-reasoning { padding:4px 6px; border:0; background:none; min-width:0; }
+.composer-model-controls .composer-reasoning header { font-size:10px; margin-bottom:2px; }
+.composer-model-controls .composer-reasoning header b { font-size:10px; }
+.composer-reasoning-scale button { background:none; padding:0; border:0; color:var(--secondary); font:inherit; cursor:pointer; }
+.composer-reasoning-scale button[aria-pressed=true] { color:var(--accent); font-weight:600; }
+.composer-reasoning input:disabled { cursor:default; opacity:.4; }
+.composer-reasoning.is-unconfirmed { opacity:.65; }
+.composer-capability-info { margin:3px 4px 12px; font-size:11px; line-height:1.6; }
+.composer-capability-info small { display:block; font-size:10px; color:var(--secondary); margin-top:5px; }
+.composer-capability-info a { color:var(--accent); }
+.composer-model-options section { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:3px 7px; }
+.composer-model-options h3 { grid-column:1/-1; }
+.composer-model-options button { align-items:flex-start; border:1px solid var(--line); font-size:11px; }
+.composer-model-options button svg { flex-shrink:0; margin-top:1px; }
+@media(max-width:360px) { .composer-model-controls { grid-template-columns:minmax(0,1fr); gap:2px; } .composer-model-options section { grid-template-columns:minmax(0,1fr); } }
+
+.composer-model-options button:only-of-type { grid-column:1/-1; }
+.composer-reasoning-scale button { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

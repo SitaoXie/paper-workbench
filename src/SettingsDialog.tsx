@@ -439,13 +439,13 @@ export default function SettingsDialog({
           </fieldset>
         )}
         <details className="model-reasoning-editor"><summary>{t('思考强度设置','Reasoning controls')} · {draft.model}</summary>
-          <p className="field-hint">{t('已配置的 low / medium / high 等模型变体可直接用滑块切换。原生 API 参数请按服务商文档显式声明；不声明时保留原有参数。','Saved low / medium / high model variants support a slider automatically. Declare native API controls according to provider documentation; otherwise existing parameters stay unchanged.')}</p>
+          <p className="field-hint">{t('已收录的官方接口和已配置的分级模型会自动提供滑块。其他接口请按服务商文档声明；不操作滑块时保留原有参数。','Documented endpoints and saved model variants provide a slider automatically. Declare other interfaces from provider documentation; requests stay unchanged until you adjust the slider.')}</p>
           <label>{t('当前模型的控制方式','Control protocol for this model')}<select disabled={!!busy||sharedWrite.pending} value={draft.modelReasoning?.[draft.model]?.protocol || ''} onChange={event=>{
             const next={...draft.modelReasoning};
             if(!event.target.value)delete next[draft.model];
             else next[draft.model]={protocol:event.target.value as ReasoningProtocol,levels:event.target.value.endsWith('-toggle')?['off','on']:['low','medium','high'],value:'default'};
             update({modelReasoning:next});
-          }}><option value="">{t('自动识别已配置变体／沿用现有参数','Saved variants / existing parameters')}</option>
+          }}><option value="">{t('自动识别官方接口／已配置变体','Documented endpoints / saved variants')}</option>
             {draft.provider==='openai'&&<option value="openai-effort">OpenAI · reasoning_effort</option>}
             {draft.provider==='anthropic'&&<option value="anthropic-effort">Anthropic · adaptive + effort</option>}
             {draft.provider==='openai'&&<><option value="thinking-toggle">thinking.type · {t('开关','on/off')}</option><option value="template-toggle">chat_template_kwargs.thinking · {t('开关','on/off')}</option></>}

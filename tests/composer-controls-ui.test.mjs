@@ -22,7 +22,7 @@ for(const zh of [true,false])test(`composer ${zh?'Chinese':'English'} unified at
  vm.runInNewContext(code,{exports,window,document,require:name=>name.endsWith('.css')?{}:name==='./i18n'?{useLocale:()=>({t:(cn,en)=>zh?cn:en})}:name==='../shared/model-reasoning.mjs'?reasoning:name==='./types'?{api:async(_path,options)=>request(JSON.parse(options.body))}:name==='./model-selection'?{useModelSelection:()=>({pending:false,error:''}),selectWorkspaceModel:async(activeProfileId,model,onChange)=>{onChange(await request({activeProfileId,model}));return true;},writeWorkspaceSettings:async(load,onChange)=>{onChange(await load());return {ok:true};}}:require(name)});
  const click=async selector=>act(async()=>document.querySelector(selector).click());
  try{
-  await act(async()=>render());await click('.composer-attach');assert.equal(document.querySelectorAll('.composer-attachments button').length,2);
+  await act(async()=>render());assert.ok(document.querySelector('.composer-model-controls input[type=range]'),'Slider is visible without opening the menu');await click('.composer-attach');assert.equal(document.querySelectorAll('.composer-attachments button').length,2);
   await click('.composer-attachments button');assert.equal(images,1);assert.equal(pdfs,0);assert.equal(document.querySelector('.composer-attachments'),null);
   await click('.composer-attach');await click('.composer-attachments button:last-child');assert.equal(pdfs,1);assert.equal(requests.length,0);
   await click('.composer-model-trigger');assert.equal(document.querySelectorAll('.composer-model-options button').length,3);assert.doesNotMatch(document.querySelector('.composer-model-panel').textContent,/extractive|本地原文检索/);
@@ -33,6 +33,16 @@ for(const zh of [true,false])test(`composer ${zh?'Chinese':'English'} unified at
   await click('.composer-subscription-choice');assert.equal(mode,'agent');assert.equal(requests.length,2);assert.deepEqual(requests.at(-1),{assistant:{answerMode:'agent'}},'Subscription choice only saves a preference');assert.match(document.querySelector('.composer-model-trigger').textContent,/Codex/);
   await click('.composer-model-trigger');await click('.composer-model-options button');assert.equal(mode,'api');assert.equal(settings.model,'model');
   await click('.composer-model-trigger');await act(async()=>document.dispatchEvent(new window.KeyboardEvent('keydown',{key:'Escape',bubbles:true})));assert.equal(document.querySelector('.composer-model-panel'),null);
+  // Documented endpoint presets work without a prior per-model declaration.
+  await act(async()=>{settings=validateSettings({profiles:[{id:'ark',name:'Ark fixture',provider:'openai',baseUrl:'https://ark.cn-beijing.volces.com/api/v3',model:'glm-5-3-flash-260828',models:['glm-5-3-flash-260828']}],activeProfileId:'ark'},defaultSettings);render();});
+  let range=document.querySelector('input[type=range]');assert.equal(range.max,'3');assert.equal(range.disabled,false);
+  await act(async()=>{Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set.call(range,'2');range.dispatchEvent(new window.Event('input',{bubbles:true}));range.dispatchEvent(new window.Event('pointerup',{bubbles:true}));});
+  assert.equal(settings.modelReasoning[settings.model].value,'high');assert.deepEqual(settings.modelReasoning[settings.model].levels,['low','high','max']);
+  await act(async()=>{settings=validateSettings({modelReasoning:{[settings.model]:{protocol:'thinking-toggle',levels:['off','on'],value:'default'}}},settings);render();});
+  assert.equal(document.querySelector('.composer-reasoning select'),null,'Binary controls also use a discrete slider');
+  await click('.composer-reasoning-scale button:last-child');assert.equal(settings.modelReasoning[settings.model].value,'on');
+  await act(async()=>{settings=validateSettings({profiles:[{id:'unknown',name:'Unknown',baseUrl:'http://localhost:9999/v1',model:'custom-model',models:['custom-model']}],activeProfileId:'unknown'},defaultSettings);render();});
+  assert.equal(document.querySelector('input[type=range]').disabled,true,'Unverified levels never invent parameters');
  }finally{await act(async()=>root.unmount());}
 });
 test.after(()=>{dom.window.close();delete globalThis.window;delete globalThis.document;delete globalThis.IS_REACT_ACT_ENVIRONMENT;});
