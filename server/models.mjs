@@ -543,7 +543,7 @@ const quote = (text) =>
 export async function generateReport(
   paper,
   settings,
-  { adversarial = true, language = "zh-CN", style = "deep", focus = "", inputMode = "text-images", imageBatchSize = 0, dataDir, renderImage, fetchImpl } = {},
+  { adversarial = true, language = "zh-CN", style = "deep", focus = "", inputMode = "text-images", imageBatchSize = 0, dataDir, renderImage, fetchImpl, onProgress } = {},
 ) {
   language = validateLanguage(language);
   inputMode = reportInputMode(inputMode);
@@ -576,7 +576,7 @@ export async function generateReport(
       sourceCharacters: contextInfo.sourceCharacters,
     };
   const evidence = await prepareReportEvidence(paper, settings, {
-    inputMode, imageBatchSize, language, focus, dataDir, renderImage, configured: canUseModel,
+    inputMode, imageBatchSize, language, focus, dataDir, renderImage, onProgress, configured: canUseModel,
     call: (model, messages, usageStage) => callModel(model, messages, { fetchImpl, usageStage }),
   });
   if (inputMode === 'page-images' && evidence.metadata.imageCount) {
@@ -594,6 +594,7 @@ export async function generateReport(
   const reportSystem = `${systemPrompt}\n${readingPolicyPrompt("overview")}\n${readingVisualInstructions}\n${inputMode === "page-images" && evidence.metadata.imageCount ? "Cite only supplied one-based PDF page numbers [p.N]. Read Figure/Table numbers from pixels. Do not invent exact text-layer passage anchors." : sourceCitationInstructions([paper])}\n${evidenceInstructions}\nWrite every report section in the requested language: ${language}. Keep paper titles, technical identifiers, and page citations unchanged when needed. ${styleInstruction} ${lengthInstruction} Size the reading to the available source; short excerpts need a concise reading, not repeated limitations or generic review sections. Create ONE coherent reading document, not a duplicated summary followed by another report. When relevant supplied figures exist, prefer one for a quick overview; for deep readings choose distinct mechanism and evidence roles when available, and for critical readings choose the figures needed for the concerns. Do not force an image quota. Place each immediately after the paragraph it explains using a standalone line exactly :::figure FIGURE_ID. ${visualInstructions} Include the marker in the final answer, not just a mention in prose. Only use ids in available_figures; never invent a figure or use external image URLs. A caption is context, not evidence for numerical or visual claims you cannot verify. ${figureInstructions}\nSource coverage supplied by the application (not a judgment of the paper): ${JSON.stringify({ coverage: contextInfo.coverage, suppliedCharacters: context.length, sourceCharacters: contextInfo.sourceCharacters, extractionTruncated: Boolean(paper.extractionTruncated) })}. Every role must distinguish unavailable input from an omission by the authors. A skeptical draft or earlier model answer is not evidence that the paper omitted a detail; the final editor must remove unsupported absence claims.`;
   const maxTokens = settings.maxOutputTokens ?? DEFAULT_OUTPUT_TOKENS;
   const stages = [];
+  onProgress?.({ stage: "draft" });
   const first = await callModel(
     settings,
     [
@@ -608,6 +609,7 @@ export async function generateReport(
   stages.push({ role: "researcher", content: first });
   let markdown = first;
   if (adversarial) {
+    onProgress?.({ stage: "review" });
     const critique = await callModel(
       settings,
       [
@@ -620,6 +622,7 @@ export async function generateReport(
       { fetchImpl, maxTokens, usageStage: "review" },
     );
     stages.push({ role: "skeptic", content: critique });
+    onProgress?.({ stage: "edit" });
     markdown = await callModel(
       settings,
       [

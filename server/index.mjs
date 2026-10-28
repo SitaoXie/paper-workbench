@@ -79,7 +79,7 @@ export async function createApp({
     storage: multer.memoryStorage(),
     limits: { fileSize: 25 * 1024 * 1024, files: 1, fields: 2 },
   });
-  const reportJobs = new Set();
+  const reportJobs = new Map();
   const translationJobs = new Map();
   const recommendationJobs = new Map();
   let recommendationRequests = [];
@@ -787,6 +787,12 @@ export async function createApp({
     } finally { assistJobs.delete(paper.id); }
   }));
 
+  app.get("/api/papers/:id/report/progress", wrap(async (request, response) => {
+    paperById(request.params.id);
+    response.set("Cache-Control", "no-store");
+    response.json(reportJobs.get(request.params.id) || { running: false });
+  }));
+
   app.post(
     "/api/papers/:id/report",
     wrap(async (request, response) => {
@@ -817,7 +823,9 @@ export async function createApp({
       original = original ? structuredClone(original) : undefined;
       const readingFigures = structuredClone(original?.figures || sourcePaper.figures);
       const sourceFiguresRevision = original?.figuresRevision || figuresRevision({ ...sourcePaper, figures: readingFigures });
-      reportJobs.add(paper.id);
+      const startedAt = new Date().toISOString();
+      const onProgress = progress => reportJobs.set(paper.id, { running: true, startedAt, ...progress });
+      onProgress({ stage: "preparing" });
       try {
         if (sourcePaper.filePath) {
           const revision = await pdfRevision(sourcePaper, store.directory);
@@ -845,7 +853,7 @@ export async function createApp({
             adversarial: body.adversarial !== false,
             language: validateLanguage(body.language),
             ...preferences,
-            inputMode, imageBatchSize, dataDir: store.directory,
+            inputMode, imageBatchSize, dataDir: store.directory, onProgress,
             fetchImpl,
           },
         );
@@ -856,6 +864,7 @@ export async function createApp({
         report.format = format;
         if (format === "interactive") {
           try {
+            onProgress({ stage: "interactive" });
             report.interactive = await generateInteractiveReading({
               markdown: report.markdown, language: report.language, ...preferences,
               figures: readingFigures, pageCount: sourcePaper.pages?.length,
@@ -876,6 +885,7 @@ export async function createApp({
             "The paper was deleted while its report was being generated.",
             409,
           );
+        onProgress({ stage: "saving" });
         materializeReadingVersions(paper);
         if (paper.report)
           paper.reportHistory = [...(paper.reportHistory || []), paper.report];

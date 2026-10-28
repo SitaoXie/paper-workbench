@@ -3595,3 +3595,32 @@ test('overview screenshot API passes original page pixels and preserves saved ve
   fail=true;assert.notEqual((await api(route,{method:'POST',body:{inputMode:'page-images',style:'quick',adversarial:false}})).status,200);
   assert.deepEqual((await api(`/api/papers/${paper.id}`)).data.paper.readingVersions,snapshot);
 });
+
+test('report progress exposes live stages without inference and clears after success or failure',async t=>{
+ const gates=[],arrivals=[];let count=0,fail=false;
+ const {api}=await fixture(t,{download:async url=>response(webpage,url),fetchImpl:async()=>{
+  const index=count++;
+  if(fail)throw new Error('provider failed');
+  const gate=new Promise(resolve=>{gates[index]=resolve;});
+  arrivals[index]?.();await gate;
+  return new Response(JSON.stringify({choices:[{message:{content:'A grounded reading of the supplied source.'}}]}));
+ }});
+ const paper=(await api('/api/import',{method:'POST',body:{url:'https://example.com/progress-source'}})).data.paper;
+ await api('/api/settings',{method:'PUT',body:{apiKey:'fixture-key'}});
+ const progress=`/api/papers/${paper.id}/report/progress`;
+ assert.deepEqual((await api(progress)).data,{running:false});
+ const wait=index=>new Promise(resolve=>{if(gates[index])resolve();else arrivals[index]=resolve;});
+ const generation=api(`/api/papers/${paper.id}/report`,{method:'POST',body:{adversarial:true}});
+ for(const [index,stage] of ['draft','review','edit'].entries()){
+  await wait(index);
+  const current=(await api(progress)).data;
+  assert.equal(current.running,true);assert.equal(current.stage,stage);assert.ok(current.startedAt);
+  assert.equal(count,index+1,'Polling does not call a model');
+  gates[index]();
+ }
+ assert.equal((await generation).status,200);
+ assert.deepEqual((await api(progress)).data,{running:false});
+ fail=true;assert.notEqual((await api(`/api/papers/${paper.id}/report`,{method:'POST',body:{}})).status,200);
+ assert.deepEqual((await api(progress)).data,{running:false});
+ assert.equal((await api('/api/papers/unknown/report/progress')).status,404);
+});

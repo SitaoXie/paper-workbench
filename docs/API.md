@@ -231,6 +231,8 @@ Model reports and questions load the repository-owned reading contract from `ski
 
 No external skill registry, user installation directory, remote prompt or upstream hooks are loaded by the API. Optional Supervisor/ARS collaboration belongs to copied subscription-agent tasks. `GET /api/agent-skill` returns a self-contained Markdown bundle with the import protocol, shared contract and external-skill guidance; local reference links become internal anchors.
 
+`GET /api/papers/:id/report/progress` returns `{running:false}` when idle, or `{running:true,startedAt,stage}` while a report request is running. Stages are `preparing`, `images` (with `completed` and `total`), `vision` (with `batch`), `draft`, `review`, `edit`, `interactive`, and `saving`. Polling is read-only and does not invoke a model; status is transient and removed on success or failure. The reading UI displays actual stages, elapsed time and an indeterminate progress bar, not an estimated completion percentage. Converting a saved reading with the Interactive button asks for confirmation before issuing its model request; cancelling does not invoke the API. Subscription-task preparation does not need this paid-call confirmation.
+
 `POST /api/papers/:id/report`
 
 ```json

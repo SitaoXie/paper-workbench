@@ -749,3 +749,18 @@
 .reading-subscription-actions > button { flex: 0 0 auto; min-height: 38px; font-size: 12px; }
 .reading-skill-control { flex: 1 1 180px; min-width: 0; max-width: 320px; color: var(--secondary); font-size: 12px; }
 .reading-skill-control select { margin-top: 5px; min-width: 0; text-overflow: ellipsis; }
+
+.reading-generation-progress { margin: 14px 0; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.reading-progress-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--text); }
+.reading-progress-heading > span:last-child { color: var(--secondary); font-variant-numeric: tabular-nums; }
+.reading-progress-track { height: 5px; margin: 12px 0; border-radius: 5px; overflow: hidden; background: var(--line); }
+.reading-progress-track > span { display: block; height: 100%; width: 36%; border-radius: inherit; background: var(--accent); animation: reading-progress-slide 1.6s ease-in-out infinite alternate; }
+@keyframes reading-progress-slide { from { transform: translateX(-100%); } to { transform: translateX(280%); } }
+@media (prefers-reduced-motion: reduce) { .reading-progress-track > span { animation: none; width: 100%; opacity: .55; } }
+.reading-generation-progress p { margin: 0; color: var(--secondary); font-size: 11px; line-height: 1.6; }
+.reading-generation-confirm { width: min(460px, calc(100vw - 40px)); box-sizing: border-box; padding: 24px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); color: var(--text); box-shadow: 0 20px 90px #0003; }
+.reading-generation-confirm::backdrop { background: #1c151b66; backdrop-filter: blur(3px); }
+.reading-generation-confirm h3 { margin: 0 0 16px; font-size: 18px; }
+.reading-generation-confirm p { font-size: 13px; line-height: 1.7; color: var(--secondary); }
+.reading-confirm-model { padding: 10px 12px; border-radius: 8px; background: var(--subtle); color: var(--text) !important; overflow-wrap: anywhere; }
+.reading-confirm-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 20px; }

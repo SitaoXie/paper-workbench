@@ -20,6 +20,7 @@ import { parseReadingSectionLocation, readingSections, readingSectionUrl, type R
 import SelectionTools from "./SelectionTools";
 import VisionTools from "./VisionTools";
 import {ReportInputOptions, ReportInputRecord, loadReportInputMode, loadReportImageBatchSize, type ReportInputMode} from './ReportInputOptions';
+import {ReadingGenerationProgress, InteractiveGenerationConfirm} from './ReadingGenerationFeedback';
 import InteractiveReading from "./InteractiveReading";
 import { ModelSelect } from "./ReadingTools";
 import {
@@ -176,6 +177,7 @@ export default function ReadingOverview({
     sectionIntent?.readingId || paper.activeReadingId || versions[0]?.id || "",
   );
   const [generating, setGenerating] = useState(false);
+  const [interactiveConfirmation,setInteractiveConfirmation]=useState<string|null>(null);
   const [choosing, setChoosing] = useState(false);
   const selectedRef = useRef(selected);
   // A late failed write must not roll back a newer read-only source navigation.
@@ -459,6 +461,18 @@ export default function ReadingOverview({
       onUpdated({...current,translations:{...current.translations,[binding.language]:{...current.translations?.[binding.language],[target]:result}}});
     }else onUpdated({...current,readingVersions:current.readingVersions?.map(item=>item.id===binding.readingId?{...item,translations:{...item.translations,[binding.language]:result}}:item)});
   }
+  const interactiveConfirmationKey=JSON.stringify([paper.id,version?.id,settings.activeProfileId,settings.model]);
+  function requestInteractive(){
+    if(!version||generating||translating)return;
+    if(!modelReady){void makeInteractive();return;}
+    setInteractiveConfirmation(interactiveConfirmationKey);
+  }
+  function confirmInteractive(){
+    const unchanged=interactiveConfirmation===interactiveConfirmationKey;
+    setInteractiveConfirmation(null);
+    if(!unchanged){setError(t('版本或模型已变化，请重新确认。','The reading or model changed. Please confirm again.'));return;}
+    void makeInteractive();
+  }
   async function makeInteractive() {
     if (!version || generating || translating) return;
     if (!modelReady) { await prepareSubscriptionInteractive(); return; }
@@ -600,6 +614,8 @@ export default function ReadingOverview({
           </>}
         </div>
       </div>
+      {generating && <ReadingGenerationProgress paperId={paper.id}/>}
+      {interactiveConfirmation && <InteractiveGenerationConfirm model={settings.model} onCancel={()=>setInteractiveConfirmation(null)} onConfirm={confirmInteractive}/>}
       {configure && (
         <div className="reading-preferences">
           <div
@@ -735,7 +751,7 @@ export default function ReadingOverview({
             <button aria-pressed={visiblePresentation === "interactive"} onClick={()=>setPresentation("interactive")} disabled={!interactive}>{t("交互阅读", "Interactive")}</button>
           </div>}
           {!version.interactive && version.mode !== "extractive" && <>
-            <button className="reading-tool-button reading-interactive-convert" disabled={generating || translating || preparingInteractive.has(interactiveTaskKey)} onClick={()=>void makeInteractive()} aria-label={t("将此版本转为互动导读", "Create an interactive version from this reading")} title={t("将此版本转为互动导读", "Create an interactive version from this reading")}>
+            <button className="reading-tool-button reading-interactive-convert" disabled={generating || translating || preparingInteractive.has(interactiveTaskKey)} onClick={requestInteractive} aria-label={t("将此版本转为互动导读", "Create an interactive version from this reading")} title={t("将此版本转为互动导读", "Create an interactive version from this reading")}>
               {generating||preparingInteractive.has(interactiveTaskKey) ? <Loader2 size={15} className="spin"/> : modelReady?<Sparkles size={15}/>:<Code2 size={15}/>}<span>{t("互动导读", "Interactive")}</span>
             </button>
             {modelReady&&<button className="reading-tool-button reading-interactive-subscription" disabled={preparingInteractive.has(interactiveTaskKey)} aria-label={t('用订阅制作互动版','Create an interactive version with a subscription')} title={t('用订阅制作互动版','Create an interactive version with a subscription')} onClick={()=>void prepareSubscriptionInteractive()}><Code2 size={15}/><span>{t('用订阅','Subscription')}</span></button>}
