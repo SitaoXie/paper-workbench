@@ -1,3 +1,4 @@
+import type {ModelReasoning} from '../shared/model-reasoning.mjs';
 import { ApiRequestError } from "./selection-errors";
 export type ReadingPolicyIdentity = { id: string; version: string; sha256: string };
 export type Report = {
@@ -165,8 +166,9 @@ export type Settings = {
   activeProfileId?: string;
   profiles?: ModelProfile[];
   disabledProfiles?: ModelProfile[];
-  disabledModels?: {model:string;capability:ModelCapability}[];
+  disabledModels?: {model:string;capability:ModelCapability;reasoning?:ModelReasoning}[];
   modelCapabilities?: Record<string, ModelCapability>;
+  modelReasoning?: Record<string,ModelReasoning>;
   vision?: VisionSettings;
   recommendations?: RecommendationSettings;
   assistant?: import('../shared/assistant-prompts.mjs').AssistantPreferences;

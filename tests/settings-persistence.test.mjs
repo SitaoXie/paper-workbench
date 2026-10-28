@@ -51,10 +51,10 @@ test('failed settings save rolls back, queued sidebar patches preserve both mode
  let release,entered;const started=new Promise(r=>entered=r);const gate=new Promise(r=>release=r);let calls=0;
  store.save=async()=>{if(++calls===1){entered();await gate;}await save();};
  const first=request({activeProfileId:'second',model:'other'});await started;
- const second=request({assistant:{styleId:'concise',pdfMode:'images',webSearch:true}});release();
+ const second=request({assistant:{styleId:'concise',pdfMode:'images',webSearch:true,answerMode:'agent'}});release();
  const results=await Promise.all([first,second]);assert.ok(results.every(r=>r.status===200));
  const reopened=new Store(directory);await reopened.init();
- assert.equal(reopened.data.settings.model,'other');assert.equal(reopened.data.settings.assistant.styleId,'concise');assert.equal(reopened.data.settings.assistant.pdfMode,'images');assert.equal(reopened.data.settings.assistant.webSearch,true);
+ assert.equal(reopened.data.settings.model,'other');assert.equal(reopened.data.settings.assistant.styleId,'concise');assert.equal(reopened.data.settings.assistant.pdfMode,'images');assert.equal(reopened.data.settings.assistant.webSearch,true);assert.equal(reopened.data.settings.assistant.answerMode,'agent');
  assert.equal((await request({assistant:{webSearch:'yes'}})).status,400);
  assert.equal((await request({assistant:{webSearch:false}})).data.assistant.webSearch,false);
 });

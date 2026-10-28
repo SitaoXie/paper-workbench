@@ -1,3 +1,4 @@
+import {EFFORT_LEVELS, type ModelReasoning, type ReasoningProtocol} from '../shared/model-reasoning.mjs';
 import { useEffect, useRef, useState } from "react";
 import { DEFAULT_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
 import { useModelSelection, writeWorkspaceSettings } from "./model-selection";
@@ -121,7 +122,7 @@ export default function SettingsDialog({
       const models = [...new Set(patch.modelText.split(/[\n,，]+/).map(value=>value.trim()).filter(Boolean))];
       if (!models.includes(draft.model)) patch.model = models[0] || '';
       patch.modelCapabilities = {...draft.modelCapabilities};
-      for (const entry of draft.disabledModels || []) if(models.includes(entry.model) && !draft.models.includes(entry.model)) patch.modelCapabilities[entry.model]=entry.capability;
+      for (const entry of draft.disabledModels || []) if(models.includes(entry.model) && !draft.models.includes(entry.model)) {patch.modelCapabilities[entry.model]=entry.capability;if(entry.reasoning)patch.modelReasoning={...draft.modelReasoning,...patch.modelReasoning,[entry.model]:entry.reasoning};}
       if(vision.profileId===draft.id&&!models.includes(vision.model||''))setVision(old=>({...old,enabled:false}));
       if(recommendations.profileId===draft.id&&!models.includes(recommendations.model||''))setRecommendations(old=>({...old,enabled:false}));
     }
@@ -154,6 +155,8 @@ export default function SettingsDialog({
                     modelConfigured: false,
                     clearApiKey: true,
                     modelCapabilities: {},
+                    modelReasoning: {},
+                    disabledModels: [],
                   }
                 : {}),
             },
@@ -435,6 +438,21 @@ export default function SettingsDialog({
             ))}
           </fieldset>
         )}
+        <details className="model-reasoning-editor"><summary>{t('思考强度设置','Reasoning controls')} · {draft.model}</summary>
+          <p className="field-hint">{t('已配置的 low / medium / high 等模型变体可直接用滑块切换。原生 API 参数请按服务商文档显式声明；不声明时保留原有参数。','Saved low / medium / high model variants support a slider automatically. Declare native API controls according to provider documentation; otherwise existing parameters stay unchanged.')}</p>
+          <label>{t('当前模型的控制方式','Control protocol for this model')}<select disabled={!!busy||sharedWrite.pending} value={draft.modelReasoning?.[draft.model]?.protocol || ''} onChange={event=>{
+            const next={...draft.modelReasoning};
+            if(!event.target.value)delete next[draft.model];
+            else next[draft.model]={protocol:event.target.value as ReasoningProtocol,levels:event.target.value.endsWith('-toggle')?['off','on']:['low','medium','high'],value:'default'};
+            update({modelReasoning:next});
+          }}><option value="">{t('自动识别已配置变体／沿用现有参数','Saved variants / existing parameters')}</option>
+            {draft.provider==='openai'&&<option value="openai-effort">OpenAI · reasoning_effort</option>}
+            {draft.provider==='anthropic'&&<option value="anthropic-effort">Anthropic · adaptive + effort</option>}
+            {draft.provider==='openai'&&<><option value="thinking-toggle">thinking.type · {t('开关','on/off')}</option><option value="template-toggle">chat_template_kwargs.thinking · {t('开关','on/off')}</option></>}
+          </select></label>
+          {draft.modelReasoning?.[draft.model]&&!draft.modelReasoning[draft.model].protocol.endsWith('-toggle')&&<label>{t('支持的等级（按滑块顺序，逗号分隔）','Supported levels (slider order, comma-separated)')}<input disabled={!!busy||sharedWrite.pending} value={draft.modelReasoning[draft.model].levels.join(', ')} placeholder={EFFORT_LEVELS.join(', ')} onChange={event=>{const entry=draft.modelReasoning![draft.model];const levels=event.target.value.split(',').map(value=>value.trim());update({modelReasoning:{...draft.modelReasoning,[draft.model]:{...entry,levels,value:levels.includes(entry.value)?entry.value:'default'} as ModelReasoning}});}}/></label>}
+          <p className="field-hint">{t('默认表示沿用连接参数；不保证所有接口支持所有等级。更高强度可能增加时延与用量。','Default keeps connection parameters. Supported levels vary by endpoint. Higher effort may increase latency and usage.')}</p>
+        </details>
         <label htmlFor="api-key">
           API Key{" "}
           {draft.apiKeyConfigured && !draft.clearApiKey && (

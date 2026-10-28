@@ -1,3 +1,5 @@
+import {validateModelReasoning} from './model-reasoning.mjs';
+import {reasoningBody} from '../shared/model-reasoning.mjs';
 import { prepareReportEvidence, reportInputMode, reportImageBatchSize, imageEvidenceParts } from "./report-evidence.mjs";
 import { cleanAssistantContent, createAnswerEventFilter } from "./answer-presentation.mjs";
 import {assistantStyle} from '../shared/assistant-prompts.mjs';
@@ -159,7 +161,7 @@ export function validateSettings(input, current) {
       const profile = restored.find(p => p.id === profileId);
       const entry = profile?.disabledModels?.find(item => item.model === model);
       if (!entry) throw new ApiError('Disabled model not found.', 404);
-      restored = restored.map(p => p.id === profileId ? {...p, models:[...p.models,model], modelCapabilities:{...p.modelCapabilities,[model]:entry.capability}} : p);
+      restored = restored.map(p => p.id === profileId ? {...p, models:[...p.models,model], modelCapabilities:{...p.modelCapabilities,[model]:entry.capability},modelReasoning:{...p.modelReasoning,...(entry.reasoning?{[model]:entry.reasoning}:{})}} : p);
     }
     input = {...input, profiles: restored};
   }
@@ -222,9 +224,11 @@ export function validateSettings(input, current) {
       const previousCapabilities = sameDestination ? {...Object.fromEntries((prior.disabledModels || []).map(item => [item.model,item.capability])), ...prior.modelCapabilities} : {};
 
       profile.modelCapabilities = validateModelCapabilities(entry.modelCapabilities, profile.models, previousCapabilities);
+      const previousReasoning = sameDestination ? {...Object.fromEntries((prior.disabledModels || []).filter(item=>item.reasoning).map(item=>[item.model,item.reasoning])),...prior.modelReasoning} : {};
+      profile.modelReasoning = validateModelReasoning(entry.modelReasoning,profile.models,previousReasoning,profile.provider);
       profile.disabledModels = sameDestination ? [
         ...(prior?.disabledModels || []),
-        ...(prior?.models || []).filter(model => !profile.models.includes(model)).map(model => ({model, capability:prior.modelCapabilities?.[model] || 'text'})),
+        ...(prior?.models || []).filter(model => !profile.models.includes(model)).map(model => ({model, capability:prior.modelCapabilities?.[model] || 'text',...(prior.modelReasoning?.[model]?{reasoning:prior.modelReasoning[model]}:{})})),
       ].filter((item,index,all) => !profile.models.includes(item.model) && all.findIndex(other=>other.model===item.model)===index) : [];
       return { ...profile, id: entry.id, name: entry.name.trim() };
     });
@@ -247,6 +251,7 @@ export function validateSettings(input, current) {
     "maxOutputTokens",
     "requestTimeoutSeconds",
     "modelCapabilities",
+    "modelReasoning",
   ];
   const flat = Object.fromEntries(
     flatKeys.filter((key) => key in input).map((key) => [key, input[key]]),
@@ -263,6 +268,8 @@ export function validateSettings(input, current) {
     const sameDestination = updated.provider === active.provider && updated.baseUrl === active.baseUrl;
     const previousCapabilities = sameDestination ? {...Object.fromEntries((active.disabledModels || []).map(item=>[item.model,item.capability])), ...active.modelCapabilities} : {};
     updated.modelCapabilities = validateModelCapabilities(flat.modelCapabilities, updated.models, previousCapabilities);
+    const previousReasoning = sameDestination ? {...Object.fromEntries((active.disabledModels || []).filter(item=>item.reasoning).map(item=>[item.model,item.reasoning])),...active.modelReasoning} : {};
+    updated.modelReasoning = validateModelReasoning(flat.modelReasoning,updated.models,previousReasoning,updated.provider);
     updated.disabledModels = sameDestination ? (active.disabledModels || []).filter(item => !updated.models.includes(item.model)) : [];
     profiles = profiles.map((profile) =>
       profile.id === active.id ? updated : profile,
@@ -335,14 +342,14 @@ export async function callModel(
   }
   const body = anthropic
     ? {
-        ...settings.extraBody,
+        ...reasoningBody(settings),
         model: settings.model,
         max_tokens: maxTokens,
         system,
         messages: providerMessages.filter((message) => message.role !== "system"),
       }
     : {
-        ...settings.extraBody,
+        ...reasoningBody(settings),
         model: settings.model,
         messages: providerMessages,
         max_tokens: maxTokens,

@@ -37,7 +37,8 @@
 .usage-donut-legend small { display:block; color:var(--secondary); font-size:9px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; }
 .usage-donut-legend b { font-weight:500; font-variant-numeric:tabular-nums; }
 .usage-donut-legend em { color:var(--secondary); font-size:10px; font-style:normal; width:38px; text-align:right; }
-.usage-rank-list { list-style:none; padding:0; margin:0; max-height:326px; overflow:auto; scrollbar-width:thin; }
+.usage-rank-list { list-style:none; padding:0; margin:0; }
+.usage-rank-list.is-expanded { max-height:360px; overflow:auto; scrollbar-width:thin; }
 .usage-rank-list li { margin-bottom:17px; }
 .usage-rank-list li > div { display:flex; align-items:center; gap:8px; font-size:12px; }
 .usage-rank-list strong { flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-weight:500; }

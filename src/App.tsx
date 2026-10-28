@@ -15,7 +15,6 @@ import { adoptChatScroll, readChatScroll, removePaperChatScroll } from "./chat-s
 import "./chat-scroll.css";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import {
-  ImagePlus,
   ArrowUp,
   BarChart3,
   ArrowDown,
@@ -84,6 +83,7 @@ import {
 } from "./types";
 import SettingsDialog from "./SettingsDialog";
 import UsagePage from "./UsagePage";
+import {AssistantModelMenu,ComposerAttachments} from "./ComposerControls";
 import {useModelSelection,writeWorkspaceSettings} from "./model-selection";
 import ResearchWelcome from "./ResearchWelcome";
 import PaperRecommendations from "./PaperRecommendations";
@@ -94,7 +94,7 @@ import AssistantDock, { defaultAssistantWidth } from "./AssistantDock";
 import { readCompanionMode, saveCompanionMode, type CompanionMode } from "./assistant-layout";
 import { selectionErrorMessage } from "./selection-errors";
 import { pageLabel } from "./page-label";
-import ReadingTools, { ModelSelect } from "./ReadingTools";
+import ReadingTools from "./ReadingTools";
 const FigureManager = lazy(() => import("./FigureManager"));
 
 type View = "discover" | "library" | "saved" | "research" | "paper" | "usage";
@@ -250,7 +250,7 @@ export default function App() {
   const [copyState, setCopyState] = useState<{kind: "citation" | "agent"; context: string} | null>(null);
   const [copyingAgent, setCopyingAgent] = useState(false);
   const preparingQuestion=useRef(false);
-  const [questionModes,setQuestionModes]=useState<Record<string,'api'|'agent'|'extractive'>>({});
+  const [questionModes,setQuestionModes]=useState<Record<string,'api'|'agent'>>({});
   const sharedSettingsWrite=useModelSelection();
   const webSearchEnabled=settings.assistant?.webSearch===true;
   async function toggleWebSearch(){
@@ -790,7 +790,7 @@ export default function App() {
           paperId: context.paperId,
           conversationId: context.conversationId,
           message,
-          processing: questionMode==='extractive'?'extractive':'api',
+          processing: 'api',
           webSearch: questionMode === 'api' && webSearchEnabled,
           ...(!submitted.verbatim ? { questionText: text.trim() } : {}),
           ...(metadata !== undefined ? { metadata } : {}),
@@ -886,7 +886,7 @@ export default function App() {
   const pdfSource = paper?.localPdfUrl || paper?.pdfUrl;
   const questionContext=view==='paper'&&paper?paper.id:'research';
   const questionTask=questionTasks[chatDraftKey(view==='paper'?paper?.id:undefined,conversationId)];
-  const questionMode=questionModes[questionContext]||(questionTask?'agent':modelReady?'api':view==='paper'&&paper?'agent':'extractive');
+  const questionMode=questionModes[questionContext]||(view==='paper'&&paper?(settings.assistant?.answerMode||(questionTask?'agent':modelReady?'api':'agent')):'api');
   useEffect(()=>{if(questionTask?.status==='pending')completeQuestionTask(questionTask,chat);},[questionTask,chat]);
   const translations = showOriginal
     ? undefined
@@ -1574,7 +1574,7 @@ export default function App() {
               onPaste={event=>{const files=clipboardImageFiles(event.clipboardData);if(files.length){event.preventDefault();const text=event.clipboardData.getData("text/plain");if(text)setPrompt(prompt.slice(0,event.currentTarget.selectionStart)+text+prompt.slice(event.currentTarget.selectionEnd));void addChatImages(files);}}}
               ref={composerRef}
               placeholder={
-                questionMode==='agent'?t('输入问题，Enter 准备订阅任务…','Ask a question; Enter prepares a subscription task…'):questionMode==='extractive'?t('输入关键词，查找原文片段…','Enter keywords to find source passages…'):full ? t("问一个研究问题…") : t("询问有关这篇论文的问题…")
+                questionMode==='agent'?t('输入问题，Enter 准备订阅任务…','Ask a question; Enter prepares a subscription task…'):full ? t("问一个研究问题…") : t("询问有关这篇论文的问题…")
               }
               value={prompt}
               disabled={conversationBusy}
@@ -1591,51 +1591,24 @@ export default function App() {
               }}
             />
             <div className="composer-bottom">
-              <button type="button" className="icon-button" aria-label={t("添加图片（也可粘贴）","Attach image (or paste)")} title={t("添加图片，也可直接粘贴截图","Attach images or paste screenshots")} disabled={readingImages||chatting||conversationBusy} onClick={()=>imageInput.current?.click()}><ImagePlus size={18}/></button>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={t("上传论文到助手")}
-                onClick={() => fileRef.current?.click()}
-                disabled={importing || chatting}
-              >
-                <Plus size={19} />
-              </button>
-              <span className={`question-mode-wrap mode-${questionMode}`}><select aria-label={t('问答处理方式','Question processing mode')} value={questionMode} disabled={chatting||conversationBusy||copyingAgent} onChange={event=>setQuestionModes(modes=>({...modes,[questionContext]:event.target.value as 'api'|'agent'|'extractive'}))}>
-                {paper&&view==='paper'&&<option value="agent">{t('Codex / Claude 订阅','Codex / Claude subscription')}</option>}
-                <option value="api" disabled={!modelReady}>{modelReady?t('模型 API','Model API'):t('模型 API · 未配置','Model API · not configured')}</option>
-                <option value="extractive">{t('本地原文检索','Local source search')}</option>
-              </select></span>
-              {questionMode==='api' && <ModelSelect
-                settings={settings}
-                onChange={setSettings}
-                disabled={chatting || reporting || translating}
-              />}
-              {questionMode !== 'extractive' && <AssistantPreferences settings={settings} onChange={setSettings} chinese={language.startsWith('zh')} disabled={chatting||conversationBusy} apiMode={questionMode==='api'}/>}
+              <ComposerAttachments disabled={readingImages||importing||chatting||conversationBusy} onImage={()=>imageInput.current?.click()} onPdf={()=>fileRef.current?.click()}/>
+              <AssistantModelMenu settings={settings} onSettings={setSettings} mode={questionMode} onMode={mode=>setQuestionModes(modes=>({...modes,[questionContext]:mode}))} allowAgent={!!paper&&view==='paper'} disabled={chatting||conversationBusy||copyingAgent||reporting||translating} onConfigure={()=>{setMobileNav(false);setShowSettings(true);}}/>
+              {<AssistantPreferences settings={settings} onChange={setSettings} chinese={language.startsWith('zh')} disabled={chatting||conversationBusy} apiMode={questionMode==='api'}/>}
               {questionMode === 'api' && <button type="button" className="agent-web-toggle" aria-pressed={webSearchEnabled}
                 disabled={chatting || conversationBusy || sharedSettingsWrite.pending} onClick={()=>void toggleWebSearch()}
                 title={t('允许助手向外部搜索服务发送检索词，并读取公开网页；关闭时仅使用论文资料。','Allow the assistant to send search terms to an external search service and read public webpages. Off uses paper sources only.')}>
                 <Globe2 size={14}/><span>{t('联网','Web')}</span>
               </button>}
               <button
-                type="button"
-                className="icon-button"
-                aria-label={t("管理模型连接")}
-                title={`${t("管理模型连接")} · ${modelReady ? t("AI 回答可能有误，请核对原文证据。") : t("可使用订阅任务或配置模型 API","Use a subscription task or configure a model API")}`}
-                onClick={() => { setMobileNav(false); setShowSettings(true); }}
-              >
-                <Settings2 size={14} />
-              </button>
-              <button
                 className="send-button"
-                aria-label={questionMode==='agent'?t('准备订阅任务','Prepare subscription task'):questionMode==='extractive'?t('查找原文','Find source passages'):t("发送问题")}
-                title={questionMode==='agent'?t('准备并复制订阅任务，不调用模型 API','Prepare and copy a subscription task; no model API call'):questionMode==='extractive'?t('查找原文片段，不调用模型','Find source passages; no model call'):t('发送问题')}
+                aria-label={questionMode==='agent'?t('准备订阅任务','Prepare subscription task'):t("发送问题")}
+                title={questionMode==='agent'?t('准备并复制订阅任务，不调用模型 API','Prepare and copy a subscription task; no model API call'):t('发送问题')}
                 disabled={sharedSettingsWrite.pending || (!prompt.trim()&&!attachedImages.length) || readingImages || chatting || conversationBusy||copyingAgent||(questionMode==='api'&&!modelReady)}
               >
                 {chatting||copyingAgent ? (
                   <Loader2 size={16} className="spin" />
                 ) : (
-                  questionMode==='agent'?<Code2 size={18}/>:questionMode==='extractive'?<Search size={18}/>:<ArrowUp size={18} />
+                  questionMode==='agent'?<Code2 size={18}/>:<ArrowUp size={18} />
                 )}
               </button>
             </div>

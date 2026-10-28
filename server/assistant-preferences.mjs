@@ -2,8 +2,9 @@ import {BUILTIN_ASSISTANT_STYLES,DEFAULT_ASSISTANT_PREFERENCES} from '../shared/
 import {ApiError} from './network.mjs';
 export function validateAssistantPreferences(input, current=DEFAULT_ASSISTANT_PREFERENCES) {
   if(input===undefined)return structuredClone(current);
-  if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['styleId','pdfMode','customStyles','webSearch'].includes(k)))throw new ApiError('Invalid assistant preferences.');
+  if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(k=>!['styleId','pdfMode','customStyles','webSearch','answerMode'].includes(k)))throw new ApiError('Invalid assistant preferences.');
   const result={...current,...input};
+  if(result.answerMode!==undefined&&!['api','agent'].includes(result.answerMode))throw new ApiError('Answer mode must be api or agent.');
   if(result.webSearch!==undefined&&typeof result.webSearch!=='boolean')throw new ApiError('Web search preference must be a boolean.');
   if(!['text','images'].includes(result.pdfMode))throw new ApiError('PDF mode must be text or images.');
   if(!Array.isArray(result.customStyles)||result.customStyles.length>30)throw new ApiError('At most 30 custom styles are supported.');
