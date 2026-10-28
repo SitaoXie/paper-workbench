@@ -2,9 +2,11 @@ import { ApiError } from './network.mjs';
 import { renderPdfImage } from './pdf-images.mjs';
 import { visionModel } from './vision.mjs';
 
-// Application request budgets, not claims about a provider's image limits.
-export const REPORT_IMAGE_BATCH = 12;
-const IMAGE_BYTES = 20 * 1024 * 1024;
+// Zero leaves the whole image packet intact; batching is an explicit user choice.
+export function reportImageBatchSize(value = 0) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new ApiError('Report imageBatchSize must be a non-negative integer; 0 disables batching.');
+  return value;
+}
 export function reportInputMode(value = 'text-images') {
   if (!['text-images', 'page-images'].includes(value)) throw new ApiError('Report inputMode must be text-images or page-images.');
   return value;
@@ -20,10 +22,11 @@ export function imageEvidenceParts(items, provider) {
 const numberLabel = figure => String(figure.label || figure.caption || '').match(/^(?:Figure|Fig\.?|Table|图|表)\s*(?:(?:[A-Z]\.?)?\d+(?:\.\d+)*[A-Z]?|[IVXLCDM]+)(?=$|[\s.:：、()[\]—-])/i)?.[0] || 'Unnumbered source figure';
 
 export async function prepareReportEvidence(paper, settings, {
-  inputMode = 'text-images', language = 'zh-CN', focus = '', dataDir, renderImage = renderPdfImage, call, configured,
+  inputMode = 'text-images', imageBatchSize = 0, language = 'zh-CN', focus = '', dataDir, renderImage = renderPdfImage, call, configured,
 } = {}) {
   const mode = reportInputMode(inputMode);
-  const metadata = { requestedMode: mode, effectiveMode: 'text', pixelsProvided: false, imageCount: 0, pages: [], figures: [], batches: 0, unavailable: [] };
+  imageBatchSize = reportImageBatchSize(imageBatchSize);
+  const metadata = { requestedMode: mode, imageBatchSize, effectiveMode: 'text', pixelsProvided: false, imageCount: 0, pages: [], figures: [], batches: 0, unavailable: [] };
   const fallback = reason => ({ items: [], observations: '', metadata: { ...metadata, fallbackReason: reason } });
   if (!paper.filePath || !dataDir) return fallback('no-local-pdf');
   let visual = settings.modelCapabilities?.[settings.model] === 'vision' && configured(settings) ? settings : undefined;
@@ -57,7 +60,7 @@ export async function prepareReportEvidence(paper, settings, {
     }
     targets.sort((a, b) => a.page - b.page);
   }
-  let batch = [], bytes = 0, batched = !direct;
+  let batch = [], batched = !direct;
   const observations = [];
   async function interpret() {
     if (!batch.length) return;
@@ -67,21 +70,20 @@ export async function prepareReportEvidence(paper, settings, {
     ], `overview-vision-${metadata.batches + 1}`);
     metadata.batches++;
     observations.push(`Visual batch ${metadata.batches}; original PDF pages ${[...new Set(batch.map(item => item.page))].join(', ')}\n${notes}`);
-    batch = []; bytes = 0;
+    batch = [];
   }
   for (const target of targets) {
     let rendered;
     try { rendered = await raster(target); }
     catch { metadata.unavailable.push({ page: target.page, ...(target.figureId ? { figureId: target.figureId } : {}) }); continue; }
-    const size = rendered.image.data.length;
-    if (batch.length && (batch.length >= REPORT_IMAGE_BATCH || bytes + size > IMAGE_BYTES)) { batched = true; await interpret(); }
+    if (imageBatchSize > 0 && batch.length >= imageBatchSize) { batched = true; await interpret(); }
     const sourceText = mode === 'text-images' ? pageText.get(target.page) || '' : '';
     const label = JSON.stringify({ paperId: paper.id, paperTitle: paper.title, pdfPage: target.page,
       kind: target.crop ? 'original-figure-crop' : 'original-full-page',
       ...(target.figureId ? { figureId: target.figureId, originalNumber: target.number, caption: target.caption } : { note: 'Full page evidence, not an extracted figure. Use printed Figure/Table labels from the pixels; do not invent figure IDs.' }),
       ...(mode === 'text-images' ? { sourcePageText: sourceText.slice(0, 8000), sourcePageTextTruncated: sourceText.length > 8000 } : {}),
     });
-    batch.push({ label, image: rendered.image, page: target.page }); bytes += size;
+    batch.push({ label, image: rendered.image, page: target.page });
     metadata.imageCount++;
     if (!metadata.pages.includes(target.page)) metadata.pages.push(target.page);
     if (target.figureId) metadata.figures.push({ id: target.figureId, page: target.page, number: target.number });

@@ -1,4 +1,4 @@
-import { reportInputMode } from "./report-evidence.mjs";
+import { reportInputMode, reportImageBatchSize } from "./report-evidence.mjs";
 import { presentChatMessage } from "./answer-presentation.mjs";
 import {validateChatImages,saveChatImages,hydrateChatImages,chatImagePath} from './chat-images.mjs';
 import { DEFAULT_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
@@ -801,6 +801,7 @@ export async function createApp({
       }
       const preferences = readingPreferences(original || body);
       const inputMode = reportInputMode(body.inputMode);
+      const imageBatchSize = reportImageBatchSize(body.imageBatchSize);
       const settings = { ...store.data.settings };
       if (format === "interactive" && !canUseModel(settings))
         throw new ApiError("Configure a model API or import an interactive reading from your external agent first.");
@@ -844,7 +845,7 @@ export async function createApp({
             adversarial: body.adversarial !== false,
             language: validateLanguage(body.language),
             ...preferences,
-            inputMode, dataDir: store.directory,
+            inputMode, imageBatchSize, dataDir: store.directory,
             fetchImpl,
           },
         );

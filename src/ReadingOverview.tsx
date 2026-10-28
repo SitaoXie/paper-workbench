@@ -19,7 +19,7 @@ import ReadingSections from "./ReadingSections";
 import { parseReadingSectionLocation, readingSections, readingSectionUrl, type ReadingSectionLocation } from "./reading-sections";
 import SelectionTools from "./SelectionTools";
 import VisionTools from "./VisionTools";
-import {ReportInputOptions, ReportInputRecord, loadReportInputMode, type ReportInputMode} from './ReportInputOptions';
+import {ReportInputOptions, ReportInputRecord, loadReportInputMode, loadReportImageBatchSize, type ReportInputMode} from './ReportInputOptions';
 import InteractiveReading from "./InteractiveReading";
 import { ModelSelect } from "./ReadingTools";
 import {
@@ -201,11 +201,12 @@ export default function ReadingOverview({
   const [exporting, setExporting] = useState(false);
   const [style, setStyle] = useState<ReadingStyle>("quick");
   const [inputMode, setInputMode] = useState<ReportInputMode>(loadReportInputMode);
+  const [imageBatchSize, setImageBatchSize] = useState(loadReportImageBatchSize);
   const [focus, setFocus] = useState("");
   const [copied, setCopied] = useState(false);
   const [agentAssistance, setAgentAssistance] = useState<AgentReadingAssistance>('none');
   const [preparedAgentTask, setPreparedAgentTask] = useState<{ key: string; task: string } | null>(null);
-  const agentTaskKey = JSON.stringify([paper.id, language, getLocale(), style, format, focus.trim(), agentAssistance, inputMode, paper.abstractIsExcerpt]);
+  const agentTaskKey = JSON.stringify([paper.id, language, getLocale(), style, format, focus.trim(), agentAssistance, inputMode, imageBatchSize, paper.abstractIsExcerpt]);
   const agentTask = preparedAgentTask?.key === agentTaskKey ? preparedAgentTask.task : '';
   const [translationTasks,setTranslationTasks]=useState<Record<string,SubscriptionTranslation>>({});
   const [interactiveTasks,setInteractiveTasks]=useState<Record<string,SubscriptionInteractive>>({});
@@ -380,7 +381,7 @@ export default function ReadingOverview({
             style,
             format,
             focus: focus.trim(),
-            inputMode,
+            inputMode, imageBatchSize,
             adversarial: style !== "quick",
           }),
         },
@@ -571,7 +572,7 @@ export default function ReadingOverview({
   function prepareAgent() {
     const instruction = buildAgentReadingTask({
       origin: location.origin, paperId: paper.id, language, locale: getLocale(),
-      abstractIsExcerpt: paper.abstractIsExcerpt, style, format, focus, assistance: agentAssistance, inputMode,
+      abstractIsExcerpt: paper.abstractIsExcerpt, style, format, focus, assistance: agentAssistance, inputMode, imageBatchSize,
     });
     setPreparedAgentTask({ key: agentTaskKey, task: instruction });
     void copy(instruction);
@@ -667,7 +668,7 @@ export default function ReadingOverview({
               disabled={generating}
             />
           </label>
-          <ReportInputOptions settings={settings} value={inputMode} onChange={setInputMode} onConfigure={onConfigure} hasPdf={!!paper.localPdfUrl} disabled={generating}/>
+          <ReportInputOptions imageBatchSize={imageBatchSize} onImageBatchSizeChange={setImageBatchSize} settings={settings} value={inputMode} onChange={setInputMode} onConfigure={onConfigure} hasPdf={!!paper.localPdfUrl} disabled={generating}/>
           <details className="reading-agent-options">
             <summary>{t("Codex / Claude 辅助 skill（可选）", "Codex / Claude assistance skills (optional)")}</summary>
             <label className="reading-focus-label">

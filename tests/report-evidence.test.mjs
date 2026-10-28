@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {prepareReportEvidence, REPORT_IMAGE_BATCH} from '../server/report-evidence.mjs';
+import {prepareReportEvidence} from '../server/report-evidence.mjs';
 import {generateReport} from '../server/models.mjs';
 import {defaultSettings} from '../server/storage.mjs';
 
@@ -61,19 +61,49 @@ test('no visual model falls back to source text even when screenshot mode is sel
  assert.equal(result.source.visualInput.fallbackReason,'no-vision-model');assert.equal(result.source.visualInput.imageCount,0);
 });
 
-test('long PDFs are read in bounded batches without dropping the tail or persisting pixels',async()=>{
- const calls=[],seen=[];const count=REPORT_IMAGE_BATCH*2+1;
- const result=await prepareReportEvidence(paper,settings,{inputMode:'page-images',dataDir:'/fixture',renderImage:render(count,seen),configured:()=>true,call:async(model,messages,stage)=>{calls.push({model,messages,stage});return 'Unverified observation.';}});
+test('explicit user batch size reads long PDFs in bounded batches without dropping the tail or persisting pixels',async()=>{
+ const calls=[],seen=[];const batchSize=12,count=batchSize*2+1;
+ const result=await prepareReportEvidence(paper,settings,{inputMode:'page-images',imageBatchSize:batchSize,dataDir:'/fixture',renderImage:render(count,seen),configured:()=>true,call:async(model,messages,stage)=>{calls.push({model,messages,stage});return 'Unverified observation.';}});
  assert.equal(calls.length,3);assert.equal(seen.length,count);assert.equal(result.items.length,0);
  assert.equal(result.metadata.imageCount,count);assert.equal(result.metadata.pixelsProvided,false);
  assert.deepEqual(calls.flatMap(c=>c.messages[1].content.filter(p=>p.type==='text').slice(1).map(p=>JSON.parse(p.text).pdfPage)),Array.from({length:count},(_,i)=>i+1));
- assert.ok(calls.every(c=>imageParts(c.messages[1].content).length<=REPORT_IMAGE_BATCH));
+ assert.ok(calls.every(c=>imageParts(c.messages[1].content).length<=batchSize));
  assert.match(result.observations,/original PDF pages 25/);assert.ok(!JSON.stringify(result).includes(pixels(1)));
 });
 
 test('unavailable page images are disclosed and vision inference failure is not silently downgraded',async()=>{
  const result=await prepareReportEvidence(paper,settings,{dataDir:'/fixture',configured:()=>true,renderImage:async(...args)=>{if(args[2].page===2)throw new Error('raster failure');return render()(...args);}});
  assert.deepEqual(result.metadata.unavailable,[{page:2}]);assert.equal(result.metadata.imageCount,1);
- await assert.rejects(prepareReportEvidence(paper,settings,{inputMode:'page-images',dataDir:'/fixture',configured:()=>true,renderImage:render(13),call:async()=>{throw new Error('provider unavailable');}}),/provider unavailable/);
+ await assert.rejects(prepareReportEvidence(paper,settings,{inputMode:'page-images',imageBatchSize:12,dataDir:'/fixture',configured:()=>true,renderImage:render(13),call:async()=>{throw new Error('provider unavailable');}}),/provider unavailable/);
  await assert.rejects(generateReport(paper,settings,{inputMode:'invalid'}),/inputMode/);
+});
+
+test('default keeps all images together above the former count and byte budgets',async()=>{
+ const large='a'.repeat(21*1024*1024);
+ const result=await prepareReportEvidence(paper,settings,{inputMode:'page-images',dataDir:'/fixture',configured:()=>true,
+  renderImage:async(_p,_d,{page})=>({pageCount:14,image:{mimeType:'image/jpeg',data:page===1?large:pixels(page)}}),
+  call:async()=>{assert.fail('Default must not create preliminary visual notes');},
+ });
+ assert.equal(result.items.length,14);assert.equal(result.metadata.imageBatchSize,0);assert.equal(result.metadata.pixelsProvided,true);
+ assert.equal(result.metadata.batches,0);assert.equal(result.observations,'');assert.equal(result.items[0].image.data,large);
+ assert.deepEqual(result.items.map(item=>item.page),Array.from({length:14},(_,i)=>i+1));
+});
+
+test('default screenshot report sends 14 page images to every writer role, and rejects invalid batch settings before work',async()=>{
+ const provider=mock();
+ const result=await generateReport(paper,settings,{inputMode:'page-images',dataDir:'/fixture',renderImage:render(14),fetchImpl:provider.fetchImpl});
+ assert.equal(provider.calls.length,3);
+ assert.ok(provider.calls.every(call=>imageParts(call.messages[1].content).length===14));
+ assert.equal(result.source.visualInput.batches,0);assert.equal(result.source.pixelsProvided,true);
+ for(const imageBatchSize of [-1,1.5,'12',null,Infinity,Number.MAX_SAFE_INTEGER+1])
+  await assert.rejects(generateReport(paper,settings,{imageBatchSize}),/imageBatchSize/);
+});
+
+test('provider rejection is returned without silently splitting a default full-image request',async()=>{
+ let calls=0;
+ await assert.rejects(generateReport(paper,settings,{inputMode:'page-images',dataDir:'/fixture',renderImage:render(14),fetchImpl:async(_url,options)=>{
+  calls++;assert.equal(imageParts(JSON.parse(options.body).messages[1].content).length,14);
+  return new Response(JSON.stringify({error:{message:'Too many images'}}),{status:400});
+ }}));
+ assert.equal(calls,1);
 });

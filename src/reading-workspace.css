@@ -115,7 +115,8 @@
   padding: 8px 0;
 }
 .reading-agent-options select,
-.report-input-options select {
+.report-input-options select,
+.report-input-options input {
   display: block;
   width: 100%;
   max-width: 100%;
@@ -131,7 +132,8 @@
 .reading-agent-options p { line-height: 1.6; }
 .reading-agent-options summary:focus-visible,
 .reading-agent-options select:focus-visible,
-.report-input-options select:focus-visible {
+.report-input-options select:focus-visible,
+.report-input-options input:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

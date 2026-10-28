@@ -1,4 +1,4 @@
-import { prepareReportEvidence, reportInputMode, imageEvidenceParts } from "./report-evidence.mjs";
+import { prepareReportEvidence, reportInputMode, reportImageBatchSize, imageEvidenceParts } from "./report-evidence.mjs";
 import { cleanAssistantContent, createAnswerEventFilter } from "./answer-presentation.mjs";
 import {assistantStyle} from '../shared/assistant-prompts.mjs';
 import {validateAssistantPreferences} from './assistant-preferences.mjs';
@@ -543,10 +543,11 @@ const quote = (text) =>
 export async function generateReport(
   paper,
   settings,
-  { adversarial = true, language = "zh-CN", style = "deep", focus = "", inputMode = "text-images", dataDir, renderImage, fetchImpl } = {},
+  { adversarial = true, language = "zh-CN", style = "deep", focus = "", inputMode = "text-images", imageBatchSize = 0, dataDir, renderImage, fetchImpl } = {},
 ) {
   language = validateLanguage(language);
   inputMode = reportInputMode(inputMode);
+  imageBatchSize = reportImageBatchSize(imageBatchSize);
   ({ style, focus } = readingPreferences({ style, focus }));
   const lengthInstruction = "Determine length from the requested reading purpose, focus, source complexity and available evidence, not a word or character count. Honor explicit reader preferences. Explain what is needed for understanding without repetition or padding; do not compress away essential reasoning merely to be brief.";
   const styleInstruction = style === "quick"
@@ -575,7 +576,7 @@ export async function generateReport(
       sourceCharacters: contextInfo.sourceCharacters,
     };
   const evidence = await prepareReportEvidence(paper, settings, {
-    inputMode, language, focus, dataDir, renderImage, configured: canUseModel,
+    inputMode, imageBatchSize, language, focus, dataDir, renderImage, configured: canUseModel,
     call: (model, messages, usageStage) => callModel(model, messages, { fetchImpl, usageStage }),
   });
   if (inputMode === 'page-images' && evidence.metadata.imageCount) {
