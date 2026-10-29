@@ -24,7 +24,7 @@ function decodedSpans(raw) {
  * blockquote lines) can occur in the raw span but not in this displayed value.
  * Escaped/entity-created brackets stay literal; other escapes do not affect
  * nearby citations. Callers exclude code, math, link and image nodes. */
-export function proseCitations(raw, decodedValue) {
+export function proseCitations(raw, decodedValue, sourceSpans = false) {
   const decoded = decodedSpans(raw), value = decodedValue ?? decoded.value;
   const result = [];
   let spanIndex = 0, valueCursor = 0;
@@ -43,7 +43,7 @@ export function proseCitations(raw, decodedValue) {
     if (raw.slice(rawStart, rawEnd) !== match[0]) continue;
     const sourceTarget = /^(?:Abstract|原始摘要|摘要)$/i.test(match[1]) ? "abstract"
       : /^(?:Source text|来源正文|来源文本)$/i.test(match[1]) ? "text" : undefined;
-    const common = { start, end: valueCursor, label: match[1] };
+    const common = { start, end: valueCursor, label: match[1], ...(sourceSpans ? { rawStart, rawEnd } : {}) };
     if (sourceTarget) { result.push({ ...common, sourceTarget }); continue; }
     const parts = match[1].replace(/^第\s*(\d+)\s*页$/, "p.$1").split(/\s*[,;，、]\s*/);
     if (parts.length > 12) continue;

@@ -12,6 +12,7 @@ import {
   Settings2,
   ShieldCheck,
   Sparkles,
+  Quote,
   X,
 } from "lucide-react";
 import Mark from "./Markdown";
@@ -179,6 +180,8 @@ export default function ReadingOverview({
     sectionIntent?.readingId || paper.activeReadingId || versions[0]?.id || "",
   );
   const [generating, setGenerating] = useState(false);
+  const [citationNotice,setCitationNotice]=useState('');
+  const [confirmationKind,setConfirmationKind]=useState<'interactive'|'citations'>('interactive');
   const [interactiveConfirmation,setInteractiveConfirmation]=useState<string|null>(null);
   const [choosing, setChoosing] = useState(false);
   const selectedRef = useRef(selected);
@@ -468,6 +471,7 @@ export default function ReadingOverview({
   function requestInteractive(){
     if(!version||generating||translating)return;
     if(!modelReady){void makeInteractive();return;}
+    setConfirmationKind('interactive');
     setInteractiveConfirmation(interactiveConfirmationKey);
   }
   async function confirmInteractive(selection:{profileId:string;model:string;modelReasoning?:Settings["modelReasoning"]}){
@@ -475,17 +479,18 @@ export default function ReadingOverview({
     const saved=await writeWorkspaceSettings(()=>api<Settings>('/settings',{method:'PUT',body:JSON.stringify({activeProfileId:selection.profileId,model:selection.model,...(selection.modelReasoning?{modelReasoning:selection.modelReasoning}:{})})}),onSettings);
     if(!saved.ok)return false;
     setInteractiveConfirmation(null);
-    void makeInteractive();
+    void makeInteractive(confirmationKind==='citations');
     return true;
   }
-  async function makeInteractive() {
+  async function makeInteractive(citationsOnly=false) {
     if (!version || generating || translating) return;
     if (!modelReady) { await prepareSubscriptionInteractive(); return; }
-    setGenerating(true); onBusy?.(true); setError("");
+    setGenerating(true); onBusy?.(true); setError(""); setCitationNotice('');
     try {
-      const response = await api<{paper: Paper}>(`/papers/${paper.id}/report`, {
-        method: "POST", body: JSON.stringify({readingId: version.id, format: "interactive"}),
+      const response = await api<{paper: Paper;citationAlignment?:{added:number;downgraded:number;expanded?:number}}>(`/papers/${paper.id}/report`, {
+        method: "POST", body: JSON.stringify({readingId: version.id, format: citationsOnly?"article":"interactive",...(citationsOnly?{citationsOnly:true}:{})}),
       });
+      if(response.citationAlignment&&!response.citationAlignment.added&&!response.citationAlignment.downgraded&&!response.citationAlignment.expanded)setCitationNotice(t('未找到适合补全的唯一原文片段，已保留原版和页码引用。','No suitable unique source passage was selected. The original reading and page references were preserved.'));
       publish(response.paper);
       if (mounted.current && response.paper.activeReadingId) {
         selectedRef.current = response.paper.activeReadingId;
@@ -614,13 +619,15 @@ export default function ReadingOverview({
             <Settings2 size={15}/><span>{versions.length ? t("生成新版本", "New version") : t("阅读偏好", "Reading preferences")}</span>
           </button>
           {version && <>
+            {version.format!=='interactive'&&paper.localPdfUrl&&<button className="soft-button reading-citation-enhance" aria-label={t('补全原文定位','Locate source passages')} title={t('补全原文定位','Locate source passages')} disabled={generating||translating||!modelReady||settingsPending} onClick={()=>{setConfirmationKind('citations');setInteractiveConfirmation(interactiveConfirmationKey);}}><Quote size={15}/><span>{t('补全原文定位','Locate source passages')}</span></button>}
             <button className="icon-button" aria-label={t("复制解读", "Copy overview")} title={t("复制解读", "Copy overview")} onClick={() => void copy(portableMarkdown())}>{copied ? <Check size={16}/> : <Copy size={16}/>}</button>
             <button className="icon-button" aria-label={t("下载解读", "Download overview")} title={t("下载解读", "Download overview")} onClick={() => saveFile(portableMarkdown(), `${paper.title.slice(0, 70)}-${version.style}.md`)}><Download size={16}/></button>
           </>}
         </div>
       </div>
       {generating && <ReadingGenerationProgress paperId={paper.id}/>}
-      {interactiveConfirmation && <InteractiveGenerationConfirm settings={settings} onCancel={()=>setInteractiveConfirmation(null)} onConfirm={confirmInteractive}/>}
+      {citationNotice&&<p className="field-hint" role="status">{citationNotice}</p>}
+      {interactiveConfirmation && <InteractiveGenerationConfirm settings={settings} kind={confirmationKind} onCancel={()=>setInteractiveConfirmation(null)} onConfirm={confirmInteractive}/>}
       {configure && (
         <div className="reading-preferences">
           <div
@@ -705,8 +712,8 @@ export default function ReadingOverview({
               <button className="text-button" onClick={onConfigure}>{t("配置模型 API", "configure a model API")}</button>
             </p>}
             {style !== "quick" && <p className="reading-route-hint">{t(
-              "包含研究者、质疑者和编辑复核；多角色可能使用同一模型。",
-              "Includes researcher, skeptic and editor review; roles may use the same model.",
+              "包含研究者、质疑者和编辑复核；必要时再调用一次模型补全引用定位，计入 API 用量。",
+              "Includes researcher, skeptic and editor review. One additional model call may locate source passages and is included in API usage.",
             )}</p>}
           </div>
           <div className="reading-generation-route reading-subscription-route" role="group" aria-label={t("Codex / Claude 订阅生成", "Generate with a Codex / Claude subscription")}>

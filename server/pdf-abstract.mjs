@@ -1,6 +1,6 @@
 // This is section extraction, not summarization. Ambiguous layouts and missing
 // boundaries deliberately return null so callers can label their excerpt honestly.
-const startHeading = /^(?:abstract|摘\s*要)(?:\s*[:：—–]\s*(.*))?\s*$/iu;
+const startHeading = /^(?:abstract|摘\s*要)(?:[.：:—–]\s*(.*))?\s*$/iu;
 const endHeading = /^(?:(?:\d+(?:\.\d+)*|[IVX]+)[.)、]?\s+)?(?:introduction|引\s*言|绪\s*论)\s*[:：]?\s*$|^(?:\d+(?:\.\d+)*|[IVX]+)[.)、]?\s+(?:background|overview|preliminaries)\s*[:：]?\s*$|^(?:key\s*words?|index\s+terms|关\s*键\s*[词字])(?:\s*[:：—–-]\s*.*|\s*)$/iu;
 const sectionNumber = /^(?:\d+(?:\.\d+)*|[IVX]+)[.)、]?$/iu;
 const suspicious = /^(?:figure|fig\.|table)\s*\d|^(?:contents|references|bibliography)\s*$|equal contribution|corresponding author|correspondence to|arxiv:|copyright|©|\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/imu;
@@ -68,7 +68,7 @@ export function extractPdfAbstract(pages) {
       const endLine = boundary > index + 1 && sectionNumber.test(lines[boundary - 1].text) ? boundary - 1 : boundary;
       const end = lines[endLine].start;
       const raw = page.text.slice(start, end).trim();
-      const text = raw.replace(/\s+/g, " ").trim();
+      const text = raw.replace(/(\p{L})-\s*\n\s*(?=\p{L})/gu,'$1').replace(/\s+/g, " ").trim();
       const letters = (text.match(/\p{L}/gu) || []).length;
       const han = (text.match(/\p{Script=Han}/gu) || []).length;
       const words = (text.match(/\p{L}[\p{L}'’'-]*/gu) || []).length;

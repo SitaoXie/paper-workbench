@@ -1,3 +1,4 @@
+import {withEmptyCitationPhase} from './helpers/citation-phase.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {prepareReportEvidence} from '../server/report-evidence.mjs';
@@ -8,7 +9,7 @@ const settings={...defaultSettings,apiKey:'fixture-key',baseUrl:'https://model.e
 const paper={id:'source-paper',title:'Visual experiment',authors:['Author'],abstract:'A comparison.',filePath:'papers/source.pdf',pages:[{number:1,text:'FIRST_PAGE_BODY\nFigure 3. Source comparison.'},{number:2,text:'SECOND_PAGE_BODY\nTable 2. Source measurements.'}],figures:[{id:'original-chart',page:1,label:'Figure 3',caption:'Figure 3. Source comparison.',crop:{x:.1,y:.1,width:.8,height:.4}}]};
 const pixels=page=>Buffer.from(`original-pixels-${page}`).toString('base64');
 const render=(count=2,seen=[])=>async(_paper,_dir,target)=>{seen.push(target);return {pageCount:count,image:{mimeType:'image/jpeg',data:pixels(target.page)}};};
-function mock(){const calls=[];return {calls,fetchImpl:async(_url,options)=>{const body=JSON.parse(options.body);calls.push(body);return new Response(JSON.stringify(body.messages.some(m=>m.content?.some?.(p=>p.type==='image'))?{content:[{type:'text',text:'A grounded interpretation. [p.1]'}]}:{choices:[{message:{content:'A grounded interpretation. [p.1]'}}]}));}};}
+function mock(){const calls=[];return {calls,fetchImpl:withEmptyCitationPhase(async(_url,options)=>{const body=JSON.parse(options.body);calls.push(body);return new Response(JSON.stringify(body.messages.some(m=>m.content?.some?.(p=>p.type==='image'))?{content:[{type:'text',text:'A grounded interpretation. [p.1]'}]}:{choices:[{message:{content:'A grounded interpretation. [p.1]'}}]}));})};}
 const imageParts=content=>content.filter(part=>part.type==='image_url'||part.type==='image');
 
 test('overview analyst, reviewer and editor receive the same labeled source images beside text',async()=>{

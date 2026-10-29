@@ -1,9 +1,10 @@
+import * as pdfText from '../shared/pdf-text.mjs';
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
-const context = { exports: {} };
+const context = { exports: {}, require:name=>name==='../shared/pdf-text.mjs'?pdfText:undefined };
 vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL("../src/pdf-search.ts", import.meta.url), "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText, context);

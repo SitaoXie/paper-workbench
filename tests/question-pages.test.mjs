@@ -1,7 +1,8 @@
+import {withEmptyCitationPhase} from './helpers/citation-phase.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {questionPageContext} from '../server/question-pages.mjs';
-import {answerQuestion} from '../server/models.mjs';
+import {answerQuestion as answerQuestionWithCitations} from '../server/models.mjs';
 import {createQuestionToolbox} from '../server/question-agent.mjs';
 import {defaultSettings} from '../server/storage.mjs';
 const paper=count=>({id:'whole-pages',title:'Whole source pages',authors:[],abstract:'Brief source description.',pages:Array.from({length:count},(_,i)=>({number:i+1,text:`START_${i+1} `+'Original source. '.repeat(550)+` END_${i+1}`}))});
@@ -29,3 +30,7 @@ test('missing/extraction-limited sources are never mislabeled as complete origin
  const p=paper(3);p.pages.splice(1,1);const partial=questionPageContext(p);assert.equal(partial.coverage,'partial-extracted-pages');assert.match(partial.text,/Missing extracted pages: 2/);
  const incomplete=questionPageContext({...paper(1),extractionTruncated:true});assert.equal(incomplete.coverage,'partial-extracted-pages');assert.match(incomplete.text,/Extraction is incomplete/);
 });
+
+function answerQuestion(paper,settingsOrQuestion,optionsOrHistory,maybeSettings,maybeOptions){
+ const options=maybeOptions||{};return answerQuestionWithCitations(paper,settingsOrQuestion,optionsOrHistory,maybeSettings,{...options,fetchImpl:withEmptyCitationPhase(options.fetchImpl)});
+}

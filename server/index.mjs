@@ -1,3 +1,5 @@
+import {registerMetadataRoutes} from './metadata-routes.mjs';
+import {groundCitations} from './citation-grounding.mjs';
 import { reportInputMode, reportImageBatchSize } from "./report-evidence.mjs";
 import { presentChatMessage } from "./answer-presentation.mjs";
 import {validateChatImages,saveChatImages,hydrateChatImages,chatImagePath} from './chat-images.mjs';
@@ -156,6 +158,7 @@ export async function createApp({
       );
     return paper;
   };
+  registerMetadataRoutes(app,{store,wrap,paperById,fetchImpl});
   const bodyOf = (request) => {
     if (
       !request.body ||
@@ -813,17 +816,28 @@ export async function createApp({
       const paper = paperById(request.params.id);
       const body = request.body || {};
       const format = readingFormat(body.format);
+      if(body.citationsOnly!==undefined&&typeof body.citationsOnly!=='boolean')throw new ApiError('citationsOnly must be a boolean.');
+      const citationsOnly=body.citationsOnly===true;
+      if(body.localOnly!==undefined&&typeof body.localOnly!=='boolean')throw new ApiError('localOnly must be a boolean.');
+      const localOnly=body.localOnly===true;
+      if(localOnly&&!citationsOnly)throw new ApiError('localOnly is available only for citation alignment.');
+      if(citationsOnly&&(!body.readingId||format!=='article'))throw new ApiError('Citation alignment requires an existing article reading.');
       let original;
       if (body.readingId !== undefined) {
-        if (format !== "interactive") throw new ApiError("An existing reading can only be converted to interactive format.");
+        if (format !== "interactive"&&!citationsOnly) throw new ApiError("An existing reading can only be converted to interactive format.");
         original = readingState(paper).readingVersions.find(version => version.id === body.readingId);
         if (!original) throw new ApiError("Reading version not found in this paper.", 404);
+        if(citationsOnly&&original.format==='interactive')throw new ApiError('Choose an article reading for citation alignment.');
       }
       const preferences = readingPreferences(original || body);
       const inputMode = reportInputMode(body.inputMode);
       const imageBatchSize = reportImageBatchSize(body.imageBatchSize);
-      const settings = { ...store.data.settings };
-      if (format === "interactive" && !canUseModel(settings))
+      // An explicit configured model may be selected for this generation only.
+      // No endpoint or credentials are accepted here, and workspace preferences stay intact.
+      const settings = body.profileId!==undefined||body.model!==undefined
+        ? validateSettings({...(body.profileId!==undefined?{activeProfileId:body.profileId}:{}),...(body.model!==undefined?{model:body.model}:{})},structuredClone(store.data.settings))
+        : { ...store.data.settings };
+      if ((format === "interactive"||(citationsOnly&&!localOnly)) && !canUseModel(settings))
         throw new ApiError("Configure a model API or import an interactive reading from your external agent first.");
       if (reportJobs.has(paper.id))
         throw new ApiError(
@@ -865,7 +879,7 @@ export async function createApp({
         }
         const report = original ? {
           markdown: original.markdown, language: original.language || "en", ...preferences,
-          mode: "model-interactive", createdAt: new Date().toISOString(), stages: [],
+          mode: citationsOnly?"model-citation-alignment":"model-interactive", createdAt: new Date().toISOString(), stages: [],
           source: { kind: "model", model: settings.model },
           ...(original.articleSource || original.source ? { articleSource: original.articleSource || original.source } : {}),
           derivedFromReadingId: original.id,
@@ -881,6 +895,17 @@ export async function createApp({
             fetchImpl,
           },
         );
+        if(citationsOnly){
+          if(original.pdfRevision&&sourcePaper.pdfRevision&&original.pdfRevision!==sourcePaper.pdfRevision)throw new ApiError('The PDF changed since this reading was created. Citation alignment was not applied.',409);
+          const grounded=await groundCitations(original.markdown,sourcePaper,{
+            budget:settings.contextChars||1000000,signal:controller.signal,dataDir:store.directory,onProgress:()=>onProgress({stage:'citations'}),
+            ...(localOnly?{}:{call:messages=>callModel(settings,messages,{fetchImpl,signal:controller.signal,usageStage:'overview-citation-alignment',onEvent:()=>onProgress({stage:'citations'})})}),
+          });
+          if(grounded.stats.status==='unavailable')throw new ApiError(grounded.stats.error||'Citation alignment did not complete. The original reading is unchanged. Please retry.',502);
+          if(!grounded.stats.added&&!grounded.stats.downgraded&&!grounded.stats.expanded&&!grounded.stats.repaired){response.json({paper:publicPaper(paper),citationAlignment:grounded.stats});return;}
+          report.markdown=grounded.markdown;
+          report.source={...original.source,citationLocations:grounded.stats,...(grounded.stats.modelCalls?{citationAlignmentModel:settings.model}:{citationLocalRefinement:true})};
+        }
         report.figures = readingFigures;
         report.figuresRevision = original ? sourceFiguresRevision : figuresRevision(sourcePaper);
         if (sourcePaper.pdfRevision) report.pdfRevision = original?.pdfRevision || sourcePaper.pdfRevision;

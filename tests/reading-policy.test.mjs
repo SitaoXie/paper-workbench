@@ -1,3 +1,4 @@
+import {withEmptyCitationPhase} from './helpers/citation-phase.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -5,7 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { readingContract, readingPolicyIdentity, readingPolicyPrompt } from '../server/reading-policy.mjs';
 import { agentSkillBundle } from '../server/agent-skill.mjs';
-import { generateReport, answerQuestion, translateContent } from '../server/models.mjs';
+import { generateReport as generateReportWithCitations, answerQuestion as answerQuestionWithCitations, translateContent } from '../server/models.mjs';
 import { defaultSettings } from '../server/storage.mjs';
 
 const settings = { ...defaultSettings, apiKey: 'fixture-key', baseUrl: 'https://provider.example/v1' };
@@ -102,3 +103,11 @@ test('standalone skill contains the exact shared policy and every local link res
     assert.ok(headings.has(link.slice(1)), `Missing embedded heading: ${link}`);
   }
 });
+
+function generateReport(paper,settingsOrQuestion,optionsOrHistory,maybeSettings,maybeOptions){
+ const options=optionsOrHistory||{};return generateReportWithCitations(paper,settingsOrQuestion,{...options,fetchImpl:withEmptyCitationPhase(options.fetchImpl)});
+}
+
+function answerQuestion(paper,settingsOrQuestion,optionsOrHistory,maybeSettings,maybeOptions){
+ const options=maybeOptions||{};return answerQuestionWithCitations(paper,settingsOrQuestion,optionsOrHistory,maybeSettings,{...options,fetchImpl:withEmptyCitationPhase(options.fetchImpl)});
+}

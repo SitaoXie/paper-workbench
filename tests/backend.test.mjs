@@ -1,3 +1,4 @@
+import {withEmptyCitationPhase} from './helpers/citation-phase.mjs';
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, rm, stat } from "node:fs/promises";
@@ -25,8 +26,8 @@ import {
   validateLanguage,
   paperContext,
   paperContextDetails,
-  generateReport,
-  answerQuestion,
+  generateReport as generateReportWithCitations,
+  answerQuestion as answerQuestionWithCitations,
   callModel,
 } from "../server/models.mjs";
 import {
@@ -77,7 +78,7 @@ async function fixture(t, options = {}) {
   const directory =
     options.dataDir ||
     (await mkdtemp(path.join(os.tmpdir(), "paper-workbench-test-")));
-  const app = await createApp({ dataDir: directory, ...options });
+  const app = await createApp({ dataDir: directory, ...options, fetchImpl:withEmptyCitationPhase(options.fetchImpl) });
   const server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -3625,3 +3626,11 @@ test('report progress exposes live stages without inference and clears after suc
  assert.deepEqual((await api(progress)).data,{running:false});
  assert.equal((await api('/api/papers/unknown/report/progress')).status,404);
 });
+
+function generateReport(paper,settingsOrQuestion,optionsOrHistory,maybeSettings,maybeOptions){
+ const options=optionsOrHistory||{};return generateReportWithCitations(paper,settingsOrQuestion,{...options,fetchImpl:withEmptyCitationPhase(options.fetchImpl)});
+}
+
+function answerQuestion(paper,settingsOrQuestion,optionsOrHistory,maybeSettings,maybeOptions){
+ const options=maybeOptions||{};return answerQuestionWithCitations(paper,settingsOrQuestion,optionsOrHistory,maybeSettings,{...options,fetchImpl:withEmptyCitationPhase(options.fetchImpl)});
+}

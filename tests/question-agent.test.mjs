@@ -1,3 +1,4 @@
+import {isCitationPhase,withEmptyCitationPhase} from './helpers/citation-phase.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
@@ -28,6 +29,7 @@ for (const provider of ['openai', 'anthropic']) test(`${provider}: native search
   t.after(() => rm(dir, { recursive: true, force: true }));
   const ledger = await new UsageLedger(dir).init(), requests = [];
   const fetchImpl = async (_url, options) => {
+    if(isCitationPhase(options))return reply(provider, [], '{"bindings":[]}');
     const body = JSON.parse(options.body); requests.push(body);
     assert.equal(body.max_tokens, 65536);
     assert.ok(body.tools.every(tool => !JSON.stringify(tool).includes('search_web')));
@@ -50,8 +52,9 @@ for (const provider of ['openai', 'anthropic']) test(`${provider}: native search
   assert.equal(agent.steps[1].references[0].page, 2); assert.equal(agent.steps[1].references[0].complete, true);
   assert.ok(!JSON.stringify(answer).includes('PRIVATE_REASONING_SENTINEL'));
   const usage = await ledger.summary({ days: 'all' });
-  assert.equal(usage.requests, 3); assert.equal(usage.totals.totalTokens, 45);
-  assert.deepEqual(usage.recent.map(item => item.stage).sort(), ['question-agent-1','question-agent-2','question-agent-3']);
+  assert.equal(usage.requests, 4); assert.equal(usage.totals.totalTokens, 60);
+  assert.equal(answer.source.citationLocations.modelCalls,1);
+  assert.deepEqual(usage.recent.map(item => item.stage).sort(), ['question-agent-1','question-agent-2','question-agent-3','question-citation-alignment']);
 });
 
 test('local tools validate scope, preserve exact page ranges and distinguish metadata from PDF pixels', async () => {
@@ -156,7 +159,7 @@ test('library relevance can select a paper beyond the first eight, including fol
 
 test('chat route validates web option before mutation and saves agent provenance in the fixed session across reload',async t=>{
   const directory=await mkdtemp(join(tmpdir(),'question-agent-route-'));let count=0;
-  const app=await createApp({dataDir:directory,fetchImpl:async()=>++count===1?reply('openai',[{id:'read',name:'read_pages',args:{paperId:paper.id,pages:[2]}}]):reply('openai',[],'Evidence [p.2]')});
+  const app=await createApp({dataDir:directory,fetchImpl:withEmptyCitationPhase(async()=>++count===1?reply('openai',[{id:'read',name:'read_pages',args:{paperId:paper.id,pages:[2]}}]):reply('openai',[],'Evidence [p.2]'))});
   app.locals.store.data.papers.push({...paper,tags:[],createdAt:'2026-01-01'});Object.assign(app.locals.store.data.settings,settings);
   const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
   t.after(async()=>{server.closeAllConnections();await new Promise(r=>server.close(r));await rm(directory,{recursive:true,force:true});});

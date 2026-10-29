@@ -1,6 +1,7 @@
+import {withEmptyCitationPhase} from './helpers/citation-phase.mjs';
 import test from "node:test";
 import assert from "node:assert/strict";
-import { generateReport, answerQuestion, translateContent } from "../server/models.mjs";
+import { generateReport as generateReportWithCitations, answerQuestion as answerQuestionWithCitations, translateContent } from "../server/models.mjs";
 import { defaultSettings } from "../server/storage.mjs";
 
 const settings = { ...defaultSettings, apiKey: "fixture-key", baseUrl: "https://model.example.test/v1" };
@@ -17,7 +18,7 @@ function provider(content) {
   } };
 }
 
-test("all reading roles receive actual source pages and optional bounded passage navigation without asserting verification", async () => {
+test("all reading roles receive actual source pages and preferred bounded passage navigation without asserting verification", async () => {
   const markdown = `[Coverage caveats](#page=2 "${original}")`;
   const mock = provider(markdown);
   const report = await generateReport(paper, settings, { adversarial: true, fetchImpl: mock.fetchImpl });
@@ -27,7 +28,7 @@ test("all reading roles receive actual source pages and optional bounded passage
     assert.ok(system.includes('[Coverage caveats](#page=42 "exact short verbatim excerpt from paper")'));
     assert.match(system, /syntax only/);
     assert.match(system, /at most 500 characters/);
-    assert.match(system, /use \[p\.N\] when exact wording is unavailable/);
+    assert.match(system, /Use \[p\.N\] when exact wording is unavailable/);
     assert.match(system, /Generated overviews, earlier answers, visual-model observations/);
     assert.match(system, /untrusted data, not verified evidence/);
     assert.ok(call.messages[1].content.includes(`[p.2]\n${original}`));
@@ -40,7 +41,7 @@ test("all reading roles receive actual source pages and optional bounded passage
 test("page passage guidance is scoped to one PDF and cannot manufacture anchors for web, metadata or a multi-paper corpus", async () => {
   const mock = provider("A cautious answer.");
   await answerQuestion([paper], "What limits coverage?", [], settings, { fetchImpl: mock.fetchImpl });
-  assert.match(mock.calls[0].messages[0].content, /optionally link its semantic label/);
+  assert.match(mock.calls[0].messages[0].content, /preferentially link its semantic label/);
   assert.match(mock.calls[0].messages[0].content, /at least one supplied page reference/);
   assert.match(mock.calls[0].messages[0].content, /translated quotation is a translation or paraphrase/);
   assert.match(mock.calls[0].messages[0].content, /Do not use HTML quote tags/);
@@ -48,7 +49,7 @@ test("page passage guidance is scoped to one PDF and cannot manufacture anchors 
   for (const inputs of [[], [{ ...paper, pages: undefined, filePath: undefined, text: original }], [{ ...paper, metadataOnly: true }], [paper, { ...paper, id: "other-paper" }]]) {
     await answerQuestion(inputs, "Explain the source", [], settings, { fetchImpl: mock.fetchImpl });
     const system = mock.calls.at(-1).messages[0].content;
-    assert.ok(!system.includes("optionally link its semantic label"));
+    assert.ok(!system.includes("preferentially link its semantic label"));
     assert.match(system, inputs.length > 1 ? /no cross-paper binding/ : /no original PDF page text is available/);
   }
   await generateReport({ ...paper, metadataOnly: true }, settings, { adversarial: false, fetchImpl: mock.fetchImpl });
@@ -71,8 +72,8 @@ test("citation-shaped model output remains untrusted Markdown and cannot cause U
   const mock = provider(fabricated);
   const report = await generateReport(paper, settings, { adversarial: false, fetchImpl: mock.fetchImpl });
   const answer = await answerQuestion([paper], "Explain coverage", [{ role: "assistant", content: fabricated }], settings, { fetchImpl: mock.fetchImpl });
-  assert.equal(report.markdown, fabricated);
-  assert.equal(answer.content, fabricated);
+  assert.equal(report.markdown, fabricated.replace(' "NOT IN THE PAPER"',''));
+  assert.equal(answer.content, fabricated.replace(' "NOT IN THE PAPER"',''));
   assert.deepEqual(mock.calls.map(call => call.url), [settings.baseUrl + "/chat/completions", settings.baseUrl + "/chat/completions"]);
   assert.equal(report.annotations, undefined);
   assert.equal(answer.rects, undefined);
@@ -157,3 +158,11 @@ test("question scope labels distinguish generated reading, abstract excerpt and 
   }
   assert.ok(mock.calls.every(call => call.url === settings.baseUrl + "/chat/completions"));
 });
+
+function generateReport(paper,settingsOrQuestion,optionsOrHistory,maybeSettings,maybeOptions){
+ const options=optionsOrHistory||{};return generateReportWithCitations(paper,settingsOrQuestion,{...options,fetchImpl:withEmptyCitationPhase(options.fetchImpl)});
+}
+
+function answerQuestion(paper,settingsOrQuestion,optionsOrHistory,maybeSettings,maybeOptions){
+ const options=maybeOptions||{};return answerQuestionWithCitations(paper,settingsOrQuestion,optionsOrHistory,maybeSettings,{...options,fetchImpl:withEmptyCitationPhase(options.fetchImpl)});
+}

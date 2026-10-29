@@ -1,7 +1,8 @@
+import {withEmptyCitationPhase} from './helpers/citation-phase.mjs';
 import test from "node:test";
 import assert from "node:assert/strict";
 import { prepareConversationHistory } from "../server/conversation-context.mjs";
-import { answerQuestion } from "../server/models.mjs";
+import { answerQuestion as answerQuestionWithCitations } from "../server/models.mjs";
 import { defaultSettings } from "../server/storage.mjs";
 
 test("short histories retain complete user/assistant pairs without a spurious truncation notice", () => {
@@ -115,3 +116,7 @@ test("later questions cannot reintroduce excluded, superseded or stale visual co
     assert.equal(history[1].content, "HISTORICAL_VISUAL_CLAIM");
   }
 });
+
+function answerQuestion(paper,settingsOrQuestion,optionsOrHistory,maybeSettings,maybeOptions){
+ const options=maybeOptions||{};return answerQuestionWithCitations(paper,settingsOrQuestion,optionsOrHistory,maybeSettings,{...options,fetchImpl:withEmptyCitationPhase(options.fetchImpl)});
+}

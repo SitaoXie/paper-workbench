@@ -781,3 +781,5 @@
 .reading-stream-preview small { color:var(--secondary); }
 .reading-stream-preview pre,.reading-stream-reasoning pre { max-height:300px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; font-size:13px; line-height:1.7; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); }
 @media(max-width:580px){.reading-generation-model-controls { grid-template-columns:minmax(0,1fr); gap:10px; flex-basis:100%; }.reading-generation-model-controls .composer-reasoning { max-width:none; }}
+
+@container(max-width:600px){.reading-citation-enhance > span {display:none;}}

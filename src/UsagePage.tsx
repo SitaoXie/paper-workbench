@@ -20,7 +20,7 @@ export default function UsagePage({settings,onConfigure}:{settings:Settings;onCo
   const operation = (value: string) => ({
     reading: t('阅读解读', 'Reading'), question: t('问答', 'Questions'), translation: t('翻译', 'Translation'),
     'passage-translation': t('选文翻译', 'Passage translation'), 'passage-explanation': t('选文解释', 'Passage explanation'),
-    vision: t('图像理解', 'Vision'), recommendations: t('推荐问题', 'Suggested questions'), 'connection-test': t('连接测试', 'Connection test'), other: t('其他', 'Other'),
+    vision: t('图像理解', 'Vision'), recommendations: t('推荐问题', 'Suggested questions'), 'connection-test': t('连接测试', 'Connection test'), 'metadata-extraction': t('论文信息提取', 'Paper metadata'), other: t('其他', 'Other'),
   })[value] || value;
   const stage = (value?: string) => value ? ({draft:t('初稿','Draft'),review:t('审查','Review'),edit:t('编辑','Edit'),interactive:t('交互版','Interactive'),captions:t('图注','Captions'),'question-starters':t('探索问题','Question starters')})[value] || value : '';
   const status = (value: string) => value === 'success' ? t('成功', 'Success') : value === 'incomplete' ? t('输出截断', 'Truncated') : t('失败', 'Failed');

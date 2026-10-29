@@ -30,6 +30,6 @@ export default function CitationSourcePreview({url,page,quote,anchor,onClose,onE
   {error&&<p role="status">{t('暂时无法预览，仍可打开源页。','Preview unavailable. You can still open the source page.')}</p>}
   {excerpt&&<><p className="citation-match-status">{excerpt.status==='matched'?t('已匹配原文 · 原图标出所在文字行','Source matched · original image highlights containing text lines'):excerpt.status==='ambiguous'?t('存在多处匹配，仅显示页首，未猜测位置。','Multiple matches; showing the page opening without guessing a location.'):excerpt.status==='missing'?t('未找到精确原文，仅显示页首。','No exact match; showing the page opening.'):t('页码引用 · 未指定段落','Page reference · no passage specified')}</p><p className="citation-source-text">{excerpt.status==='matched'?<mark>{excerpt.matchedText}</mark>:excerpt.text||t('此页无可提取文字。','No extractable text on this page.')}</p></>}
   <canvas ref={canvas} hidden={!ready} aria-label={t('引用所在原文区域','Original PDF region containing the citation')}/>
-  <footer><button className="text-button" onClick={()=>{onClose();onPage(page,excerpt?.status==='matched'?quote:undefined);}}>{t('跳转并定位原文','Jump to source passage')} ↗</button></footer>
+  <footer><button className="text-button" onClick={()=>{onClose();onPage(page,excerpt?.status==='matched'?quote:undefined);}}>{excerpt?.status==='matched'?t('跳转并高亮原文','Jump and highlight passage'):t('打开引用页','Open cited page')} ↗</button></footer>
  </aside>,document.body);
 }

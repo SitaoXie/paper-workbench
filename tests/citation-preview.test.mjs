@@ -1,3 +1,4 @@
+import * as pdfText from '../shared/pdf-text.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -6,7 +7,7 @@ import ts from 'typescript';
 import {PDFDocument,StandardFonts,degrees} from 'pdf-lib';
 import {getDocument} from 'pdfjs-dist/legacy/build/pdf.mjs';
 function mod(file,imports={}){const exports={};vm.runInNewContext(ts.transpileModule(readFileSync(new URL(file,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports,require:name=>imports[name]});return exports;}
-const search=mod('../src/pdf-search.ts');const {citationExcerpt,citationLineBoxes}=mod('../src/citation-preview.ts',{'./pdf-search':search});
+const search=mod('../src/pdf-search.ts',{'../shared/pdf-text.mjs':pdfText});const {citationExcerpt,citationLineBoxes}=mod('../src/citation-preview.ts',{'./pdf-search':search});
 test('source previews highlight only a unique original-language passage, not generated or ambiguous text',()=>{
  const item=str=>({str,transform:[10,0,0,10,20,80],width:100,height:10,hasEOL:true});
  const content=[item('A preceding line.'),item('The encoder uses visible patches.'),item('A following line.')];

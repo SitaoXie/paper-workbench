@@ -40,7 +40,7 @@ export default function UsageDashboard({data,timeZone}:{data:Usage;timeZone:stri
   const visibleRanks=allRanks?rankGroups:rankGroups.slice(0,5);
   const cache=data.cache,cacheRate=cache?.rate??null;
   const coverage=data.requests?data.reported.totalTokens/data.requests:0;
-  const operationLabel=(value:string)=>({reading:t('阅读解读','Readings'),question:t('问答','Questions'),translation:t('翻译','Translation'),'passage-translation':t('选文翻译','Passage translation'),'passage-explanation':t('选文解释','Passage explanation'),vision:t('图像理解','Vision'),recommendations:t('推荐问题','Suggestions'),'connection-test':t('连接测试','Connection tests'),other:t('其他','Other')})[value]||value;
+  const operationLabel=(value:string)=>({reading:t('阅读解读','Readings'),question:t('问答','Questions'),translation:t('翻译','Translation'),'passage-translation':t('选文翻译','Passage translation'),'passage-explanation':t('选文解释','Passage explanation'),vision:t('图像理解','Vision'),recommendations:t('推荐问题','Suggestions'),'connection-test':t('连接测试','Connection tests'),'metadata-extraction':t('论文信息提取','Paper metadata'),other:t('其他','Other')})[value]||value;
   const activityMax=Math.max(1,...data.byOperation.map(group=>group.requests));
   return <div className="usage-dashboard">
     <div className="usage-kpis">

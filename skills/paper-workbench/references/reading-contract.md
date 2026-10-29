@@ -1,6 +1,6 @@
 # Paper Workbench reading contract
 
-Policy version: 3
+Policy version: 4
 
 This is the application's own reading contract. The API loads the relevant sections verbatim; subscription agents follow the same sections. It does not execute or redistribute a third-party skill. Optional external collaboration and its licensing boundaries are described in [external skills](external-skills.md).
 
@@ -15,6 +15,8 @@ Preserve the strength of the evidence: association is not causation; a condition
 Use supplied page references; do not invent quotations, sources, measurements or verification. Explanatory analogies must be identified as analogies. Inspect image pixels before making visual claims; otherwise describe the text or caption evidence and say pixels were not inspected. A diagram of a mechanism is not a measured performance result.
 
 ## Reading overview
+
+Prefer precise source passage links for key textual conclusions. Keep useful labels next to the supported claim and a short unique sentence in the source language as the link title. Page-only citations remain appropriate for figures/tables, broad synthesis or text that cannot be matched. If only images were supplied, do not present an OCR guess as an exact extracted-text quote. A later citation-only alignment may add locations without rewriting the reading.
 
 Honor the requested language, quick/deep/critical style, focus and article/interactive format. Start with a plain-language account of the question and what this paper adds within its tested or argued scope. Explain essential terms when first used. Prefer a coherent explanation over a checklist of generic headings. Show one canonical reading, with figures next to the claims they support.
 
@@ -41,6 +43,8 @@ In a deep-reading review, also locate substantive explanatory gaps: an undefined
 During review, check source support and readability separately. Retain helpful figure placements, worked explanations and supported findings. The final editor must repair supported gaps and preserve useful depth instead of compressing a deep draft into a short verdict. Resolve disagreements against the original evidence; do not treat agreement between model roles as independent verification. An interactive version may add grounded concept cards or self-checks, but must not invent simulations, measurements or a competing article.
 
 ## Paper question
+
+For important textual claims, definitions, method settings, reported numbers and limitations, prefer a short unique original-language passage link `[semantic label](#page=N "verbatim source sentence")` when supplied page text supports it. In image reading mode, use `read_pages` to check original wording as needed. Pixel observations, figure/table interpretations and genuine cross-paragraph synthesis may keep page-only citations. Never invent or translate a quote to obtain a highlight. Page matching locates text; it does not validate the claim.
 
 Answer the reader's actual question first. Honor the declared source and conversation bindings. Check generated selections against the paper; they are not original quotations. Distinguish author-acknowledged limitations from reader-inferred concerns. A quote match locates text; it does not verify the interpretation. If evidence is unavailable, say what is unknown. Keep focused questions focused instead of starting a full review, search, manuscript or new session.
 

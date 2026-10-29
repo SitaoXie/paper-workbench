@@ -1,6 +1,7 @@
+import {withEmptyCitationPhase} from './helpers/citation-phase.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeFigure, generateReport, paperContextDetails } from '../server/models.mjs';
+import { analyzeFigure, generateReport as generateReportWithCitations, paperContextDetails } from '../server/models.mjs';
 import { prepareVisionInput, visualEvidenceRecord } from '../server/vision.mjs';
 import { defaultSettings } from '../server/storage.mjs';
 
@@ -155,3 +156,7 @@ test('deep review identifies source-located explanation gaps and the editor pres
 test('explicit smaller token budgets still reach each reading role unchanged', async () => {
   for (const maxOutputTokens of [512, 1536, 8192]) await captureReadingRequests({ language: 'zh-CN', style: 'deep', maxOutputTokens });
 });
+
+function generateReport(paper,settingsOrQuestion,optionsOrHistory,maybeSettings,maybeOptions){
+ const options=optionsOrHistory||{};return generateReportWithCitations(paper,settingsOrQuestion,{...options,fetchImpl:withEmptyCitationPhase(options.fetchImpl)});
+}

@@ -1,3 +1,4 @@
+import {normalizeWithOffsets} from '../shared/pdf-text.mjs';
 import { ApiError } from './network.mjs';
 
 export function metadataNames(values) {
@@ -21,4 +22,16 @@ export function validatePaperMetadata(body) {
     update[field] = metadataNames(values);
   }
   return update;
+}
+
+export function authorsFromPdfInfo(author,source){
+ if(typeof author!=='string'||!author.trim())return [];
+ let parts=author.split(/\s*(?:;|\||\band\b)\s*/i);
+ if(parts.length===1&&author.includes(',')){
+  const comma=author.split(',').map(value=>value.trim());
+  if(comma.every(value=>/\S+\s+\S+/.test(value)))parts=comma;else return [];
+ }
+ const header=source.split(/\babstract\b|摘\s*要/i)[0].slice(0,8000);
+ const compact=value=>normalizeWithOffsets(String(value||'')).text.replace(/\s/g,'');
+ return metadataNames(parts).filter(name=>name.length<=120&&/\p{L}+\s+\p{L}+|^[\p{Script=Han}]{2,6}$/u.test(name)&&!/university|research|institute|corporation|\binc\b/i.test(name)&&!/@|anonymous|unknown|microsoft word|adobe|latex/i.test(name)&&/\p{L}/u.test(name)&&compact(header).includes(compact(name)));
 }

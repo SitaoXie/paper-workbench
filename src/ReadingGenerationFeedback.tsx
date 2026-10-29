@@ -34,6 +34,7 @@ export function ReadingGenerationProgress({paperId}:{paperId:string}) {
     review:t('正在复核证据与讲解','Reviewing evidence and explanations'),
     edit:t('正在完善最终解读','Editing the final overview'),
     interactive:t('正在生成互动导读','Creating the interactive reading'),
+    citations:t('正在补全原文引用定位','Locating original source passages'),
     saving:t('正在保存新版本','Saving the new version'),
   };
   const label=labels[progress.stage||'preparing']||labels.preparing;
@@ -48,7 +49,7 @@ export function ReadingGenerationProgress({paperId}:{paperId:string}) {
   </div>;
 }
 
-export function InteractiveGenerationConfirm({settings,onCancel,onConfirm}:{settings:Settings;onCancel:()=>void;onConfirm:(selection:{profileId:string;model:string;modelReasoning?:Settings["modelReasoning"]})=>Promise<boolean>|boolean}) {
+export function InteractiveGenerationConfirm({settings,onCancel,onConfirm,kind='interactive',paperCount=1}:{settings:Settings;kind?:'interactive'|'citations'|'metadata';paperCount?:number;onCancel:()=>void;onConfirm:(selection:{profileId:string;model:string;modelReasoning?:Settings["modelReasoning"]})=>Promise<boolean>|boolean}) {
   const profiles=settings.profiles?.length?settings.profiles:[{...settings,id:settings.activeProfileId||'default',name:t('当前连接','Current connection'),models:[settings.model]}];
   const [draftSettings,setDraftSettings]=useState(settings);
   const [selection,setSelection]=useState(JSON.stringify([settings.activeProfileId||profiles[0].id,settings.model]));
@@ -67,17 +68,17 @@ export function InteractiveGenerationConfirm({settings,onCancel,onConfirm}:{sett
     return ()=>previous?.focus();
   },[]);
   return <dialog className="reading-generation-confirm" ref={dialog} aria-labelledby={title} aria-describedby={description} onCancel={event=>{event.preventDefault();if(!busy)onCancel();}}>
-    <h3 id={title}>{t('生成互动导读？','Generate an interactive reading?')}</h3>
+    <h3 id={title}>{kind==='metadata'?t('提取作者与原始摘要？','Extract authors and original abstracts?'):kind==='citations'?t('补全原文定位？','Locate original source passages?'):t('生成互动导读？','Generate an interactive reading?')}</h3>
     <div id={description}>
       <p>{t('将调用当前模型 API，消耗 token，并可能产生费用。','This calls the current model API, consumes tokens and may incur charges.')}</p>
-      <label className="reading-confirm-model-label">{t('本次使用的模型','Model for this conversion')}
-        <select aria-label={t('互动导读模型','Interactive reading model')} value={selection} disabled={busy} onChange={event=>{setSelection(event.target.value);const [id,model]=JSON.parse(event.target.value);const profile=(draftSettings.profiles||profiles).find(p=>p.id===id)!;setDraftSettings({...draftSettings,...profile,activeProfileId:id,model,profiles:draftSettings.profiles});}}>
+      <label className="reading-confirm-model-label">{t('本次使用的模型','Model for this task')}
+        <select aria-label={kind==='metadata'?t('元数据提取模型','Metadata extraction model'):kind==='citations'?t('引用定位模型','Citation alignment model'):t('互动导读模型','Interactive reading model')} value={selection} disabled={busy} onChange={event=>{setSelection(event.target.value);const [id,model]=JSON.parse(event.target.value);const profile=(draftSettings.profiles||profiles).find(p=>p.id===id)!;setDraftSettings({...draftSettings,...profile,activeProfileId:id,model,profiles:draftSettings.profiles});}}>
           {profiles.map(profile=><optgroup key={profile.id} label={profile.name}>{profile.models.map(model=><option key={model} value={JSON.stringify([profile.id,model])}>{model}</option>)}</optgroup>)}
         </select>
       </label>
       <ReasoningControl settings={draftSettings} onSettings={value=>{setDraftSettings(value);setSelection(JSON.stringify([value.activeProfileId,value.model]));}} disabled={busy} persist={false}/>
-      <p>{t('确认后保存模型与思考等级；取消不会更改当前设置。','Model and reasoning choices are saved on confirmation; cancelling keeps the current settings.')}</p>
-      <p>{t('根据当前解读生成概念卡、图表解读与自测题，保留原版。格式校验失败时可能额外调用一次模型修复。','Creates concept cards, figure explanations and self-checks from this reading, preserving the original. Invalid output may require one additional model call for format repair.')}</p>
+      <p>{kind==='metadata'?t('模型和等级仅用于本次提取，不改变助手设置。','Model and effort apply only to this extraction; assistant settings stay unchanged.'):t('确认后保存模型与思考等级；取消不会更改当前设置。','Model and reasoning choices are saved on confirmation; cancelling keeps the current settings.')}</p>
+      <p>{kind==='metadata'?t(`读取 ${paperCount} 篇论文的前两页文字与图片，每篇最多调用一次模型。作者和摘要先展示为候选，核对后再应用；不改已有解读和笔记。优先选择支持图像的模型。`,`Reads text and images from the first two pages of ${paperCount} ${paperCount===1?'paper':'papers'}, with at most one model call per paper. Review extracted candidates before applying them; readings and notes are preserved. A vision-capable model is recommended.`):kind==='citations'?t('必要时最多调用一次模型，为关键文字结论选择对应页的原文片段，只补引用链接，不改正文。找到可定位片段后另存新版本，保留原版；图表或跨段综合引用可继续保留页码。','At most one model call selects original passages from the cited pages when needed. Only citation links change; the prose stays intact. Successful enhancements create a new version and preserve the original. Visual evidence and cross-paragraph synthesis may keep page-only citations.'):t('根据当前解读生成概念卡、图表解读与自测题，保留原版。格式校验失败时可能额外调用一次模型修复。','Creates concept cards, figure explanations and self-checks from this reading, preserving the original. Invalid output may require one additional model call for format repair.')}</p>
     </div>
     {error&&<p role="alert">{error}</p>}
     <div className="reading-confirm-actions">

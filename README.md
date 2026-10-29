@@ -47,6 +47,10 @@ Expand **Retrieval & sources** below an answer to inspect initial source coverag
 
 An answer allows up to four retrieval rounds, ten executed tool calls and one final synthesis call. PDFs of up to 15 pages supply all available page text in order. Longer PDFs supply a stable brief, and the agent reads complete requested pages on demand. Pages are not cut into character-budget snippets; a separate tool-evidence allowance of `max(300000, contextChars)` characters fails explicitly if a whole result cannot fit. Stable paper content precedes selection/history/question text to support provider prefix caching; actual cache hits depend on the provider. History remains separately bounded. A five-minute working deadline and each profile's request timeout bound the loop. Every model round contributes to API usage. CLI: `node scripts/paper-workbench.mjs ask "question" --paper "paper-id" --web`. Omit `--web` to keep external access disabled. Codex/Claude subscription tasks continue to reason in their own session and do not run this API loop.
 
+## Repair PDF metadata
+
+In the library, use **Extract authors and abstract** on a PDF row, or select several PDFs and choose **Extract paper metadata**. Select a configured model, confirm the possible API cost, then review the proposed authors, publication affiliations and original abstract before applying selected fields. Vision models read full images of the first two pages alongside their text; unsupported names or abstract text are omitted rather than guessed. Repairs preserve reading versions and notes and support undo. Replacing an abstract marks its old translations stale. See [the metadata API contract](docs/API.md#source-metadata-repair).
+
 ## API usage
 
 Open **API usage** in the left navigation to see input, output and total tokens, cache/reasoning breakdowns, daily usage, activity/model groups and paginated call history. Filter by the last 7/30/90 days or all time and model connection; dates follow your browser's timezone. The page itself never calls a model.

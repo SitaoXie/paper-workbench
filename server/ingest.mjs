@@ -6,7 +6,7 @@ import { XMLParser } from "fast-xml-parser";
 import * as cheerio from "cheerio";
 import { ApiError, secureDownload } from "./network.mjs";
 import { extractPdfAbstract } from "./pdf-abstract.mjs";
-import { metadataNames } from './paper-metadata.mjs';
+import { authorsFromPdfInfo, metadataNames } from './paper-metadata.mjs';
 
 const institutionMetadata = $ => metadataNames($('meta[name="citation_author_institution"],meta[name="citation_affiliation"]')
   .map((_, node) => $(node).attr('content')).get());
@@ -203,6 +203,7 @@ export async function parsePdf(buffer, filename = "paper.pdf") {
       infoTitle && !/^untitled$|^microsoft word/i.test(infoTitle)
         ? infoTitle
         : filename.replace(/\.pdf$/i, "").replace(/[_-]/g, " "),
+    authors: authorsFromPdfInfo(parsed.info?.Author,pages.slice(0,3).map(p=>p.text).join('\n')),
     text,
     pages: pages.map((page) => ({ number: page.number, text: page.text.slice(0, 50000) })),
     abstract: abstract?.text || clean(pages[0]?.text).slice(0, 1800),

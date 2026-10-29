@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, appendFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { UsageLedger, normalizeUsage, withUsage } from '../server/usage.mjs';
+import { UsageLedger, normalizeUsage, withUsage, usageOperation } from '../server/usage.mjs';
 import { callModel } from '../server/models.mjs';
 import { defaultSettings } from '../server/storage.mjs';
 import { createApp } from '../server/index.mjs';
@@ -126,4 +126,9 @@ test('dashboard connection grouping uses IDs and cache ratios use the same repor
  assert.deepEqual(report.cache,{requests:2,inputTokens:400,cachedInputTokens:80,rate:0.2});
  report=await ledger.summary({days:'all',model:report.models.find(m=>m.model==='m2').key},new Date('2026-10-28T12:00:00Z'));
  assert.equal(report.cache.rate,null);assert.equal(report.cache.requests,0);assert.equal(report.byProfile.length,1);
+});
+
+test('metadata extraction has its own usage category; reviewing and applying do not trigger a model operation',()=>{
+ assert.equal(usageOperation({path:'/api/papers/source/metadata/extract'}),'metadata-extraction');
+ assert.equal(usageOperation({path:'/api/papers/source/metadata/apply'}),'other');
 });

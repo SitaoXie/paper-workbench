@@ -2099,7 +2099,7 @@ export default function App() {
               ) : null}
             </div>
           </>
-        ) : view === "library" ? <LibraryWorkspace papers={papers} onOpen={openPaper} onFavorite={favorite} onImport={()=>setShowImport(true)}/> : view === "usage" ? <UsagePage settings={settings} onConfigure={()=>setShowSettings(true)}/> : view === "research" ? (
+        ) : view === "library" ? <LibraryWorkspace papers={papers} settings={settings} onUpdated={updateCurrentPaper} onOpen={openPaper} onFavorite={favorite} onImport={()=>setShowImport(true)}/> : view === "usage" ? <UsagePage settings={settings} onConfigure={()=>setShowSettings(true)}/> : view === "research" ? (
           <div className="research-page">
             <header className="page-header">
               <div className="breadcrumb">
