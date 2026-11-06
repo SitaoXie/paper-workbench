@@ -7,7 +7,7 @@ A local research workspace inspired by alphaXiv's reading experience: a paper li
 Requires Node.js 22.13 or newer and npm.
 
 ```sh
-npm install
+npm ci
 npm run build
 npm start
 ```
@@ -22,7 +22,7 @@ The server listens on loopback. The default runtime directory is `.local-data` i
 
 1. Import a public paper webpage, arXiv/alphaXiv URL, direct PDF URL, or a local PDF.
 2. Open the single reading overview or continuously scrolling PDF. PDF paper follows the light/dark theme; choose Original colors to inspect charts without color adjustment. Theme changes preserve your page, zoom, and annotations. Generate a Quick / Deep / Critical read with an optional focus, then switch saved versions without losing prior work. Choose article or interactive presentation; interactive versions can be downloaded as standalone offline HTML. Chinese and English controls use `/zh/` and `/en/` routes. Explicitly switching language translates the selected version on first use when a model is configured and reuses its saved translation afterward. The original is preserved. Search the library or arXiv for additional papers.
-3. Choose how to generate content: use your existing Codex/Claude session with the skill below (no application API required), or configure providers in the model sidebar. A provider profile contains one base URL/key and multiple model IDs; save multiple profiles and switch their active model without re-entering a key. The OpenAI option supports compatible Chat Completions endpoints; Anthropic uses the Messages API. Use the connection test before generating reports. Advanced JSON options can supply provider-specific generation controls; they default to an empty object and cannot override messages or credentials. The source-character budget defaults to 44,000 and can be adjusted from 8,000 to 300,000 for your model. Reports state whether the extracted full text or excerpts were supplied; a character budget is not a token limit. The per-response output budget defaults to 65,536 tokens (64K) and can be adjusted from 512 to 65,536. Explicit token-limit truncation is treated as an error rather than a successful report.
+3. Choose how to generate content: use your existing Codex/Claude session with the skill below (no application API required), or configure providers in the model sidebar. A provider profile contains one base URL/key and multiple model IDs; save multiple profiles and switch their active model without re-entering a key. The OpenAI option supports compatible Chat Completions endpoints; Anthropic uses the Messages API. Use the connection test before generating reports. Advanced JSON options can supply provider-specific generation controls; they default to an empty object and cannot override messages or credentials. The source-character budget defaults to 1,000,000 and can be adjusted from 8,000 to 8,000,000 for your model. Reports state whether the extracted full text or excerpts were supplied; a character budget is not a token limit. The per-response output budget defaults to 65,536 tokens (64K) and can be adjusted from 512 to 65,536. Explicit token-limit truncation is treated as an error rather than a successful report.
 4. Open the reading assistant from the persistent bottom-right controls. The assistant and notebook toggles remain reachable alongside the composer without reserving an empty footer. On desktop it docks beside the paper with a draggable, keyboard-adjustable divider; narrow windows use a full-height panel with a return-to-paper action. Select text in the overview, abstract, or PDF to translate/explain in place; Ask creates a separate question session with the selection. PDF selections can also be highlighted, underlined, or annotated. The notebook supports tags, search, Markdown preview, source jumps, soft-delete/undo, and Markdown/JSON or annotated-PDF export. Basic mouse/stylus ink has local undo and explicit saving; physical stylus pressure and palm rejection have not been device-tested. Figure previews can be enlarged without losing the reading position. Ask questions about the selected paper or use the research assistant across your library. Start a new conversation or restore a saved one from conversation history. Deep and Critical generation run a researcher, skeptical reviewer, and editor. Question sessions, translations, explanations, and overview versions have separate history categories.
 
 The adversarial workflow is a review aid. Its roles may share one model; agreement does not establish scientific correctness. Unconfigured-provider fallbacks are labeled and should not be mistaken for live model answers. Extraction can be incomplete, especially for scanned PDFs without a text layer. Check source coverage and source links before relying on conclusions.
@@ -133,7 +133,7 @@ In overview generation settings, the optional **Codex / Claude assistance skills
 
 ### Optional direct provider mode
 
-For model calls directly from the browser, configure provider profiles in the sidebar. Each profile stores one endpoint/key and a list of models. The CLI's `report`, `translate`, and `ask` commands use the currently active provider; they do **not** invoke your Codex/Claude subscription:
+For model API calls made by the local server, configure provider profiles in the sidebar. Each profile stores one endpoint/key and a list of models. The CLI's `report`, `translate`, and `ask` commands use the currently active provider; they do **not** invoke your Codex/Claude subscription:
 
 ```sh
 node scripts/paper-workbench.mjs report "paper-id" --language zh-CN --style deep --format interactive --focus "Evidence and limitations"
@@ -153,7 +153,11 @@ npm run test:e2e
 
 The browser suite uses Playwright; install its Chromium browser with `npx playwright install chromium` if it is not already available. External service availability and live-model validation are separate from deterministic tests. See [docs/model-validation.md](docs/model-validation.md) for the recorded validation limits. Product research and release decisions are documented in `docs/competitor-study-v3.md`, `docs/community-reading-skills.md`, and `docs/judge-v3.md`.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for test isolation and contributions, and [SECURITY.md](SECURITY.md) for the local-only trust boundary and private vulnerability reporting.
+
 Before sharing a checkout, exclude runtime data, imported papers, API credentials, and private addresses. Code is licensed under [MIT](LICENSE). Paper contents and third-party names remain subject to their respective rights. No alphaXiv logo or proprietary application source is bundled.
+
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for dependency and external-skill licensing boundaries. The [2026-11-06 pre-publication review](docs/prepublication-review-2026-11-06.md) records remaining release-validation work; a private backup is not a public release certification.
 
 Assistant API answers now appear as the provider streams them, including successive retrieval rounds. Provider-returned thinking text, when available, expands during generation and folds afterward; click to reopen it. Hidden or encrypted reasoning is not reconstructed. Failed or interrupted previews remain explicitly incomplete and do not enter saved conversation history.
 

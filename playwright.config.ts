@@ -3,6 +3,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+if (process.env.E2E_BASE_URL && process.env.E2E_ALLOW_EXTERNAL_SERVER !== "1") {
+  throw new Error("Browser tests mutate library data. Use the default isolated server, or set E2E_ALLOW_EXTERNAL_SERVER=1 only for a disposable test instance.");
+}
 const baseURL = process.env.E2E_BASE_URL || "http://127.0.0.1:4319";
 export default defineConfig({
   testDir: "./tests",
