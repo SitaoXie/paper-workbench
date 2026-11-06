@@ -1,5 +1,7 @@
 # Pre-publication review — 2026-11-06
 
+Historical review. See the [2026-11-07 publication review](publication-review-2026-11-07.md) for follow-up fixes and the current publication decision.
+
 Scope: source distribution and a private GitHub backup. This review does not
 approve exposing the running local service publicly or certify model accuracy.
 

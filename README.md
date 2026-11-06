@@ -23,7 +23,7 @@ Paper Workbench brings paper reading, questions, and notes into one local worksp
 | Keep what you learn | Highlight, underline, take notes, revisit translations, and export notes or annotated PDFs. |
 | Use your own models | Save multiple API connections and model lists, configure supported reasoning levels, and inspect API token usage. |
 
-**Status:** actively developed for local, single-user use. Guided setup, a zero-key sample and portable backups are available. See the [validation record](docs/validation-2026-11-07.md) for local checks and remaining release limits, including GitHub Actions currently blocked by account billing.
+**Status:** actively developed for local, single-user use. Guided setup, a zero-key sample and portable backups are available. See the [publication review](docs/publication-review-2026-11-07.md) for validation results and known limits.
 
 ## Quick start
 
@@ -37,7 +37,6 @@ npm run build
 npm start
 ```
 
-While the repository is private, cloning requires an authorized GitHub account.
 
 Open **[http://127.0.0.1:4318](http://127.0.0.1:4318)**. No model key is needed to import and read papers or take notes. For AI features, choose one of the two workflows below.
 
