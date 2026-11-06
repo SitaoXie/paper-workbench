@@ -50,7 +50,7 @@ export default function OnboardingCard({ onDemo, onImport, onConfigure, onDismis
       </button>
     </div>
     <div className="onboarding-ai">
-      <div><SlidersHorizontal size={18}/><div><h2>{t('准备好使用 AI 时', 'When you want AI help')}</h2><p>{t('连接自己的 API，可在阅读器内生成解读和提问。也可以复制任务到已有的 Codex / Claude 会话，再把结果保存回来。', 'Connect your own API for readings and questions in the reader. Or copy a task into your existing Codex / Claude session and save the results back here.')}</p></div></div>
+      <div><SlidersHorizontal size={18}/><div><h2>{t('准备好使用 AI 时', 'When you want AI help')}</h2><p>{t('连接自己的 API，可在阅读器内生成解读和提问。也可以通过项目 skill，使用已有订阅的 Codex / Claude 会话完成任务，再把结果保存回来。', 'Connect your own API for readings and questions in the reader. Or use the project skill in your existing Codex / Claude subscription session and save the results back here.')}</p></div></div>
       <button type="button" className="soft-button" onClick={onConfigure}>{t('设置模型连接', 'Set up a model')}<ArrowRight size={14}/></button>
     </div>
     <ol className="onboarding-steps" aria-label={t('阅读流程', 'Reading workflow')}>

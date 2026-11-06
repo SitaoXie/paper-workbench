@@ -2527,7 +2527,7 @@ export default function App() {
                 />
               </div>
               <p className="field-hint">
-                {t("支持 arXiv、alphaXiv、公开网页和 PDF 链接")}
+                {t("支持 arXiv、公开网页和 PDF 链接", "Supports arXiv, public webpages, and PDF links")}
               </p>
               <button
                 className="primary-button wide"

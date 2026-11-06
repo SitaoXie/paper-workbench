@@ -2,11 +2,9 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Read a paper, ask questions about it, and keep your notes in one local workspace.
+Read papers with AI using your own models, or connect your existing agent subscription through a skill.
 
-Paper Workbench combines a continuously scrolling PDF reader, AI reading overviews, source-linked conversations, and a personal paper library. Bring your own model API, or use an existing Codex / Claude session to write results back into the reader.
-
-Inspired by alphaXiv’s reading experience, this is an independent project—not an official alphaXiv client. It does not require an alphaXiv account or post public comments.
+Paper Workbench brings paper reading, questions, and notes into one local workspace. Connect your own model API, or use the project skill in a Codex / Claude session through your existing subscription to generate readings, ask follow-up questions, and save results back into the reader. A continuously scrolling PDF, source-linked answers, and a personal library help you check evidence and keep what you learn.
 
 [Quick start](#quick-start) · [AI setup](#choose-how-to-use-ai) · [Reading and notes](#reading-and-notes) · [Privacy](#your-data-and-privacy) · [Development](#development)
 
@@ -72,7 +70,7 @@ See [backup, upgrade and rollback instructions](docs/UPGRADING.md) for archive l
 
 ## Your first paper
 
-1. **Import a paper.** Paste a public webpage, arXiv/alphaXiv link, or direct PDF URL, or upload a local PDF.
+1. **Import a paper.** Paste a public webpage, arXiv link, or direct PDF URL, or upload a local PDF.
 2. **Choose a reading style.** Use Quick for the main ideas, Deep for methods and evidence, or Critical for assumptions and limitations. Add a focus such as “Explain the ablations and what I need to reproduce them.”
 3. **Check the original.** Switch between the overview and PDF. Follow source links and inspect figures rather than relying on the generated reading alone.
 4. **Ask and annotate.** Select a passage to translate or explain it in place, open a question session, or save a note.
@@ -206,6 +204,6 @@ Browser tests use a separate server and temporary data. **Do not point them at y
 
 ## License and security
 
-Project code is [MIT licensed](LICENSE). Imported papers retain their own rights. External skills and dependencies have separate terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). No alphaXiv logo or proprietary application source is bundled.
+Project code is [MIT licensed](LICENSE). Imported papers retain their own rights. External skills and dependencies have separate terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 For the trust boundary and vulnerability reporting, read [SECURITY.md](SECURITY.md).
