@@ -10,6 +10,7 @@ async function fixture(page:Page,{deferred=false,clipboardFails=false}={}){
   const calls:{path:string;method:string;body:any}[]=[],pending:Route[]=[];
   await page.addInitScript(fail=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{if(fail)throw new DOMException('Permission denied','NotAllowedError');}}}),clipboardFails);
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),url=new URL(req.url()),path=url.pathname.slice(4);calls.push({path,method:req.method(),body:req.method()==='GET'?undefined:req.postDataJSON()});
     if(path.endsWith('/assist')&&deferred){pending.push(route);return;}
     let json:any={};
@@ -154,7 +155,7 @@ test('version, language, paper and inactive-tab boundaries discard the scoped dr
   await page.getByRole('tab',{name:'Overview',exact:true}).click();dialog=await selectEvidence(page,'Older fixed-version source evidence.');
   await dialog.getByRole('button',{name:'Minimize selection draft',exact:true}).click();
   await page.locator('.paper-toolbar').getByRole('button',{name:'Library',exact:true}).click();
-  await page.locator('.paper-card-main').filter({hasText:'Selection draft draft-b'}).click();await expect(page.locator('.overview-selection')).toHaveCount(0);
+  await page.locator('.collection-paper-open').filter({hasText:'Selection draft draft-b'}).click();await expect(page.locator('.overview-selection')).toHaveCount(0);
   dialog=await selectEvidence(page);await dialog.getByRole('button',{name:'Minimize selection draft',exact:true}).click();
   await page.getByLabel('Reading language',{exact:true}).selectOption('zh-CN');
   await expect(page.locator('.overview-selection')).toHaveCount(0);await expect(page.locator('.selection-draft-chip')).toHaveCount(0);

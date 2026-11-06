@@ -41,7 +41,7 @@ test('subscription-only cross-page translation imports in place, reuses its task
   const saved=await request.post(`/api/papers/${paper.id}/activities`,{data:payload});expect(saved.status(),await saved.text()).toBe(201);
   const repeated=await request.post(`/api/papers/${paper.id}/activities`,{data:payload});expect(repeated.status()).toBe(200);
   await dialog.getByRole('button',{name:'Refresh agent result',exact:true}).click();await expect(dialog.locator('.pdf-inline-markdown')).toContainText(payload.result.text);
-  await dialog.getByRole('button',{name:'Save to notes',exact:true}).click();await expect(dialog.getByRole('button',{name:'Saved',exact:true})).toBeDisabled();
+  await expect(dialog.getByRole('button',{name:'Saved',exact:true})).toBeDisabled();
   const notes=(await (await request.get(`/api/papers/${paper.id}/annotations`)).json()).annotations;expect(notes).toHaveLength(1);expect(notes[0].segments.map((segment:any)=>segment.page)).toEqual([1,2]);expect(notes[0].body).toContain(payload.result.text);
   await dialog.getByRole('button',{name:'Close inline assistant',exact:true}).click();await selectPdf(page,true);await page.getByRole('button',{name:'Translate selection',exact:true}).click();
   const reopened=await selectionTask(dialog);expect(reopened.binding.agentTaskId).toBe(binding.agentTaskId);
@@ -53,7 +53,8 @@ test('overview subscription results require exact version, language and quote bi
   const reading={id:'fixed-v1',style:'deep',language:'en',markdown:'## Evidence\nA finite sample is not the entire distribution.',createdAt:'2026-10-22T00:00:00Z',mode:'agent'};
   const paper={id:'overview-agent',title:'Scoped selection',authors:[],source:'web',abstract:'Original abstract.',text:'Original source.',tags:[],createdAt:reading.createdAt,readingVersions:[reading],activeReadingId:reading.id};
   let returned:any[]=[];const writes:string[]=[];let deferred:any;
-  await page.route('**/api/**',async route=>{const req=route.request(),url=new URL(req.url()),path=url.pathname.slice(4);let json:any={};
+  await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}const req=route.request(),url=new URL(req.url()),path=url.pathname.slice(4);let json:any={};
     if(req.method()!=='GET')writes.push(path);
     if(path==='/settings')json={provider:'openai',baseUrl:'',model:'',modelConfigured:false,apiKeyConfigured:false};
     else if(path==='/papers')json={papers:[paper]};else if(path===`/papers/${paper.id}`)json={paper};

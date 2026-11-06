@@ -63,7 +63,7 @@ export function workspaceLocation(href:string):{view:WorkspaceView;paperId?:stri
   return {view:view&&['library','saved','research','usage'].includes(view)?view as WorkspaceView:'discover'};
 }
 export function workspaceUrl(href:string,target:{view:WorkspaceView;paperId?:string;tab?:'summary'|'paper';page?:number;hash?:string}):string {
-  const url=new URL(href);url.search='';url.hash=target.hash||'';
+  const url=new URL(href),demo=url.searchParams.get('demo')==='1';url.search='';url.hash=target.hash||'';if(demo)url.searchParams.set('demo','1');
   if(target.view==='paper'&&target.paperId){url.searchParams.set('paper',target.paperId);if(target.tab==='paper')url.searchParams.set('tab','paper');if(target.page&&Number.isInteger(target.page)&&target.page>0)url.searchParams.set('page',String(target.page));}
   else if(target.view!=='discover')url.searchParams.set('view',target.view);
   return url.href;

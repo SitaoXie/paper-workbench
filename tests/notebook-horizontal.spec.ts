@@ -22,6 +22,7 @@ async function fixture(page: Page) {
   }, { id: paper.id, source: pdfDocumentKey(paper) });
   await page.route('**/horizontal-source.pdf', route => route.fulfill({ contentType: 'application/pdf', body: pdf }));
   await page.route('**/api/**', async route => {
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const path = new URL(route.request().url()).pathname.slice(4);
     let result: unknown = {};
     if (path === '/papers') result = { papers: [paper] };

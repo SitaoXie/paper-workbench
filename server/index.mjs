@@ -1,3 +1,5 @@
+import {registerWorkspaceBackup} from './workspace-backup.mjs';
+import {registerDemoWorkspace} from './demo-workspace.mjs';
 import {registerMetadataRoutes} from './metadata-routes.mjs';
 import {groundCitations} from './citation-grounding.mjs';
 import { reportInputMode, reportImageBatchSize } from "./report-evidence.mjs";
@@ -141,6 +143,7 @@ export async function createApp({
       response.setHeader("Cache-Control", "no-store");
     next();
   });
+  await registerDemoWorkspace(app);
   // Only this local source-bound image route accepts a larger JSON payload.
   app.use("/api/papers/:id/figures/:figureId/analyze", express.json({ limit: "6mb" }));
   app.use("/api/papers/:id/insights", express.json({ limit: "256kb", verify: (_request, _response, buffer) => assertUniqueJsonKeys(buffer.toString("utf8")) }));
@@ -148,6 +151,7 @@ export async function createApp({
   app.use(express.json({ limit: "256kb" }));
   app.use((request, _response, next) => withUsage(usage, usageOperation(request), next));
   registerCollections(app,store,wrap);
+  registerWorkspaceBackup(app,store,wrap);
   app.get("/api/usage", wrap(async (request, response) => response.json(await usage.summary(request.query))));
   const paperById = (id) => {
     const paper = store.paper(id);

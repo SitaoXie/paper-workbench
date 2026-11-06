@@ -11,6 +11,7 @@ async function setup(page:Page,{shortEnglish=false}={}){
   await page.addInitScript(()=>{(window as any).__links=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(text:string)=>(window as any).__links.push(text)}})});
   await page.route('**/section-source.pdf',r=>r.fulfill({body:outlinePdf(),contentType:'application/pdf'}));
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),path=new URL(req.url()).pathname.slice(4);let result:any={};
     if(req.method()!=='GET')writes.push({path,body:req.postDataJSON()});
     if(path==='/settings')result={provider:'openai',baseUrl:'https://example.org/v1',model:'test',modelConfigured:false,apiKeyConfigured:false};

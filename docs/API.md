@@ -705,3 +705,16 @@ Local PDF rows and library selection actions offer **Extract authors and abstrac
 - `POST /api/papers/:id/metadata/undo` accepts `{changeId}` for the latest unchanged repair. Up to ten previous metadata snapshots are retained locally. Newer manual edits prevent automatic undo.
 
 Extraction is a source-grounded aid, not a guarantee of completeness: ambiguous columns, scanned PDFs without a text layer, missing author blocks and uncommon layouts can yield partial results. Review candidates against the original PDF before applying them. Unknown affiliations are never inferred from email domains or model memory. Cancelling extraction aborts the current request; previously incurred provider usage can still count.
+
+
+## Sample workspace (no API key)
+
+`?demo=1` routes the frontend to `/api/demo/*`. This namespace is isolated from the personal store and has no provider client. It serves a synthetic three-page PDF, bilingual quick/deep readings, a prewritten conversation, an annotation, and a folder. `GET /api/demo/papers` lists the fixture; `GET /api/demo/papers/demo-evidence-paper/file` returns its PDF. Unknown demo routes return 404 without falling through; methods other than GET/HEAD return 409 with `code: "DEMO_READ_ONLY"`. Sample version selection is local UI state, not a persisted mutation. The usual loopback/origin guards also apply.
+
+## Portable library backup
+
+- `GET /api/workspace/backup`: downloads a gzip-compressed `.paperwork` archive. No model calls. Missing source assets abort export.
+- `POST /api/workspace/restore/preview`: multipart field `file`, one archive up to 100 MiB. Validates schema, relationships, assets and SHA-256 checksums. Returns `{token, summary, expiresInSeconds:900}`; it does not restore data.
+- `POST /api/workspace/restore`: JSON `{token, confirm:true}`. Adds remapped copies of records and their local files; preserves current papers and model settings. Returns counts and `restoredPaperIds`. A completed token is idempotent for 15 minutes; expired previews return 410. A fresh preview replaces the previous pending preview.
+
+Archives omit settings, keys, API usage and machine paths, but preserve authored paper/reading/note/chat content. They are not anonymized. Limits, upgrade and failure recovery are documented in [UPGRADING.md](UPGRADING.md). A portable restore is an additive import; use a stopped-service full backup for an exact rollback.

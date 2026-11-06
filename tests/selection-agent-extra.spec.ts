@@ -13,6 +13,7 @@ async function fixture(page: Page, { long = false, failSession = false, clipboar
   await page.addInitScript(fail => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { if (fail) throw new DOMException('Permission denied', 'NotAllowedError'); (window as any).__copiedTask = text; } } }), clipboardFails);
   await page.route('**/agent-extra.pdf', route => route.fulfill({ contentType: 'application/pdf', body: pdf }));
   await page.route('**/api/**', async route => {
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req = route.request(), url = new URL(req.url()), path = url.pathname.slice(4);
     calls.push({ path, method: req.method(), body: req.method() === 'GET' ? undefined : req.postDataJSON() });
     if (path.endsWith('/activities') && url.searchParams.has('agentTaskId') && defer) { refreshes.push(route); return; }
@@ -90,7 +91,7 @@ test('late subscription refreshes cannot populate a new kind or paper', async ({
   // Switch via the application, preserving the JS runtime and pending request.
   await dialog.getByRole('button', { name: 'Close selection actions', exact: true }).click();
   await page.locator('.paper-toolbar').getByRole('button', { name: 'Library', exact: true }).click();
-  await page.locator('.paper-card-main').filter({ hasText: 'Subscription agent-b' }).click();
+  await page.locator('.collection-paper-open').filter({ hasText: 'Subscription agent-b' }).click();
   dialog = await selectOverview(page); await dialog.getByRole('button', { name: 'Translate', exact: true }).click();
   expect((await task(dialog)).binding.paperId).toBe('agent-b');
   await f.refreshes[1].fulfill({ json: { activities: [{ ...next.binding, result: { text: 'STALE_PAPER_A_MUST_NOT_APPEAR' } }] } });

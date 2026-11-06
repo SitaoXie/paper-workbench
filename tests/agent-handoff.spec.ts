@@ -10,6 +10,7 @@ async function setup(page:Page,{deferCreation=false}={}){
     Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(text:string)=>{(window as any).__copiedTasks.push(text)}}});
   });
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),url=new URL(req.url()),path=url.pathname.slice(4),paperId=url.searchParams.get('paperId')||'alpha';let result:any={};
     if(path==='/settings')result={provider:'openai',baseUrl:'https://example.org/v1',model:'unconfigured',modelConfigured:false,apiKeyConfigured:false};
     else if(path==='/papers')result={papers};
@@ -37,16 +38,14 @@ async function copied(page:Page){return await page.evaluate(()=>(window as any).
 test('subscription copy fixes one session and both entry points reuse the same binding',async({page})=>{
   const{creations}=await setup(page);await page.goto('/zh/?paper=alpha');await openAssistant(page);
   // The mode control and primary action each retain their own hit area.
-  const mode=page.getByLabel('问答处理方式',{exact:true});
-  const bounds=await mode.evaluate(select=>{
-    const rect=(element:Element)=>{const r=element.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width};};
-    const wrapper=select.parentElement!;
-    return {mode:rect(select),previous:rect(wrapper.previousElementSibling!),next:rect(wrapper.nextElementSibling!)};
+  const mode=page.getByRole('button',{name:'选择模型或订阅助手',exact:true});
+  const bounds=await mode.evaluate(button=>{
+    const rect=(element:Element)=>{const r=element.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width};};
+    return {mode:rect(button),send:rect(button.closest('.composer')!.querySelector('.send-button')!)};
   });
-  expect(bounds.mode.left).toBeGreaterThanOrEqual(bounds.previous.right);
-  expect(bounds.mode.right).toBeLessThanOrEqual(bounds.next.left);
-  expect(bounds.mode.width).toBeGreaterThan(100);
-  await expect(mode).toHaveValue('agent');
+  expect(bounds.mode.right<=bounds.send.left || bounds.mode.bottom<=bounds.send.top).toBe(true);
+  expect(bounds.mode.width).toBeGreaterThan(70);
+  await expect(mode).toContainText('Codex / Claude');
   await composer(page).fill('请继续比较经验结果，不要保存笔记。');
   await page.getByRole('button',{name:'准备订阅任务',exact:true}).click();
   await expect.poll(async()=> (await copied(page)).length).toBe(1);
@@ -82,7 +81,7 @@ test('a late session creation cannot copy a task over another paper or replace i
   await closeAssistant(page);
   const menu=page.getByRole('button',{name:'展开导航',exact:true});if(await menu.isVisible())await menu.click();
   await page.getByRole('navigation').getByRole('button',{name:'文库',exact:true}).click();
-  await page.locator('.paper-card-main').filter({hasText:'Handoff paper beta'}).click();await openAssistant(page);
+  await page.locator('.collection-paper-open').filter({hasText:'Handoff paper beta'}).click();await openAssistant(page);
   await composer(page).fill('Do not replace this beta draft');
   await creations[0].route.fulfill({json:{conversationId:'created-1',messages:[]}});
   await expect(page.getByRole('button',{name:'准备订阅任务',exact:true})).toBeEnabled();

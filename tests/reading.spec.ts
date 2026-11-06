@@ -63,7 +63,7 @@ test("subscription-only reading: JSON import, translation, original and inline f
     .click();
   const prompt = await page.getByLabel("代理任务").inputValue();
   expect(prompt).toContain(paper.id);
-  expect(prompt).toContain("不调用工作台模型生成接口");
+  expect(prompt).toContain("不调用工作台 report、translate、ask 或模型生成接口");
   const download = page.waitForEvent("download");
   await page.getByRole("link", { name: "下载通用 Skill" }).click();
   const skill = await download;
@@ -301,7 +301,7 @@ test("external subscription answer is persisted and visible without API key", as
       exact: false,
     }),
   ).toBeVisible();
-  await expect(page.getByLabel("问答处理方式")).toHaveValue("agent");
+  await expect(page.getByRole("button",{name:"选择模型或订阅助手",exact:true})).toContainText("Codex / Claude");
   await expect(page.getByRole("button", { name: "准备订阅任务", exact: true })).toBeVisible();
   const chat = await (
     await request.get(`/api/chats?paperId=${paper.id}`)

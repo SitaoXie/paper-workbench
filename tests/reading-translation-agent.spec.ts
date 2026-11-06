@@ -12,9 +12,10 @@ async function fixture(page:Page,mode:'translation'|'captions'|'interactive'='tr
   await page.addInitScript(()=>{(window as any).__tasks=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(text:string)=>{(window as any).__tasks.push(text);}}});});
   await page.route('**/translation-agent.pdf',r=>r.fulfill({contentType:'application/pdf',body:pdf}));
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),path=new URL(req.url()).pathname.slice(4);let result:any={};
     if(req.method()!=='GET')writes.push({path,body:req.postDataJSON()});
-    if(path==='/settings')result={profiles:[],apiKeyConfigured:false,modelConfigured:false};
+    if(path==='/settings')result={profiles:[],provider:'openai',baseUrl:'',model:'',apiKeyConfigured:false,modelConfigured:false};
     else if(path==='/papers')result={papers:[paper]};
     else if(path===`/papers/${paper.id}`){
       if(req.method()==='PATCH')Object.assign(paper,req.postDataJSON());
@@ -96,7 +97,7 @@ test('an unmounted refresh cannot erase a derived version after reopening the sa
   f.deferRead(async route=>{oldRead=route;});await bridge(page).getByRole('button',{name:'刷新译文',exact:true}).click();await expect.poll(()=>!!oldRead).toBe(true);
   await page.locator('.paper-toolbar').getByRole('button',{name:'文库',exact:true}).click();
   const derived={...f.second,id:'derived-new',createdAt:'2026-10-22T03:00:00Z',markdown:'## 新派生版\n\n新图表修订后的版本。',language:'zh-CN'};f.paper.readingVersions.push(derived);f.paper.activeReadingId=derived.id;
-  await page.locator('.paper-card-main').filter({hasText:'Subscription language workflow'}).click();
+  await page.locator('.collection-paper-open').filter({hasText:'Subscription language workflow'}).click();
   // Loading a newer library snapshot preserves the previous fixed reading;
   // choosing its new derived version is a separate, explicit user action.
   await expect(page.getByLabel('解读版本',{exact:true})).toHaveValue(f.version.id);

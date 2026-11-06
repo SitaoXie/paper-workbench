@@ -19,6 +19,7 @@ test('interactive reading exports the selected translated version with offline c
   const writes: string[] = [];
   await page.route('**/interactive-source.pdf', route => route.fulfill({ contentType: 'application/pdf', body: pdf }));
   await page.route('**/api/**', async route => {
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req = route.request(), path = new URL(req.url()).pathname.slice(4);
     let response: any = {};
     if (req.method() !== 'GET') writes.push(path);
@@ -106,6 +107,7 @@ test('a saved article retries only interactive conversion and preserves the orig
   const paper: any = { id: 'conversion-recovery', title: 'Recover an interactive reading', authors: [], source: 'web', createdAt: original.createdAt, abstract: 'Measured results have stated limits.', text: 'Source evidence.', tags: [], readingVersions: [original], activeReadingId: original.id };
   const reports: any[] = [];
   await page.route('**/api/**', async route => {
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req = route.request(), path = new URL(req.url()).pathname.slice(4);
     let response: any = {};
     if (path === '/settings') response = { provider: 'openai', baseUrl: 'https://example.org/v1', model: 'fixture-model', apiKeyConfigured: true, modelConfigured: true };
@@ -126,8 +128,10 @@ test('a saved article retries only interactive conversion and preserves the orig
   await expect(page.getByRole('status').filter({ hasText: 'The article was saved, but the interactive version did not finish.' })).toBeVisible();
   expect(reports).toEqual([]);
   await page.getByRole('button', { name: 'Create an interactive version from this reading', exact: true }).click();
+  expect(reports).toEqual([]);
+  await page.getByRole('button',{name:'Confirm model call',exact:true}).click();
   await expect(page.getByTestId('interactive-reading')).toContainText('The same reading, now interactive');
-  expect(reports).toEqual([{ readingId: original.id, format: 'interactive' }]);
+  expect(reports).toHaveLength(1);expect(reports[0]).toMatchObject({readingId:original.id,format:'interactive'});
   await expect(page.getByLabel('Reading version', { exact: true })).toHaveValue(converted.id);
   await expect(page.getByRole('status').filter({ hasText: 'The article was saved, but the interactive version did not finish.' })).toHaveCount(0);
   await page.getByLabel('Reading version', { exact: true }).selectOption(original.id);
@@ -148,6 +152,7 @@ test('partial interactive translations keep the valid article and retry only the
   const paper:any={id:'partial-translation-paper',title:'Partial translation recovery',authors:[],source:'web',createdAt:reading.createdAt,abstract:'Evidence fidelity.',text:'Source evidence.',tags:[],readingVersions:[reading,alternate],activeReadingId:reading.id};
   const translations:{body:any,route:any}[]=[];
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),path=new URL(req.url()).pathname.slice(4);let response:any={};
     if(path==='/settings') response={provider:'openai',baseUrl:'https://example.org/v1',model:'translation-model',apiKeyConfigured:true,modelConfigured:true};
     else if(path==='/papers') response={papers:[paper]};
@@ -211,7 +216,7 @@ test('article copy and offline export retain translated captions in place, sourc
   const paper={id:'portable-paper',title:'Portable source reading',authors:[],source:'pdf',createdAt:version.createdAt,pageCount:1,abstract:'Source evidence.',text:'Source evidence.',tags:[],url:'https://arxiv.org/abs/1706.03762',pdfUrl:'https://arxiv.org/pdf/1706.03762',localPdfUrl:'/portable-source.pdf',figures,readingVersions:[version],activeReadingId:version.id,apiKey:'private-fixture-key',localPath:'/Users/private-fixture'};
   await page.addInitScript(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(text:string)=>{(window as any).__copiedArticle=text;}}}));
   await page.route('**/portable-source.pdf',r=>r.fulfill({body:pdf,contentType:'application/pdf'}));
-  await page.route('**/api/**',async r=>{const path=new URL(r.request().url()).pathname.slice(4);const data=path==='/settings'?{modelConfigured:false,apiKeyConfigured:false}:path==='/papers'?{papers:[paper]}:path===`/papers/${paper.id}`?{paper}:path==='/chats'?{messages:[],conversationId:null}:path.endsWith('/annotations')?{annotations:[]}:{};await r.fulfill({json:data});});
+  await page.route('**/api/**',async r=>{const path=new URL(r.request().url()).pathname.slice(4);const data=path==='/settings'?{provider:'openai',baseUrl:'',model:'',modelConfigured:false,apiKeyConfigured:false}:path==='/papers'?{papers:[paper]}:path===`/papers/${paper.id}`?{paper}:path==='/chats'?{messages:[],conversationId:null}:path.endsWith('/annotations')?{annotations:[]}:{};await r.fulfill({json:data});});
   await page.goto(`/en/?paper=${paper.id}`);
   await expect(page.locator('.reading-prose figure')).toHaveCount(1);
   await expect(page.locator('.reading-prose code').filter({hasText:':::figure measured'})).toHaveCount(1);

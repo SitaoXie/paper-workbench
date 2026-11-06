@@ -46,6 +46,7 @@ test("a delayed favorite response cannot replace the newly opened paper", async 
 }) => {
   let releaseFavorite: (() => Promise<void>) | undefined;
   await page.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req = route.request();
     const path = new URL(req.url()).pathname.slice(4);
     let result: unknown = {};
@@ -90,6 +91,7 @@ test("changing API origin or protocol clears a typed credential before any reque
 }) => {
   const requests: Record<string, unknown>[] = [];
   await page.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req = route.request();
     const path = new URL(req.url()).pathname.slice(4);
     let result: unknown = {};

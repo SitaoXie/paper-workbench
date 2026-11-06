@@ -1,3 +1,4 @@
+import {apiUrl} from './workspace-mode';
 import type {ModelReasoning} from '../shared/model-reasoning.mjs';
 import { ApiRequestError } from "./selection-errors";
 export type ReadingPolicyIdentity = { id: string; version: string; sha256: string };
@@ -185,7 +186,7 @@ export type SourceScope = 'pdf' | 'source-text' | 'reading' | 'abstract';
 export type QuestionMetadata = {page?:number;pages?:number[];quote?:string;sourceScope?:SourceScope;readingId?:string};
 export type Message = { images?: {id:string;name?:string;url:string}[]; reasoning?: {round:number;text:string}[]; reasoningTruncated?:boolean; streaming?:boolean; streamStatus?:string; streamError?:string; id?: string; paperId?: string | null; conversationId?: string; agentTaskId?: string; mode?: string; source?: {agent?: string; [key:string]:unknown}; role: "user" | "assistant"; content: string; questionText?: string; metadata?: QuestionMetadata };
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(`/api${path}`, {
+  const r = await fetch(apiUrl(path), {
     ...init,
     headers:
       init?.body instanceof FormData

@@ -1,3 +1,4 @@
+import {apiUrl} from './workspace-mode';
 import { useRef, useState } from "react";
 import { buildAgentReadingTask } from "./agent-task";
 import { useLocale } from "./i18n";
@@ -271,7 +272,7 @@ export default function ReadingTools({
           </div>
           <a
             className="text-button"
-            href="/api/agent-skill"
+            href={apiUrl("/agent-skill")}
             download="SKILL.md"
           >
             {t("下载通用 Skill")}

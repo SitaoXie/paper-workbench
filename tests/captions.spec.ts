@@ -19,6 +19,7 @@ async function setup(page: Page, cached: boolean) {
   const requests:{body:any,route:Route}[]=[];
   await page.route('**/caption-source.pdf',route=>route.fulfill({contentType:'application/pdf',body:pdf}));
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),path=new URL(req.url()).pathname.slice(4);let response:any={};
     if(path===`/papers/${paper.id}/translate`){requests.push({body:req.postDataJSON(),route});return;}
     if(path==='/settings')response={provider:'openai',baseUrl:'https://example.org/v1',model:'caption-model',apiKeyConfigured:true,modelConfigured:true};

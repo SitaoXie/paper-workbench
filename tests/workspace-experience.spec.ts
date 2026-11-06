@@ -8,6 +8,7 @@ async function setup(page:Page, configured = false){
   const calls:any[]=[];let selectionFailure={error:numericMessage,code:'selection_no_translatable_text'};
   await page.route('**/layout-source.pdf',route=>route.fulfill({body:outlinePdf({firstPageText:'2026'}),contentType:'application/pdf'}));
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),path=new URL(req.url()).pathname.slice(4);let result:any={};
     if(req.method()!=='GET')calls.push({path,body:req.postDataJSON()});
     if(path==='/papers')result={papers:[paper]};

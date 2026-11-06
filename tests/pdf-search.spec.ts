@@ -98,7 +98,7 @@ test("PDF search shortcuts stay inside the active reader and changing documents 
   const menu = page.getByRole("button", { name: "展开导航", exact: true });
   if (await menu.isVisible() && !((await navigation.getAttribute("class")) || "").includes("mobile-open")) await menu.click();
   await navigation.getByRole("button", { name: "文库", exact: true }).click();
-  await page.locator(".paper-card-main").filter({ hasText: second.title }).click();
+  await page.locator(".collection-paper-open").filter({ hasText: second.title }).click();
   await page.getByRole("tab", { name: "论文", exact: true }).click();
   const next = await openSearch(page, "zh");
   await expect(next).toHaveValue("");

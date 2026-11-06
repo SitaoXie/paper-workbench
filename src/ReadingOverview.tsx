@@ -1,3 +1,4 @@
+import {isDemoWorkspace} from './workspace-mode';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
@@ -356,6 +357,7 @@ export default function ReadingOverview({
     setSelected(id);
     setError("");
     if (["legacy-summary", "legacy-report"].includes(id)) return;
+    if(isDemoWorkspace()){publish({...paper,activeReadingId:id});return;}
     setChoosing(true);
     try {
       publish(
@@ -784,7 +786,7 @@ export default function ReadingOverview({
         <VisionTools compact paper={paper} settings={settings} language={language} onConfigure={onConfigure} onPage={onPage} onManageFigures={onManageFigures} onUpdated={value=>publish({...value,activeReadingId:selectedRef.current})}/>
         {version && <div className="reading-provenance" aria-label={t("当前阅读来源与语言", "Current reading source and language")}>
           <span className="reading-style-badge">{styleLabel(version.style)}</span>
-          <span className="reading-boundary">{version.mode === "extractive" ? t("原文摘录", "Source excerpts") : t("AI 解读", "AI-generated")}</span>
+          <span className="reading-boundary">{isDemoWorkspace() ? t("预写示例", "Prewritten example") : version.mode === "extractive" ? t("原文摘录", "Source excerpts") : t("AI 解读", "AI-generated")}</span>
           <span>{(translated ? language : sourceLanguage).startsWith("zh") ? "中文" : (translated ? language : sourceLanguage).startsWith("en") ? "English" : translated ? language : sourceLanguage}{translated && sourceLanguage.toLowerCase() !== language.toLowerCase() ? ` · ${t("译文", "translation")}` : ""}</span>
         </div>}
       </div>

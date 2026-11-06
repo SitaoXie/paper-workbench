@@ -44,6 +44,7 @@ async function setup(page: Page) {
     route.fulfill({ contentType: "application/pdf", body: pdf }),
   );
   await page.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const request = route.request();
     const path = new URL(request.url()).pathname.replace(/^\/api/, "");
     const body = request.postData() ? request.postDataJSON() : {};
@@ -234,9 +235,10 @@ test("inline explanation retries, switches language and saves without starting a
   expect(state.sessions).toHaveLength(0);
   await inline.getByLabel("就地结果语言").selectOption("en");
   await expect(inline).toContainText("This is an inline reading result.");
-  await inline.getByRole("button", { name: "保存到笔记", exact: true }).click();
-  await expect.poll(() => state.annotations.length).toBe(1);
-  expect(state.annotations[0]).toMatchObject({
+  await expect(inline.getByRole("button", { name: "已保存", exact: true })).toBeDisabled();
+  await expect.poll(() => state.annotations.length).toBe(2);
+  expect(state.annotations.filter((a:any)=>a.kind==="explanation").map((a:any)=>a.tags[0]).sort()).toEqual(["en","zh-CN"]);
+  expect(state.annotations.find((a:any)=>a.tags?.includes("en"))).toMatchObject({
     kind: "explanation",
     tags: ["en"],
     body: "This is an inline reading result.",
@@ -570,7 +572,7 @@ test('saving a cross-page inline explanation keeps both source anchors in one an
   await page.getByRole('button',{name:'解释选中内容',exact:true}).click();
   const inline=page.getByRole('dialog',{name:'就地阅读助手',exact:true});
   await expect(inline).toContainText('p.1–2');await expect(inline).toContainText('这是就地生成的阅读结果');
-  await inline.getByRole('button',{name:'保存到笔记',exact:true}).click();
+  await expect(inline.getByRole('button',{name:'已保存',exact:true})).toBeDisabled();
   await expect.poll(()=>state.annotations.length).toBe(1);expect(state.annotations[0].segments).toHaveLength(2);
   expect(state.annotations[0].kind).toBe('explanation');expect(state.annotations[0].body).toContain('就地生成');
   expect(state.sessions).toHaveLength(0);

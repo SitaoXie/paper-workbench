@@ -1,9 +1,10 @@
+import {apiUrl} from './workspace-mode';
 import { readSse } from '../shared/sse.mjs';
 import type { Message } from './types';
 export type ChatResult = {message:Message;userMessage?:Message;conversationId?:string};
 export type ChatEvent = {type:'round'|'text'|'reasoning'|'tool';round?:number;delta?:string;tool?:string;ok?:boolean};
 export async function streamChat(body: unknown, onEvent:(event:ChatEvent)=>void):Promise<ChatResult> {
-  const response = await fetch('/api/chat', {method:'POST',headers:{'Content-Type':'application/json','Accept':'text/event-stream'},body:JSON.stringify(body)});
+  const response = await fetch(apiUrl('/chat'), {method:'POST',headers:{'Content-Type':'application/json','Accept':'text/event-stream'},body:JSON.stringify(body)});
   if (!response.ok) { const data = await response.json().catch(()=>({})); throw new Error(data.error || `Request failed (${response.status})`); }
   if (!response.headers.get('content-type')?.includes('text/event-stream')) return response.json();
   for await (const frame of readSse(response.body)) {

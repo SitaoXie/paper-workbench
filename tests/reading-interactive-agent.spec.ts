@@ -11,6 +11,7 @@ async function fixture(page:Page,{configured=false,missingRevision=false}={}){
  await page.addInitScript(()=>{(window as any).__tasks=[];Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(text:string)=>{(window as any).__tasks.push(text);}}});});
  await page.route('**/interactive-agent.pdf',route=>route.fulfill({contentType:'application/pdf',body:pdf}));
  await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
   const req=route.request(),path=new URL(req.url()).pathname.slice(4);let result:any={};
   if(req.method()!=='GET')writes.push({path,body:req.postDataJSON()});
   if(path==='/settings')result={profiles:[],apiKeyConfigured:configured,modelConfigured:configured,model:'fixture-model'};
@@ -97,7 +98,7 @@ test('an unmounted task cannot erase a newer paper snapshot when its old respons
  const f=await fixture(page);await prepare(page);const {binding}=await copied(page);let read:Route|undefined;
  const stale=structuredClone(f.paper);stale.readingVersions.push(f.derived(binding));f.deferRead(async route=>{read=route;});await bridge(page).getByRole('button',{name:'刷新互动结果',exact:true}).click();await expect.poll(()=>!!read).toBe(true);
  await page.locator('.paper-toolbar').getByRole('button',{name:'文库',exact:true}).click();f.paper.readingVersions.push({...f.second,id:'newer-reading',createdAt:'2026-10-22T05:00:00Z'});f.paper.activeReadingId='newer-reading';
- await page.locator('.paper-card-main').filter({hasText:f.paper.title}).click();
+ await page.locator('.collection-paper-open').filter({hasText:f.paper.title}).click();
  // Reopening preserves the reader's fixed version even when the server has a
  // newer default. The fresh version must still be available for explicit use.
  await expect(page.getByLabel('解读版本',{exact:true})).toHaveValue(f.source.id);

@@ -1,0 +1,47 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import vm from 'node:vm';
+import ts from 'typescript';
+import React, { act } from 'react';
+import { JSDOM } from 'jsdom';
+import { validateSettings } from '../server/models.mjs';
+import { defaultSettings } from '../server/storage.mjs';
+import * as diagnostics from '../shared/connection-diagnostic.mjs';
+import * as limits from '../shared/model-limits.mjs';
+const dom = new JSDOM('<div id="root"></div>');
+globalThis.window = dom.window; globalThis.document = dom.window.document; globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+const { createRoot } = await import('react-dom/client');
+const require = createRequire(import.meta.url);
+const code = ts.transpileModule(readFileSync(new URL('../src/SettingsDialog.tsx', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
+for (const locale of ['zh', 'en']) test(`connection probe is explicit, safe, actionable and does not save (${locale})`, async () => {
+  const settings = validateSettings({ profiles: [{ id: 'one', name: 'One', provider: 'openai', baseUrl: 'http://localhost:9999/v1', model: 'text', models: ['text'] }], activeProfileId: 'one' }, defaultSettings);
+  const calls = [], exports = {}; let succeed = false, saved = 0;
+  vm.runInNewContext(code, { exports, window, document, crypto: globalThis.crypto, require: name => name.endsWith('.css') ? {} : name === './i18n' ? { t: (cn, en) => locale === 'zh' ? cn : en || cn, useLocale: () => ({ locale }) } : name === '../shared/connection-diagnostic.mjs' ? diagnostics : name === '../shared/model-limits.mjs' ? limits : name === './model-selection' ? { useModelSelection: () => ({ pending: false }), writeWorkspaceSettings: async (load, callback) => { callback(await load()); return { ok: true }; } } : name === './types' ? { api: async (route, opts) => { calls.push({ route, body: JSON.parse(opts.body) }); if (route === '/settings/test') { if (!succeed) throw Error('Model API returned HTTP 401. sk-private-example http://private-host.example'); return { ok: true }; } return settings; } } : require(name) });
+  const root = createRoot(document.getElementById('root'));
+  try {
+    await act(async () => root.render(React.createElement(exports.default, { current: settings, onClose: () => {}, onSaved: () => saved++ })));
+    assert.equal(calls.length, 0, 'Opening settings never probes a provider');
+    assert.match(document.querySelector('.connection-probe-note').textContent, locale === 'zh' ? /可能产生少量 API 用量/ : /may incur API usage/);
+    await act(async () => document.querySelector('.settings-actions .soft-button').click());
+    assert.equal(calls.length, 1); assert.equal(calls[0].route, '/settings/test'); assert.equal(saved, 0);
+    assert.equal(calls[0].body.activeProfileId, 'one');
+    const alert = document.querySelector('.connection-diagnostic[role="alert"]');
+    assert.ok(alert); assert.match(alert.textContent, /HTTP 401/); assert.equal(alert.querySelectorAll('li').length, 2);
+    assert.doesNotMatch(document.body.textContent, /sk-private-example|private-host/);
+    assert.match(alert.textContent, locale === 'zh' ? /不会自动重试/ : /never automatic/);
+    const name = document.querySelector('#profile-name');
+    await act(async () => { Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(name, 'Renamed'); name.dispatchEvent(new window.Event('input', { bubbles: true })); });
+    assert.equal(document.querySelector('.connection-diagnostic'), null, 'Editing makes the previous probe result stale');
+    assert.equal(calls.length, 1, 'Editing does not retry automatically');
+    succeed = true;
+    await act(async () => document.querySelector('.settings-actions .soft-button').click());
+    assert.equal(calls.length, 2); assert.equal(saved, 0, 'Successful test does not persist the draft');
+    assert.ok(document.querySelector('.connection-diagnostic-timing'));
+    assert.match(document.querySelector('.connection-diagnostic').textContent, locale === 'zh' ? /未验证看图、工具调用或流式/ : /Vision, tool calling, and streaming are not verified/);
+    await act(async () => document.querySelector('.settings-actions .primary-button').click());
+    assert.equal(saved, 1); assert.equal(calls.at(-1).route, '/settings');
+  } finally { await act(async () => root.unmount()); }
+});
+test.after(() => { dom.window.close(); delete globalThis.window; delete globalThis.document; delete globalThis.IS_REACT_ACT_ENVIRONMENT; });

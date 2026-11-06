@@ -5,6 +5,7 @@ async function setup(page:Page){
   await page.route('**/outline-source.pdf',route=>route.fulfill({body:outlinePdf(),contentType:'application/pdf'}));
   await page.route('**/outline-empty.pdf',route=>route.fulfill({body:outlinePdf({outline:false}),contentType:'application/pdf'}));
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const path=new URL(route.request().url()).pathname.slice(4);let result:any={};
     if(path==='/papers')result={papers};
     else if(path==='/settings')result={provider:'openai',baseUrl:'',model:'',modelConfigured:false,apiKeyConfigured:false};

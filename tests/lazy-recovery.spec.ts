@@ -10,9 +10,10 @@ async function fixture(page: Page, illustrated = false) {
   const writes: string[] = [];
   await page.route('**/recovery.pdf', route => route.fulfill({ contentType: 'application/pdf', body: pdf }));
   await page.route('**/api/**', async route => {
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const request = route.request(), path = new URL(request.url()).pathname.slice(4);
     if (request.method() !== 'GET') writes.push(path);
-    const json = path === '/settings' ? { provider: 'openai', modelConfigured: false, apiKeyConfigured: false }
+    const json = path === '/settings' ? { provider: 'openai', baseUrl:'', model:'', modelConfigured: false, apiKeyConfigured: false }
       : path === '/papers' ? { papers: [paper] } : path === `/papers/${paper.id}` ? { paper }
       : path === '/chats' ? { conversationId: 'recovery-session', messages: [] }
       : path.endsWith('/annotations') ? { annotations: [{ id: 'saved-note', paperId: paper.id, type: 'note', page: 3, body: 'A saved recovery note', quote: 'Recovery evidence', createdAt: paper.createdAt, updatedAt: paper.createdAt }] }
@@ -23,6 +24,7 @@ async function fixture(page: Page, illustrated = false) {
 }
 async function openAssistant(page: Page) {
   const button = page.getByRole('button', { name: /^(Open floating assistant|打开悬浮助手)$/ });
+  await expect(button.or(page.locator('.composer textarea'))).toBeVisible();
   if (await button.isVisible()) await button.click();
   await expect(page.locator('.composer textarea')).toBeVisible();
 }

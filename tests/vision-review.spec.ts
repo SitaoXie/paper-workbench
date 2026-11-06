@@ -24,6 +24,7 @@ async function fixture(page:Page,options:{locale?:'en'|'zh';readability?:boolean
   const writes:any[]=[];let finish:undefined|(()=>Promise<void>);
   await page.route('**/vision-review.pdf',route=>route.fulfill({contentType:'application/pdf',body:pdf}));
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),path=new URL(req.url()).pathname.slice(4);let response:any={};
     if(req.method()!=='GET')writes.push({path,method:req.method(),body:req.postDataJSON()});
     if(path==='/settings')response={...profile,profiles:[profile],activeProfileId:profile.id,vision:{enabled:true,profileId:profile.id,model:'vision-test'}};

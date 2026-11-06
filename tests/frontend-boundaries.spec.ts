@@ -7,6 +7,7 @@ async function setup(page:Page,{configured=false,failCreation=false}={}){
  const requests:{path:string;body:any;route:Route}[]=[];
  await page.addInitScript(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(text:string)=>{(window as any).__copied=text}}}));
  await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
   const req=route.request(),path=new URL(req.url()).pathname.slice(4);let result:any={};
   if(req.method()!=='GET'){requests.push({path,body:req.postDataJSON(),route});if(path==='/chat'||(path==='/settings'&&req.method()==='PUT'))return;}
   if(path==='/papers')result={papers:[paper]};else if(path===`/papers/${paper.id}`)result={paper};
@@ -61,30 +62,33 @@ test('a failed selection session keeps the exact question and retries session cr
  await expect(dialog).toHaveCount(0);expect(f.requests.filter(r=>r.path==='/chats/new')).toHaveLength(2);expect(f.requests.filter(r=>r.path.endsWith('/assist'))).toHaveLength(0);
 });
 
+const modelTrigger=(page:Page)=>page.getByRole('button',{name:'选择模型或订阅助手',exact:true});
+const modelMenu=(page:Page)=>page.getByRole('dialog',{name:'模型与订阅助手',exact:true});
+async function manageModels(page:Page){await modelTrigger(page).click();await modelMenu(page).getByRole('button',{name:'管理模型与思考参数',exact:true}).click();}
 test('all model selectors share one in-flight lock and only show confirmed choices',async({page})=>{
  const f=await setup(page,{configured:true});await page.getByRole('button',{name:'生成新版本',exact:true}).click();
  const overview=page.locator('.reading-overview').getByLabel('切换当前模型',{exact:true});
- await overview.selectOption(JSON.stringify(['connection','model-b']));await open(page);
- const assistant=page.locator('.composer-wrap').getByLabel('切换当前模型',{exact:true});
- await expect(overview).toBeDisabled();await expect(assistant).toBeDisabled();await expect(assistant).toHaveAttribute('aria-busy','true');
- await expect(page.locator('.composer-wrap').getByRole('status')).toContainText('正在切换');
+ await overview.selectOption(JSON.stringify(['connection','model-b']));await open(page);await modelTrigger(page).click();
+ await expect(overview).toBeDisabled();await expect(modelMenu(page).getByRole('button',{name:'model-c',exact:true})).toBeDisabled();
+ await expect(modelTrigger(page)).toContainText('model-a');
  expect(f.requests.filter(r=>r.path==='/settings')).toHaveLength(1);
  const result=(model:string)=>({...f.settings,model,profiles:[{...f.settings.profiles[0],model}]});
  await f.requests.find(r=>r.path==='/settings')!.route.fulfill({json:result('model-b')});
- await expect(assistant).toBeEnabled();await expect(overview).toBeEnabled();await expect(assistant).toHaveValue(JSON.stringify(['connection','model-b']));
- await assistant.selectOption(JSON.stringify(['connection','model-c']));await expect(overview).toBeDisabled();await expect(assistant).toBeDisabled();
+ await expect(overview).toBeEnabled();await expect(modelTrigger(page)).toContainText('model-b');
+ await modelMenu(page).getByRole('button',{name:'model-c',exact:true}).click();await expect(overview).toBeDisabled();
+ await expect(modelMenu(page).getByRole('button',{name:'model-a',exact:true})).toBeDisabled();
  await expect.poll(()=>f.requests.filter(r=>r.path==='/settings').length).toBe(2);
  await f.requests.filter(r=>r.path==='/settings')[1].route.fulfill({json:result('model-c')});
- await expect(overview).toBeEnabled();await expect(assistant).toHaveValue(JSON.stringify(['connection','model-c']));await expect(overview).toHaveValue(JSON.stringify(['connection','model-c']));
+ await expect(overview).toBeEnabled();await expect(modelTrigger(page)).toContainText('model-c');await expect(overview).toHaveValue(JSON.stringify(['connection','model-c']));
 });
 
 test('a failed model switch unlocks every selector without claiming the unsaved model',async({page})=>{
  const f=await setup(page,{configured:true});await page.getByRole('button',{name:'生成新版本',exact:true}).click();
- const overview=page.locator('.reading-overview').getByLabel('切换当前模型',{exact:true});await overview.selectOption(JSON.stringify(['connection','model-b']));await open(page);
- const assistant=page.locator('.composer-wrap').getByLabel('切换当前模型',{exact:true});await expect(assistant).toBeDisabled();
+ const overview=page.locator('.reading-overview').getByLabel('切换当前模型',{exact:true});await overview.selectOption(JSON.stringify(['connection','model-b']));await open(page);await modelTrigger(page).click();
+ await expect(modelMenu(page).getByRole('button',{name:'model-b',exact:true})).toBeDisabled();
  await f.requests.find(r=>r.path==='/settings')!.route.fulfill({status:503,json:{error:'Temporary settings failure'}});
- await expect(assistant).toBeEnabled();await expect(overview).toBeEnabled();await expect(assistant).toHaveValue(JSON.stringify(['connection','model-a']));
- await expect(page.locator('.composer-wrap').getByRole('alert')).toContainText('Temporary settings failure');
+ await expect(modelMenu(page).getByRole('button',{name:'model-b',exact:true})).toBeEnabled();await expect(overview).toBeEnabled();await expect(modelTrigger(page)).toContainText('model-a');
+ await expect(modelMenu(page).getByRole('alert')).toContainText('Temporary settings failure');
 });
 
 test('a copied subscription task does not mark BibTeX or a changed question as copied',async({page})=>{
@@ -103,21 +107,22 @@ test('a copied subscription task does not mark BibTeX or a changed question as c
 
 test('saving connection settings holds the same lock and publishes the confirmed profile once',async({page})=>{
  const f=await setup(page,{configured:true});await page.getByRole('button',{name:'生成新版本',exact:true}).click();await open(page);
- await page.getByRole('button',{name:'管理模型连接',exact:true}).click();const dialog=page.getByRole('dialog',{name:'模型与 API',exact:true});
+ await manageModels(page);const dialog=page.getByRole('dialog',{name:'模型与 API',exact:true});
  await dialog.getByLabel('模型名称',{exact:true}).fill('model-c');await dialog.getByRole('button',{name:'保存配置',exact:true}).click();
- const selectors=page.getByLabel('切换当前模型',{exact:true});await expect(selectors).toHaveCount(2);await expect(selectors.nth(0)).toBeDisabled();await expect(selectors.nth(1)).toBeDisabled();
+ const overview=page.locator('.reading-overview').getByLabel('切换当前模型',{exact:true});await expect(overview).toBeDisabled();
  await expect(dialog.getByLabel('模型名称',{exact:true})).toBeDisabled();
  await expect.poll(()=>f.requests.filter(r=>r.path==='/settings').length).toBe(1);const call=f.requests.find(r=>r.path==='/settings')!;expect(call.body.profiles[0].model).toBe('model-c');
  await call.route.fulfill({json:{...f.settings,model:'model-c',profiles:[{...f.settings.profiles[0],model:'model-c'}]}});
- await expect(dialog.getByText('配置已保存',{exact:true})).toBeVisible();await expect(dialog.getByLabel('模型名称',{exact:true})).toBeEnabled();
- await dialog.getByRole('button',{name:'关闭模型设置',exact:true}).click();await expect(selectors.nth(0)).toHaveValue(JSON.stringify(['connection','model-c']));await expect(selectors.nth(1)).toHaveValue(JSON.stringify(['connection','model-c']));
+ await expect(dialog.getByText('配置已保存到本机服务端，重启后仍保留。',{exact:true})).toBeVisible();await expect(dialog.getByLabel('模型名称',{exact:true})).toBeEnabled();
+ await dialog.getByRole('button',{name:'关闭模型设置',exact:true}).click();await expect(overview).toHaveValue(JSON.stringify(['connection','model-c']));await expect(modelTrigger(page)).toContainText('model-c');
 });
 
-test('settings opened during a pending model choice cannot save a stale profile',async({page})=>{
- const f=await setup(page,{configured:true});await open(page);const selector=page.locator('.composer-wrap').getByLabel('切换当前模型',{exact:true});
- await selector.selectOption(JSON.stringify(['connection','model-b']));await page.getByRole('button',{name:'管理模型连接',exact:true}).click();
- const dialog=page.getByRole('dialog',{name:'模型与 API',exact:true});await expect(dialog.getByRole('button',{name:'保存配置',exact:true})).toBeDisabled();await expect(dialog.getByLabel('模型名称',{exact:true})).toBeDisabled();
+test('pending model choices cannot open a settings editor with a stale profile',async({page})=>{
+ const f=await setup(page,{configured:true});await open(page);await modelTrigger(page).click();
+ await modelMenu(page).getByRole('button',{name:'model-b',exact:true}).click();
+ await expect(modelMenu(page).getByRole('button',{name:'管理模型与思考参数',exact:true})).toBeDisabled();
  expect(f.requests.filter(r=>r.path==='/settings')).toHaveLength(1);
  await f.requests.find(r=>r.path==='/settings')!.route.fulfill({json:{...f.settings,model:'model-b',profiles:[{...f.settings.profiles[0],model:'model-b'}]}});
- await expect(dialog.getByRole('button',{name:'保存配置',exact:true})).toBeEnabled();await expect(dialog.getByLabel('模型名称',{exact:true})).toHaveValue('model-b');
+ await expect(modelMenu(page)).toHaveCount(0);await manageModels(page);
+ const dialog=page.getByRole('dialog',{name:'模型与 API',exact:true});await expect(dialog.getByRole('button',{name:'保存配置',exact:true})).toBeEnabled();await expect(dialog.getByLabel('模型名称',{exact:true})).toHaveValue('model-b');
 });

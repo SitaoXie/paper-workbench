@@ -45,3 +45,8 @@ test('usage page has a restorable navigation URL without paper or provider infor
  const restored=readWorkspaceHistory(workspaceHistoryState({version:1,view:'usage',paperId:'private-paper',source:'private-config'}));
  assert.deepEqual(plain(restored),{version:1,view:'usage'});
 });
+
+test('sample navigation keeps isolation while dropping unrelated parameters',()=>{
+ assert.equal(workspaceUrl('http://localhost/en/?demo=1&paper=old&secret=x',{view:'library'}),'http://localhost/en/?demo=1&view=library');
+ assert.equal(workspaceUrl('http://localhost/zh/?demo=1&view=library',{view:'paper',paperId:'demo-evidence-paper',tab:'paper',page:2}),'http://localhost/zh/?demo=1&paper=demo-evidence-paper&tab=paper&page=2');
+});

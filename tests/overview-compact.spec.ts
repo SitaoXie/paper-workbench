@@ -10,6 +10,7 @@ async function fixture(page:Page,language='en',withEarlier=false) {
   const writes:any[]=[];
   await page.addInitScript(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async(text:string)=>{(window as any).__copied=text}}}));
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),path=new URL(req.url()).pathname.slice(4);let json:any={};
     if(req.method()!=='GET')writes.push({path,body:req.postDataJSON()});
     if(path==='/papers')json={papers:[paper]};else if(path===`/papers/${paper.id}`){if(req.method()==='PATCH')Object.assign(paper,req.postDataJSON());json={paper};}
@@ -28,7 +29,7 @@ test('the compact overview keeps its first paragraph nearby, with reachable prov
   const height=await overview.evaluate(el=>el.querySelector('.reading-prose p')!.getBoundingClientRect().top-el.querySelector('.reading-overview-heading')!.getBoundingClientRect().top);
   await info.attach('toolbar-geometry',{body:JSON.stringify(await overview.evaluate(el=>[...el.querySelectorAll('.reading-overview-heading,.reading-secondary-toolbar,.reading-section-nav,.reading-prose,.reading-prose h2,.reading-prose p')].map(item=>({class:item.className,tag:item.tagName,top:item.getBoundingClientRect().top,height:item.getBoundingClientRect().height,marginTop:getComputedStyle(item).marginTop,marginBottom:getComputedStyle(item).marginBottom,parent:item.parentElement?.className}))),null,2),contentType:'application/json'});
   expect(height).toBeLessThanOrEqual(info.project.name==='mobile'?200:160);
-  await expect(overview.getByLabel('Current reading source and language',{exact:true})).toHaveText('AI-generatedEnglish');
+  await expect(overview.getByLabel('Current reading source and language',{exact:true})).toHaveText('Deep readAI-generatedEnglish');
   await expect(overview.getByLabel('Reading version',{exact:true})).toHaveValue(f.reading.id);
   await expect(overview.getByLabel('Reading version',{exact:true}).locator('option').first()).toContainText(f.source);
   await expect(overview.getByText(f.focus,{exact:true})).toBeHidden();
@@ -54,7 +55,7 @@ test('the compact overview keeps its first paragraph nearby, with reachable prov
 
 test('Chinese controls stay compact and fit when the reading companion narrows the article',async({page},info)=>{
   await fixture(page,'zh-CN');const overview=page.getByRole('region',{name:'阅读解读',exact:true});
-  await expect(overview.getByLabel('当前阅读来源与语言',{exact:true})).toHaveText('AI 解读中文');
+  await expect(overview.getByLabel('当前阅读来源与语言',{exact:true})).toHaveText('深入研读AI 解读中文');
   await expect(overview.getByRole('button',{name:'生成新版本',exact:true})).toBeVisible();
   await expect(overview.getByRole('button',{name:'下载离线网页',exact:true})).toBeVisible();
   if(info.project.name==='desktop')await page.getByRole('button',{name:'打开悬浮助手',exact:true}).click();
@@ -69,7 +70,7 @@ test('compact controls retain version mutation semantics and distinguish source 
   await overview.getByRole('button',{name:'Copy overview',exact:true}).click();expect(await page.evaluate(()=>(window as any).__copied)).toContain('The first paragraph');
   await overview.getByLabel('Reading version',{exact:true}).selectOption(f.older.id);
   await expect(overview.getByRole('heading',{name:'Preserved source excerpts',exact:true})).toBeVisible();
-  await expect(overview.getByLabel('Current reading source and language',{exact:true})).toHaveText('Source excerptsEnglish');
+  await expect(overview.getByLabel('Current reading source and language',{exact:true})).toHaveText('Deep readSource excerptsEnglish');
   expect(f.writes).toEqual([{path:`/papers/${f.paper.id}`,body:{activeReadingId:f.older.id}}]);
   await overview.getByRole('button',{name:'New version',exact:true}).click();await expect(overview.getByRole('radiogroup',{name:'Reading style',exact:true})).toBeVisible();
 });

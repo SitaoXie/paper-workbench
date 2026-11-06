@@ -1,3 +1,4 @@
+import {isDemoWorkspace} from './workspace-mode';
 import InlineMarkers from "./InlineMarkers";
 import { captureTextAnchor,inlineMemoryKey,readInlineMemory,saveInlineMemory,type InlineMemory } from "./inline-memory";
 import { useEffect, useRef, useState, type ReactNode } from 'react';
@@ -50,6 +51,7 @@ export default function SelectionTools({ children, paperId, readingId, scope, la
   model?: string; modelReady?: boolean; active?: boolean; sourceLabel?: string;
   onAsk: (text: string, label: string, question?: string, source?: {sourceScope:'reading'|'abstract';readingId?:string}) => Promise<boolean>;
 }) {
+  active = active && !isDemoWorkspace();
   const host = useRef<HTMLDivElement>(null);
   const memoryKey=inlineMemoryKey(paperId,scope,readingId,language);
   const [memory,setMemory]=useState<{key:string;entries:InlineMemory[]}>(()=>({key:memoryKey,entries:readInlineMemory(memoryKey)}));

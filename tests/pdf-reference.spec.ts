@@ -3,7 +3,7 @@ import {referencePdf} from './fixtures/reference-pdf.mjs';
 async function fixture(page:Page){
  const pdf=await referencePdf();const paper={id:'reference-fixture',title:'Reference preview source',authors:[],source:'pdf',createdAt:'2026-10-22T00:00:00Z',abstract:'Reference preview',text:'Original source.',tags:[],pageCount:4,localPdfUrl:'/reference-fixture.pdf'};let writes=0;
  await page.route('**/reference-fixture.pdf',route=>route.fulfill({contentType:'application/pdf',body:pdf}));
- await page.route('**/api/**',route=>{const req=route.request(),path=new URL(req.url()).pathname.slice(4);if(req.method()!=='GET')writes++;return route.fulfill({json:path==='/settings'?{profiles:[]}:path==='/papers'?{papers:[paper]}:path===`/papers/${paper.id}`?{paper}:path.endsWith('/annotations')?{annotations:[]}:path==='/chats'?{messages:[],conversationId:null}:{}});});
+ await page.route('**/api/**',route=>{const req=route.request(),path=new URL(req.url()).pathname.slice(4);if(req.method()!=='GET')writes++;return route.fulfill({json:path==='/settings'?{profiles:[],provider:'openai',baseUrl:'',model:'',modelConfigured:false,apiKeyConfigured:false}:path==='/papers'?{papers:[paper]}:path===`/papers/${paper.id}`?{paper}:path.endsWith('/annotations')?{annotations:[]}:path==='/chats'?{messages:[],conversationId:null}:{}});});
  await page.goto('/en/?paper='+paper.id);await page.getByRole('tab',{name:'Paper',exact:true}).click();await expect(page.locator('[data-pdf-page="1"] .pdf-text-layer[data-rendered="true"]')).toBeVisible();return {writes:()=>writes};
 }
 test('citation click previews original source without moving the reader, then explicit jump has exact return',async({page})=>{

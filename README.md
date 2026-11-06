@@ -10,6 +10,10 @@ Inspired by alphaXiv’s reading experience, this is an independent project—no
 
 [Quick start](#quick-start) · [AI setup](#choose-how-to-use-ai) · [Reading and notes](#reading-and-notes) · [Privacy](#your-data-and-privacy) · [Development](#development)
 
+![Read an overview alongside a source-linked conversation](docs/assets/reading-demo.png)
+
+*An isolated, prewritten sample: fictional paper and illustrative data, no model calls or personal library contents.* [Watch the short tour](docs/assets/reading-tour.webm) · [PDF and source highlight](docs/assets/evidence-demo.png) · [Notes](docs/assets/notes-demo.png) · [Mobile](docs/assets/mobile-demo.png)
+
 ## What you can do
 
 | Task | In the workspace |
@@ -21,7 +25,7 @@ Inspired by alphaXiv’s reading experience, this is an independent project—no
 | Keep what you learn | Highlight, underline, take notes, revisit translations, and export notes or annotated PDFs. |
 | Use your own models | Save multiple API connections and model lists, configure supported reasoning levels, and inspect API token usage. |
 
-**Status:** actively developed for local, single-user use. Some browser regression tests still need updating; see the [pre-publication review](docs/prepublication-review-2026-11-06.md). The project is not yet a fully validated public release.
+**Status:** actively developed for local, single-user use. Guided setup, a zero-key sample and portable backups are available. See the [validation record](docs/validation-2026-11-07.md) for local checks and remaining release limits, including GitHub Actions currently blocked by account billing.
 
 ## Quick start
 
@@ -39,6 +43,12 @@ While the repository is private, cloning requires an authorized GitHub account.
 
 Open **[http://127.0.0.1:4318](http://127.0.0.1:4318)**. No model key is needed to import and read papers or take notes. For AI features, choose one of the two workflows below.
 
+### Try it without an API key
+
+Choose **Guide → Explore the sample**, or open the [local reading lab](http://127.0.0.1:4318/en/?demo=1&paper=demo-evidence-paper) after starting the app. It includes a three-page PDF, quick and deep readings in English and Chinese, a prewritten conversation, and a source-linked note. Switch reading versions, follow a citation into the highlighted PDF passage, and inspect the chart.
+
+The sample is read-only, makes no model or web requests, and does not import anything into your personal library. Choose **Back to my library** when you are ready to use your own papers. The guide can be dismissed and reopened at any time.
+
 ### Start and restart on macOS
 
 After cloning, double-click **启动文库.command** to start the library, or **重启文库.command** to rebuild changed frontend files and restart it. Node.js must already be installed. The scripts install missing dependencies, open the library, and keep the service running after the Terminal window closes.
@@ -53,6 +63,12 @@ npm run service:stop
 ```
 
 Wait for active model requests to finish before restarting. Logs and process records are stored in the ignored `.local-data/` directory.
+
+## Keep a copy of your work
+
+Open **Backup** in the sidebar to download a `.paperwork` archive containing papers, PDFs, readings, notes, folders, and conversations. Restore previews its contents before asking for confirmation and adds copies without replacing your current library. Model connections, keys and API usage are excluded; notes and conversations remain private content.
+
+See [backup, upgrade and rollback instructions](docs/UPGRADING.md) for archive limits and a full offline backup that also preserves local configuration.
 
 ## Your first paper
 
@@ -75,7 +91,7 @@ If a PDF is missing its authors, affiliations, or original abstract, use **Extra
 
 ### Connect a model API
 
-Open **Models & API**, add a connection, and enter its base URL, key, and model IDs. One connection can hold several models; you can also save multiple connections. Test the connection before generating a reading.
+Open **Models & API**, add a connection, and enter its base URL, key, and model IDs. One connection can hold several models; you can also save multiple connections. Test the connection before generating a reading. Testing makes a small, explicitly requested model call; the result distinguishes key/access errors, incorrect endpoints, rate limits, timeouts, and protocol issues, with suggested next steps. A successful text probe does not establish image or tool-call support.
 
 The app supports **OpenAI-compatible Chat Completions** and **Anthropic Messages**. Other services need to expose one of these protocols. Agent questions also require native tool calling. Configure image-input capability explicitly for vision models; a model name alone does not establish support.
 

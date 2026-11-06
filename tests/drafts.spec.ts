@@ -12,6 +12,7 @@ async function setup(page: Page) {
   let newSession = 0;
   await page.route('**/draft-source.pdf', route=>route.fulfill({body:pdf,contentType:'application/pdf'}));
   await page.route('**/api/**', async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),url=new URL(req.url()),path=url.pathname.slice(4); let result:any={};
     const paperId=url.searchParams.get('paperId')||'alpha';
     if(path==='/chat'){chats.push({route,body:req.postDataJSON()});return;}
@@ -62,7 +63,7 @@ async function library(page:Page){
 }
 async function switchPaper(page:Page,id:string){
   await library(page);
-  await page.locator('.paper-card-main').filter({hasText:`Draft paper ${id}`}).click();
+  await page.locator('.collection-paper-open').filter({hasText:`Draft paper ${id}`}).click();
   await assistant(page);
 }
 async function chooseHistory(page:Page,title:string){
@@ -162,7 +163,7 @@ test('initial page deep link survives StrictMode and a late initial load cannot 
   await page.route('**/api/papers/alpha',route=>{release=route;});
   await page.goto('/zh/?paper=alpha&page=5');await expect.poll(()=>!!release).toBe(true);
   await library(page);
-  await page.locator('.paper-card-main').filter({hasText:'Draft paper beta'}).click();
+  await page.locator('.collection-paper-open').filter({hasText:'Draft paper beta'}).click();
   await expect(page.getByRole('heading',{name:'Draft paper beta',exact:true})).toBeVisible();
   await release!.fulfill({json:{paper:f.papers[0]}});
   await expect(page).toHaveURL(/paper=beta$/);

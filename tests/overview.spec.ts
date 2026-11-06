@@ -6,6 +6,7 @@ test('overview selection translates in place and asks in a separate session with
   const settings={provider:'openai',baseUrl:'https://example.org/v1',model:'example-model',apiKeyConfigured:true,modelConfigured:true};
   const writes:{path:string,body:any}[]=[];
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const request=route.request(), path=new URL(request.url()).pathname.slice(4);
     let response:any={};
     if(request.method()!=='GET') writes.push({path,body:request.postDataJSON()});
@@ -54,6 +55,7 @@ test('explicit language switching translates the fixed version once and reuses i
   const paper:any={id:'locale-overview',title:'Version language fixture',authors:[],source:'web',createdAt:'2026-10-22T00:00:00Z',abstract:'English source abstract.',text:'Source text.',tags:[],readingVersions:[reading],activeReadingId:reading.id};
   let calls=0;
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(), path=new URL(req.url()).pathname.slice(4); let response:any={};
     if(path==='/settings') response={provider:'openai',baseUrl:'https://example.org/v1',model:'model',apiKeyConfigured:true,modelConfigured:true};
     else if(path==='/papers') response={papers:[paper]};
@@ -90,6 +92,7 @@ test('history without PDF pages preserves abstract and reading origins and canno
   ];
   const writes:{path:string,body:any}[]=[];
   await page.route('**/api/**', async route => {
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),path=new URL(req.url()).pathname.slice(4);let response:any={};
     if(req.method()!=='GET') writes.push({path,body:req.postDataJSON()});
     if(path==='/settings') response={provider:'openai',baseUrl:'https://example.org/v1',model:'test',apiKeyConfigured:false,modelConfigured:false};
@@ -157,6 +160,7 @@ test('image evidence renders inline and display math and limits the submitted fo
   const requests:any[]=[];
   await page.route('**/vision-math-source.pdf',route=>route.fulfill({contentType:'application/pdf',body:pdf}));
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),path=new URL(req.url()).pathname.slice(4);let response:any={};
     if(path==='/settings') response={...profile,profiles:[profile],activeProfileId:profile.id,vision:{enabled:true,profileId:profile.id,model:'vision-test'}};
     else if(path==='/papers') response={papers:[paper]};
@@ -199,6 +203,7 @@ test('image observations can be excluded and restored without calling the model 
   const writes:{path:string,method:string,body:any}[]=[];
   await page.route('**/vision-exclusion-source.pdf',route=>route.fulfill({contentType:'application/pdf',body:pdf}));
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),path=new URL(req.url()).pathname.slice(4);let response:any={};
     if(req.method()!=='GET')writes.push({path,method:req.method(),body:req.postDataJSON()});
     if(path==='/settings') response={...profile,profiles:[profile],activeProfileId:profile.id,vision:{enabled:true,profileId:profile.id,model:'vision-test'}};
@@ -243,6 +248,7 @@ async function translationNavigationFixture(page: Page) {
   const requests:{route:Route,body:any,snapshot:any}[]=[];
   await page.route('**/pending-translation-source.pdf',route=>route.fulfill({contentType:'application/pdf',body:pdf}));
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),path=new URL(req.url()).pathname.slice(4);let response:any={};
     if(path===`/papers/${paper.id}/translate`) {requests.push({route,body:req.postDataJSON(),snapshot:structuredClone(paper)});return;}
     if(path==='/settings') response={provider:'openai',baseUrl:'https://example.org/v1',model:'translation-model',apiKeyConfigured:true,modelConfigured:true};
@@ -329,13 +335,13 @@ test('a late translation cannot replace a different paper or the explicitly sele
   await page.getByLabel('Reading version',{exact:true}).selectOption(fixture.second.id);
   await expect(page.locator('.reading-prose')).toContainText('Keep this explicitly selected version.');
   await page.locator('.back-button').click();
-  await page.locator('.paper-card-main').filter({hasText:fixture.other.title}).click();
+  await page.locator('.collection-paper-open').filter({hasText:fixture.other.title}).click();
   await expect(page.locator('.reading-prose')).toContainText('Unrelated paper content stays untouched.');
   await fixture.finish();
   await expect(page.getByLabel('Reading version',{exact:true})).toHaveValue('independent-version');
   await expect(page.locator('.reading-prose')).toContainText('Unrelated paper content stays untouched.');
   await page.locator('.back-button').click();
-  await page.locator('.paper-card-main').filter({hasText:fixture.paper.title}).click();
+  await page.locator('.collection-paper-open').filter({hasText:fixture.paper.title}).click();
   await expect(page.getByLabel('Reading version',{exact:true})).toHaveValue(fixture.second.id);
   await expect(page.locator('.reading-prose')).toContainText('Keep this explicitly selected version.');
   await page.getByLabel('Reading version',{exact:true}).selectOption(fixture.first.id);
@@ -348,6 +354,7 @@ test('Chinese punctuation emphasis renders semantically while literal code and m
   const version={id:'chinese-emphasis',style:'deep',language:'zh-CN',format:'article',markdown,mode:'agent',createdAt:'2026-10-22T00:00:00Z'};
   const paper={id:'chinese-markdown',title:'Chinese reading typography',authors:[],source:'web',createdAt:version.createdAt,abstract:'Source evidence.',text:'Source evidence.',tags:[],readingVersions:[version],activeReadingId:version.id};
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const path=new URL(route.request().url()).pathname.slice(4);let response:any={};
     if(path==='/settings') response={provider:'openai',baseUrl:'https://example.org/v1',model:'test',apiKeyConfigured:false,modelConfigured:false};
     else if(path==='/papers') response={papers:[paper]};

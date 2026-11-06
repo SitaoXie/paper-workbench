@@ -1,3 +1,5 @@
+import { connectionDiagnostic, type ConnectionDiagnostic } from '../shared/connection-diagnostic.mjs';
+import './connection-diagnostic.css';
 import {EFFORT_LEVELS, type ModelReasoning, type ReasoningProtocol} from '../shared/model-reasoning.mjs';
 import { useEffect, useRef, useState } from "react";
 import { DEFAULT_CONTEXT_CHARS, MIN_CONTEXT_CHARS, MAX_CONTEXT_CHARS, DEFAULT_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS } from '../shared/model-limits.mjs';
@@ -64,9 +66,10 @@ export default function SettingsDialog({
   onClose: () => void;
   onSaved: (s: Settings) => void;
 }) {
-  useLocale();
+  const { locale } = useLocale();
   const sharedWrite = useModelSelection();
   const openedDuringWrite = useRef(sharedWrite.pending);
+  const probeRevision = useRef(0);
   const [profiles, setProfiles] = useState(() =>
     profileList(current).map(toDraft),
   );
@@ -102,6 +105,8 @@ export default function SettingsDialog({
     : [];
   const [busy, setBusy] = useState("");
   const [feedback, setFeedback] = useState("");
+  const [diagnostic, setDiagnostic] = useState<ConnectionDiagnostic | null>(null);
+  const [probeSeconds, setProbeSeconds] = useState<number | null>(null);
   const [dirty,setDirty]=useState(false);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -118,6 +123,9 @@ export default function SettingsDialog({
   const draft = profiles.find((p) => p.id === selected) || profiles[0];
   const update = (patch: Partial<Draft>) => {
     setDirty(true);
+    setDiagnostic(null);
+    setProbeSeconds(null);
+    setFeedback("");
     if (patch.modelText !== undefined) {
       const models = [...new Set(patch.modelText.split(/[\n,，]+/).map(value=>value.trim()).filter(Boolean))];
       if (!models.includes(draft.model)) patch.model = models[0] || '';
@@ -197,6 +205,10 @@ export default function SettingsDialog({
     if (busy || sharedWrite.pending) return;
     setBusy(action);
     setFeedback("");
+    setDiagnostic(null);
+    setProbeSeconds(null);
+    const startedAt = Date.now();
+    const testedRevision = probeRevision.current;
     try {
       const body = payload(removeProfileId);
       if (removeProfileId) {
@@ -236,11 +248,15 @@ export default function SettingsDialog({
           method: "POST",
           body: JSON.stringify({ ...body, activeProfileId: selected }),
         });
-        setFeedback(t("连接成功，模型已响应。"));
+        if (testedRevision === probeRevision.current) {
+          setFeedback(t("连接成功，模型已响应。", "Connected. The model responded."));
+          setProbeSeconds(Math.max(0, (Date.now() - startedAt) / 1000));
+        }
       }
       setFailed(false);
     } catch (e) {
-      setFeedback((e as Error).message);
+      if (action === "test") { if (testedRevision === probeRevision.current) setDiagnostic(connectionDiagnostic(e, locale)); }
+      else setFeedback((e as Error).message);
       setFailed(true);
     } finally {
       setBusy("");
@@ -274,6 +290,8 @@ export default function SettingsDialog({
     ]);
     setSelected(id);
     setFeedback("");
+    setDiagnostic(null);
+    setProbeSeconds(null);
   }
   function remove() {
     if (profiles.length < 2) return;
@@ -283,7 +301,7 @@ export default function SettingsDialog({
   return (
     <div
       className="modal-backdrop settings-backdrop"
-      onChangeCapture={()=>setDirty(true)}
+      onChangeCapture={()=>{setDirty(true);probeRevision.current++;setFeedback("");setDiagnostic(null);setProbeSeconds(null);}}
       onClick={(e) => {
         if (e.target === e.currentTarget && !busy) onClose();
       }}
@@ -321,6 +339,8 @@ export default function SettingsDialog({
               onClick={() => {
                 setSelected(p.id);
                 setFeedback("");
+                setDiagnostic(null);
+                setProbeSeconds(null);
               }}
             >
               <span title={p.name || t("未命名连接")}>
@@ -687,11 +707,21 @@ export default function SettingsDialog({
           </p>
         </div>
         {sharedWrite.pending && busy !== "save" && <p className="field-hint" role="status">{t("正在应用模型设置，请稍候…", "Applying model settings. Please wait…")}</p>}
+        {diagnostic && <div className="connection-diagnostic" role="alert">
+          <strong>{diagnostic.title}{diagnostic.status ? ` · HTTP ${diagnostic.status}` : ""}</strong>
+          <ol>{diagnostic.steps.map(step => <li key={step}>{step}</li>)}</ol>
+          <p>{t("测试不会保存配置。修改后再次点击「测试连接」，不会自动重试。", "Testing does not save settings. After editing, choose Test connection again; retries are never automatic.")}</p>
+        </div>}
         {feedback && (
           <div className={failed ? "form-error" : "form-success"} role="status">
             {feedback}
           </div>
         )}
+        {probeSeconds !== null && <div className="connection-diagnostic" role="status">
+          <strong className="connection-diagnostic-timing">{t(`文字响应耗时 ${probeSeconds.toFixed(1)} 秒`, `Text response in ${probeSeconds.toFixed(1)} s`)}</strong>
+          <p>{t("只验证当前草稿的文字调用；未验证看图、工具调用或流式兼容性。请保存配置后，在具体任务中确认这些能力。", "This checks a text request using the current draft. Vision, tool calling, and streaming are not verified. Save settings, then verify those capabilities in the relevant task.")}</p>
+        </div>}
+        <p className="connection-probe-note">{t("测试连接会向当前模型发送一句短提示，可能产生少量 API 用量；不会发送论文内容，也不会自动保存配置。", "Test connection sends a short prompt to this model and may incur API usage. It does not send paper content or save settings.")}</p>
         <div className="settings-actions">
           <button
             className="soft-button"

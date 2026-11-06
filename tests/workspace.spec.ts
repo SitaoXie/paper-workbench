@@ -1,3 +1,4 @@
+import {localAnswerFixture} from './model-controls';
 import { test, expect, type Page, type APIRequestContext, type Locator } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 
@@ -146,7 +147,6 @@ test("inline translation and explanation stay near the passage and have separate
   expect(bounds.x).toBeGreaterThanOrEqual(0); expect(bounds.x + bounds.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
   expect(bounds.y + bounds.height).toBeLessThanOrEqual(page.viewportSize()!.height + 1);
   await expect(page.locator(".assistant-dock")).toHaveCount(0);
-  await inline.getByRole("button", { name: "保存到笔记", exact: true }).click();
   await expect(inline.getByRole("button", { name: "已保存", exact: true })).toBeDisabled();
   await inline.getByRole("button", { name: "关闭就地助手", exact: true }).click();
   const second = await selectPassage(page, 1, "First evidence");
@@ -157,7 +157,7 @@ test("inline translation and explanation stay near the passage and have separate
   expect(calls.map(call => call.kind)).toEqual(["translation", "explanation"]);
   expect(calls[0].text).toBe(first.quote);
   expect(chatWrites).toEqual([]);
-  expect((await annotations(request, paper.id)).map((a: { kind: string }) => a.kind)).toEqual(["translation"]);
+  expect((await annotations(request, paper.id)).map((a: { kind: string }) => a.kind)).toEqual(["translation", "explanation"]);
   await page.reload(); await closePanels(page);
   await page.getByTitle("切换助手", { exact: true }).click();
   await page.getByRole("button", { name: "对话历史", exact: true }).click();
@@ -168,7 +168,10 @@ test("inline translation and explanation stay near the passage and have separate
   await history.getByRole("tab", { name: "解释", exact: true }).click();
   await history.locator(".history-entry").filter({ hasText: second.quote }).click();
   await expect(history).toContainText("尚不能证明普遍有效");
+  // Re-saving a history entry already preserved by inline autosave must not
+  // create a second note or lose the original exact PDF anchor.
   await history.getByRole("button", { name: "保存到笔记", exact: true }).click();
+  await expect(history.getByRole("button", { name: "已保存到笔记", exact: true })).toBeDisabled();
   await expect.poll(async () => (await annotations(request, paper.id)).map((a: { kind: string }) => a.kind).sort()).toEqual(["explanation", "translation"]);
   await history.getByRole("tab", { name: "问答", exact: true }).click();
   await expect(history).toContainText("此分类暂无记录");
@@ -178,13 +181,13 @@ test("inline translation and explanation stay near the passage and have separate
 
 test("selection questions create separate sessions and switching history never carries another quote", async ({ page, request }, info) => {
   const paper = await fixture(page, request, `sessions-${info.project.name}`);
+  await localAnswerFixture(page);
   await openReader(page, paper.id);
   const first = await selectPassage(page, 1, "First evidence");
   await first.menu.getByLabel("针对选中文字的问题").fill("问题一：这个证据说明什么？");
   await first.menu.getByRole("button", { name: "询问助手", exact: true }).click();
   await expect(page.locator(".selected-passage blockquote")).toHaveText(first.quote);
   const firstId = (await (await request.get(`/api/chats?paperId=${paper.id}`)).json()).conversationId;
-  await page.getByLabel("问答处理方式", { exact: true }).selectOption("extractive");
   await page.getByLabel("向研究助手提问", { exact: true }).press("Enter");
   await expect.poll(async () => (await (await request.get(`/api/chats?paperId=${paper.id}`)).json()).messages.length).toBe(2);
   let messages = (await (await request.get(`/api/chats?paperId=${paper.id}`)).json()).messages;
@@ -209,7 +212,6 @@ test("selection questions create separate sessions and switching history never c
   const third = await selectPassage(page, 2, "Second evidence");
   await third.menu.getByLabel("针对选中文字的问题").fill("问题三：基线是否公平？");
   await third.menu.getByRole("button", { name: "询问助手", exact: true }).click();
-  await page.getByLabel("问答处理方式", { exact: true }).selectOption("extractive");
   await page.getByLabel("向研究助手提问", { exact: true }).press("Enter");
   await expect.poll(async () => (await (await request.get(`/api/chats?paperId=${paper.id}`)).json()).messages.length).toBe(2);
   messages = (await (await request.get(`/api/chats?paperId=${paper.id}`)).json()).messages;

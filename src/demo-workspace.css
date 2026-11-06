@@ -1,0 +1,16 @@
+.demo-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 24px;background:var(--panel);border-bottom:1px solid var(--line);font-size:12px;line-height:1.5}
+.demo-banner>div:first-child{display:flex;flex-direction:column;gap:3px;min-width:0}
+.demo-banner strong{font-size:14px;color:var(--accent)}
+.demo-banner span{color:var(--muted)}
+.demo-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.demo-actions button,.demo-actions a{border:1px solid var(--line);border-radius:8px;padding:7px 10px;color:var(--text);background:var(--panel);font:inherit;cursor:pointer;text-decoration:none;white-space:nowrap}
+.demo-actions a{color:var(--accent)}
+.demo-actions button:hover,.demo-actions a:hover{background:var(--hover)}
+@media(max-width:700px){.demo-banner{padding:12px 16px 12px 52px;align-items:flex-start;flex-direction:column;gap:9px}.demo-actions{gap:5px}.demo-actions button,.demo-actions a{padding:6px 8px;font-size:11px}}
+/* The sample is a reading tour. Mutation endpoints are independently rejected
+   server-side; hiding unavailable controls keeps the tour free of dead ends. */
+.is-demo [data-workspace-write],.is-demo .composer-wrap,.is-demo .message-actions,
+.is-demo .reading-configure-toggle,.is-demo .reading-citation-enhance,.is-demo .reading-interactive-convert,
+.is-demo .reading-interactive-subscription,.is-demo .vision-tools,.is-demo .translation-menu,
+.is-demo .agent-entry,.is-demo .paper-folder-button,.is-demo .text-button.danger {display:none!important}
+.demo-chat-footer{margin:12px 18px 18px;padding:14px;border:1px solid var(--line);border-radius:12px;color:var(--muted);font-size:13px;line-height:1.7}

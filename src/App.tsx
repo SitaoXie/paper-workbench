@@ -1,3 +1,7 @@
+import WorkspaceBackup from './WorkspaceBackup';
+import OnboardingCard,{onboardingDismissed,reopenOnboarding} from './OnboardingCard';
+import {isDemoWorkspace} from './workspace-mode';
+import './demo-workspace.css';
 import AssistantPreferences from './AssistantPreferences';
 import {assistantStyle} from '../shared/assistant-prompts.mjs';
 import {clipboardImageFiles,readChatImage,type DraftChatImage} from './chat-images';
@@ -6,7 +10,7 @@ import ReasoningPanel from "./ReasoningPanel";
 import { streamChat, applyChatEvent, completedChat } from "./chat-stream";
 import { prepareAgentQuestionTask } from "./agent-task";
 import { parseReadingSectionLocation, readingSectionUrl, READING_SECTION_EVENT } from "./reading-sections";
-import { activityResultText, usableActivityResult } from "./activity-result";
+import { activityResultText, usableActivityResult, matchingActivityAnnotation } from "./activity-result";
 import { resolveAbstractSource, type AbstractSourceView } from "./abstract-navigation";
 import {paperBibtex,paperDisplayDate} from './paper-bibliography';
 import {readWorkspaceHistory,workspaceHistoryState,workspaceLocation,workspaceUrl,loadWorkspaceHistoryPositions,saveWorkspaceHistoryPositions,type WorkspaceHistory} from './workspace-history';
@@ -20,6 +24,8 @@ import {
   ArrowDown,
   ArrowUpRight,
   BookOpen,
+  CircleHelp,
+  ArchiveRestore,
   Bookmark,
   Check,
   ChevronDown,
@@ -128,6 +134,11 @@ function download(text: string, name: string, type = "text/markdown") {
 export default function App() {
   const { locale, setLocale } = useLocale();
   const [view, setView] = useState<View>(()=>{const initial=workspaceLocation(location.href);return initial.view==='paper'?'discover':initial.view;});
+  const demo = isDemoWorkspace();
+  const [libraryLoaded,setLibraryLoaded]=useState(false);
+  const [showBackup,setShowBackup]=useState(false);
+  const [showGuide,setShowGuide]=useState(false);
+  const [guideDismissed,setGuideDismissed]=useState(onboardingDismissed);
   const [papers, setPapers] = useState<Paper[]>([]);
   const [paper, setPaper] = useState<Paper | null>(null);
   const [figureReview, setFigureReview] = useState<{paperId:string;page:number}>();
@@ -421,7 +432,7 @@ export default function App() {
   }
   // External agent results arrive through the same API; keep a visible paper live.
   useEffect(() => {
-    if (view !== "paper" || !paper?.id || conversationBusy) return;
+    if (demo || view !== "paper" || !paper?.id || conversationBusy) return;
     const id = paper.id;
     let disposed = false,
       pending = false;
@@ -478,7 +489,7 @@ export default function App() {
     const revision = navigationRevision.current;
     const intent = navigationIntent.current;
     api<{ papers: Paper[] }>("/papers")
-      .then((r) => setPapers(r.papers))
+      .then((r) => {setPapers(r.papers);setLibraryLoaded(true);})
       .catch((e) => setError(e.message));
     api<Settings>("/settings")
       .then(setSettings)
@@ -1388,7 +1399,7 @@ export default function App() {
               className="icon-button"
               title={t("对话历史")}
               aria-label={t("对话历史")}
-              disabled={chatting || conversationBusy}
+              disabled={demo || chatting || conversationBusy}
               onClick={listConversations}
             >
               <History size={16} />
@@ -1398,7 +1409,7 @@ export default function App() {
               className="icon-button"
               title={t("新对话")}
               aria-label={t("新对话")}
-              disabled={chatting || conversationBusy}
+              disabled={demo || chatting || conversationBusy}
               onClick={newConversation}
             >
               <Plus size={17} />
@@ -1441,6 +1452,11 @@ export default function App() {
               }}
               onSaveActivity={async (activity) => {
                 if (!activity.page || (activity.pages?.length || 0) > 1 || (activity.sourceScope && activity.sourceScope !== "pdf") || !usableActivityResult(activity.result)) return;
+                const sourcePaperId = paper?.id;
+                if (!sourcePaperId) return;
+                const existing = await api<{annotations:Annotation[]}>(`/papers/${sourcePaperId}/annotations`);
+                if (paperRef.current !== sourcePaperId) return;
+                if (matchingActivityAnnotation(activity, existing.annotations || [])) return;
                 await createAnnotation({
                   kind: activity.kind,
                   page: activity.page,
@@ -1528,6 +1544,7 @@ export default function App() {
           <ArrowDown size={14}/><span aria-live="polite" aria-atomic="true">{chatScroll.unread ? t("有新消息", "New messages") : t("回到最新消息", "Jump to latest")}</span>
         </button>}
         </div>
+        {demo && <div className="demo-chat-footer">{t('这是预写问答。点击答案中的来源可核对原文；回到个人文库即可接入自己的模型。','This is a prewritten conversation. Follow its source links to check the paper, or return to your library to connect your own model.')}</div>}
         <div className="composer-wrap">
           {!modelReady && !(paper&&view==='paper') && (
             <button
@@ -1636,7 +1653,7 @@ export default function App() {
   return (
     <CitationSourceContext.Provider value={view === "paper" ? pdfSource : undefined}>
     <div
-      className={`app-shell ${view !== "paper" ? "expanded-navigation" : ""} ${view === "paper" && (assistant || notebook) ? "has-assistant-dock" : ""}`}
+      className={`app-shell ${demo ? "is-demo" : ""} ${view !== "paper" ? "expanded-navigation" : ""} ${view === "paper" && (assistant || notebook) ? "has-assistant-dock" : ""}`}
       style={{ "--assistant-width": `${dockWidth}px` } as CSSProperties}
     >
       <input
@@ -1660,12 +1677,12 @@ export default function App() {
         <button
           className="brand"
           aria-label={t("Paper Workbench 首页")}
-          onClick={() => navigate("discover")}
+          onClick={() => navigate(demo ? "library" : "discover")}
         >
           p<span>·</span>
         </button>
         <div className="rail-main">
-          {navItems.map(([id, Icon, label]) => (
+          {navItems.filter(([id])=>!demo||!['usage','research','discover'].includes(id)).map(([id, Icon, label]) => (
             <button
               key={id}
               className={`rail-item ${view === id ? "active" : ""}`}
@@ -1685,19 +1702,21 @@ export default function App() {
               setShowImport(true);
               setMobileNav(false);
             }}
-            title={t("导入论文")}
+            data-workspace-write="true" title={t("导入论文")}
           >
             <FilePlus2 size={21} strokeWidth={1.6} />
             <span>{t("导入")}</span>
           </button>
         </div>
         <div className="rail-bottom">
+          {!demo&&<button className="rail-item" title={t('备份与恢复','Backup & restore')} onClick={()=>{setMobileNav(false);setShowBackup(true);}}><ArchiveRestore size={20}/><span>{t('备份','Backup')}</span></button>}
+          <button className="rail-item" data-workspace-write="true" aria-label={t('入门指南','Getting started')} title={t('入门指南','Getting started')} onClick={()=>{setMobileNav(false);reopenOnboarding();setGuideDismissed(false);setShowGuide(true);navigate('library');}}><CircleHelp size={20}/><span>{t('指南','Guide')}</span></button>
           <button className="rail-item" aria-label={t("切换为英文", "Switch to Chinese")} title={t("切换为英文", "Switch to Chinese")} onClick={() => setLocale(locale === "zh" ? "en" : "zh")}>
             <Languages size={20} strokeWidth={1.6} /><span>{locale === "zh" ? "English" : "中文"}</span>
           </button>
           <button
             className="rail-item"
-            title={t("模型设置")}
+            data-workspace-write="true" title={t("模型设置")}
             onClick={() => { setMobileNav(false); setShowSettings(true); }}
           >
             <Settings2 size={20} strokeWidth={1.6} />
@@ -1720,6 +1739,11 @@ export default function App() {
       <main
         className={`workspace ${view === "paper" ? "paper-workspace" : ""} ${view === "paper" && (assistant || notebook) ? "has-docked-assistant" : ""} ${view === "paper" && tab === "paper" ? "continuous-reading" : ""}`}
       >
+        {demo && <section className="demo-banner" aria-label={t('示例工作区','Sample workspace')}>
+          <div><strong>{t('阅读体验室','Reading lab')}</strong><span>{t('预写示例 · 无需 API · 不影响个人文库','Prewritten sample · No API · Separate from your library')}</span></div>
+          <div className="demo-actions">{paper&&<><button onClick={()=>{setAssistant(true);setNotebook(false);}}>{t('示例问答','Sample Q&A')}</button><button onClick={()=>{setNotebook(true);setAssistant(false);}}>{t('示例笔记','Sample notes')}</button></>}<a href={`/${locale}/?view=library`}>{t('返回我的文库','Back to my library')}</a></div>
+        </section>}
+        {!demo && (showGuide || (libraryLoaded && !papers.length && !guideDismissed && (view==='discover'||view==='library'))) && <OnboardingCard onDemo={()=>{location.href=`/${locale}/?demo=1&paper=demo-evidence-paper`;}} onImport={()=>setShowImport(true)} onConfigure={()=>setShowSettings(true)} onDismiss={()=>{setShowGuide(false);setGuideDismissed(true);}}/>}
         {error && (
           <div className="error-banner" role="alert">
             <span>{error}</span>
@@ -1888,7 +1912,7 @@ export default function App() {
                         aria-label={
                           paper.favorite ? t("取消收藏") : t("收藏论文")
                         }
-                        onClick={() => favorite(paper)}
+                        disabled={demo} onClick={() => favorite(paper)}
                       >
                         <Bookmark
                           size={17}
@@ -2543,6 +2567,7 @@ export default function App() {
           </section>
         </div>
       )}
+      {showBackup && !demo && <WorkspaceBackup onClose={()=>setShowBackup(false)} onRestored={refresh}/>}
       {showSettings && (
         <SettingsDialog
           current={settings}

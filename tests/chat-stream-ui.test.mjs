@@ -8,7 +8,7 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 const require=createRequire(import.meta.url);
 function moduleAt(path,overrides={}) {const source=readFileSync(new URL(path,import.meta.url),'utf8');const code=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText;const exports={};vm.runInNewContext(code,{exports,require:name=>name.endsWith('.css')?{}:overrides[name]||require(name)});return exports;}
-const {applyChatEvent,completedChat}=moduleAt('../src/chat-stream.ts',{'../shared/sse.mjs':{}});
+const {applyChatEvent,completedChat}=moduleAt('../src/chat-stream.ts',{'../shared/sse.mjs':{},'./workspace-mode':{apiUrl:p=>'/api'+p}});
 test('round transitions replace provisional text, retain each reasoning round, and never reuse failed previews as history',()=>{
  let message={role:'assistant',content:'',streaming:true};
  message=applyChatEvent(message,{type:'reasoning',round:1,delta:'search first'});

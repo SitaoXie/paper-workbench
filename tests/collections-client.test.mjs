@@ -35,3 +35,15 @@ test('library and paper folder controls render in both languages without transla
   assert.equal(collectionName(folders[0]),'Course');assert.equal(collectionName(folders[2]),locale==='zh'?'在读':'Reading');
  }}finally{if(previous===undefined)delete global.window;else global.window=previous;}
 });
+test('sample library keeps folder navigation but exposes no editable memberships',()=>{
+ const React=require('react'),{renderToStaticMarkup}=require('react-dom/server');const {default:Library,PaperFolderButton}=load('src/LibraryWorkspace.tsx');
+ const previous=global.window;
+ try{
+  global.window={location:{pathname:'/en/',hostname:'localhost',href:'http://localhost/en/?demo=1'},localStorage:{getItem:()=>null}};
+  const markup=renderToStaticMarkup(React.createElement(Library,{papers,onOpen(){},onFavorite(){},onImport(){}}));
+  assert.match(markup,/All papers/);assert.match(markup,/Library folders/);
+  assert.doesNotMatch(markup,/collection-paper-actions|Remove bookmark|Add to folder|Import papers/);
+  assert.equal(renderToStaticMarkup(React.createElement(PaperFolderButton,{paperId:'a'})),'');
+  assert.match(markup,/class="collection-new" disabled=""/);
+ }finally{if(previous===undefined)delete global.window;else global.window=previous;}
+});

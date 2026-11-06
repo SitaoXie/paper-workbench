@@ -1,3 +1,4 @@
+import {chooseAnswerMode,localAnswerFixture} from './model-controls';
 import { test, expect, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 
@@ -23,13 +24,14 @@ const seed = {
 
 async function nav(page: Page, name: string) {
   const menu = page.getByRole("button", { name: "展开导航", exact: true });
-  const rail = page.getByRole("navigation");
+  const rail = page.getByRole("navigation", {name:"主导航",exact:true});
   if (
     (await menu.isVisible()) &&
     !(await rail.getAttribute("class"))?.includes("mobile-open")
   )
     await menu.click();
   const target = rail.getByRole("button", { name, exact: true });
+  await target.scrollIntoViewIfNeeded();
   await expect(target).toBeInViewport();
   await target.click();
 }
@@ -60,7 +62,9 @@ async function mockAPI(page: Page) {
   const conversations = new Map<string, any>();
   const activeConversations = new Map<string, string>();
   const activities: any[] = [];
+  const annotations: any[] = [];
   await page.route("**/api/**", async (route) => {
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req = route.request(),
       url = new URL(req.url()),
       path = url.pathname.replace("/api", ""),
@@ -103,6 +107,7 @@ async function mockAPI(page: Page) {
         activeProfileId,
         profiles,
         modelConfigured: !!active.apiKeyConfigured,
+        assistant: {...settings.assistant,...body.assistant},
       };
       result = settings;
     } else if (path === "/settings/test") result = { ok: true };
@@ -126,7 +131,10 @@ async function mockAPI(page: Page) {
             .includes((url.searchParams.get("q") || "").toLowerCase()),
         ),
       };
-    else if (/^\/papers\/[^/]+\/annotations$/.test(path)) result = { annotations: [] };
+    else if (/^\/papers\/[^/]+\/annotations$/.test(path)) {
+      if(method==='POST'){const annotation={...body,id:`ui-note-${annotations.length+1}`,paperId:path.split('/')[2]};annotations.push(annotation);result={annotation};}
+      else result={annotations:annotations.filter(a=>a.paperId===path.split('/')[2])};
+    }
     else if (/^\/papers\/[^/]+\/activities$/.test(path)) result = { activities };
     else if (/^\/papers\/[^/]+\/assist$/.test(path)) {
       const resultText = body.kind === "translation" ? "独立试验确认了观测趋势，并明确指出局限。" : "The passage describes independent replication while acknowledging limits.";
@@ -198,10 +206,27 @@ test.describe("Repeatable UI acceptance", () => {
     await page.getByRole("button", { name: "清除搜索" }).click();
     await nav(page, "文库");
     await expect(
-      page.getByRole("heading", { name: "我的文库", exact: true }),
+      page.getByRole("heading", { name: "全部论文", exact: true }),
     ).toBeVisible();
     await nav(page, "收藏");
     await expect(page.getByText("把值得记住的论文留在这里")).toBeVisible();
+    if (await page.getByRole('button', {name:'展开导航',exact:true}).isVisible()) {
+      await page.getByRole('button', {name:'展开导航',exact:true}).click();
+      const rail = page.getByRole('navigation', {name:'主导航',exact:true});
+      const main = rail.locator('.rail-main');
+      const models = rail.getByRole('button', {name:'模型',exact:true});
+      await expect(models).toBeInViewport();
+      await expect(main).toHaveCSS('overflow-y', 'auto');
+      const modelTop = (await models.boundingBox())!.y;
+      const importButton = main.getByRole('button', {name:'导入',exact:true});
+      await importButton.scrollIntoViewIfNeeded();
+      await expect(importButton).toBeInViewport();
+      expect(await main.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+      expect((await importButton.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+      expect((await models.boundingBox())!.y).toBeCloseTo(modelTop, 0);
+      await expect(rail.getByRole('button', {name:'切换深色主题',exact:true})).toBeInViewport();
+      await main.getByRole('button', {name:'搜索',exact:true}).scrollIntoViewIfNeeded();
+    }
     await nav(page, "模型");
     const dialog = page.getByRole("dialog", { name: "模型与 API" });
     await expect(dialog).toBeVisible();
@@ -506,7 +531,8 @@ test.describe("Repeatable UI acceptance", () => {
   test("reader selection asks about an exact quote, translates and keeps native navigation", async ({
     page,
   }, info) => {
-    await page.route('**/api/settings',route=>route.fulfill({json:{provider:'openai',baseUrl:'https://example.org/v1',model:'fixture-model',modelConfigured:true,apiKeyConfigured:false}}));
+    let selectionSettings:any={provider:'openai',baseUrl:'https://example.org/v1',model:'fixture-model',modelConfigured:true,apiKeyConfigured:false,activeProfileId:'fixture',profiles:[{id:'fixture',name:'Fixture',provider:'openai',baseUrl:'https://example.org/v1',model:'fixture-model',models:['fixture-model'],modelConfigured:true}]};
+    await page.route('**/api/settings',async route=>{if(route.request().method()==='PUT')selectionSettings={...selectionSettings,...route.request().postDataJSON()};await route.fulfill({json:selectionSettings});});
     await page.reload();
     const pdf = await researchPdf(page, "selection interaction", true);
     await page.route("**/test-selection.pdf", (route) =>
@@ -606,7 +632,7 @@ test.describe("Repeatable UI acceptance", () => {
     await page
       .context()
       .grantPermissions(["clipboard-read", "clipboard-write"]);
-    await page.getByLabel("问答处理方式", { exact: true }).selectOption("agent");
+    await chooseAnswerMode(page,"agent");
     await page.getByRole("button", { name: "准备订阅任务", exact: true }).click();
     const agentTask = await page.evaluate(() => navigator.clipboard.readText());
     expect(agentTask).toContain(selected);
@@ -618,7 +644,7 @@ test.describe("Repeatable UI acceptance", () => {
         new URL(request.url()).pathname === "/api/chat" &&
         request.method() === "POST",
     );
-    await page.getByLabel("问答处理方式", { exact: true }).selectOption("api");
+    await chooseAnswerMode(page,"api");
     await page.getByRole("button", { name: "发送问题" }).click();
     const message = (await request).postDataJSON().message;
     expect(message).toContain(selected);
@@ -761,12 +787,16 @@ test.describe("Repeatable UI acceptance", () => {
       fullPage: true,
     });
     await assertFits(page);
+    // Enable a fixture provider only for the answer phase; report generation above remains keyless.
+    const answerProfile={id:'fixture',name:'Answer fixture',provider:'openai',baseUrl:'https://example.org/v1',model:'test-model',models:['test-model'],modelConfigured:true,apiKeyConfigured:false};
+    await page.route('**/api/settings',route=>route.fulfill({json:{...answerProfile,activeProfileId:'fixture',profiles:[answerProfile],assistant:{answerMode:'api'}}}));
+    await page.reload();
     await page.getByTitle("切换助手", { exact: true }).click();
     await page
       .getByLabel("向研究助手提问")
       .fill("What is the main contribution?");
-    await page.getByLabel("问答处理方式", { exact: true }).selectOption("extractive");
-    await page.getByRole("button", { name: "查找原文", exact: true }).click();
+    await chooseAnswerMode(page,"api","test-model");
+    await page.getByRole("button", { name: "发送问题", exact: true }).click();
     await expect(
       page.getByText("strategy reweighting", { exact: true }),
     ).toBeVisible();
@@ -872,12 +902,14 @@ test("real backend: PDF upload, extractive report, question and persisted favori
   await expect(
     page.getByRole("button", { name: "取消收藏", exact: true }),
   ).toBeVisible();
+  await localAnswerFixture(page);
+  await page.reload();
   await page.getByTitle("切换助手", { exact: true }).click();
   await page
     .getByLabel("向研究助手提问")
     .fill("What does the evaluation measure?");
-  await page.getByLabel("问答处理方式", { exact: true }).selectOption("extractive");
-  await page.getByRole("button", { name: "查找原文", exact: true }).click();
+
+  await page.getByRole("button", { name: "发送问题", exact: true }).click();
   await expect(
     page.getByText("Local extractive mode · no model was called", {
       exact: true,

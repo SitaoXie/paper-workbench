@@ -6,6 +6,7 @@ async function setup(page:Page) {
  const active:Record<string,string>={alpha:'established',beta:'established'};
  const calls:{route:Route;body:any}[]=[];
  await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
   const req=route.request(),url=new URL(req.url()),path=url.pathname.slice(4),paperId=url.searchParams.get('paperId')||'alpha';let result:any={};
   if(path==='/settings')result={provider:'openai',baseUrl:'https://example.org/v1',model:'test-model',modelConfigured:true,apiKeyConfigured:true};
   else if(path==='/papers')result={papers};
@@ -39,7 +40,7 @@ async function history(page:Page,title:string){await page.getByRole('button',{na
 async function paper(page:Page,id:string){
  await close(page);const menu=page.getByRole('button',{name:'展开导航',exact:true}),nav=page.getByRole('navigation');
  if(await menu.isVisible())await menu.click();await nav.getByRole('button',{name:'文库',exact:true}).click();
- await page.locator('.paper-card-main').filter({hasText:`Scroll paper ${id}`}).click();await open(page);
+ await page.locator('.collection-paper-open').filter({hasText:`Scroll paper ${id}`}).click();await open(page);
 }
 
 test('middle of a conversation survives closing, switching sessions and papers, and reloading',async({page})=>{

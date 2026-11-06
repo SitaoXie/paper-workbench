@@ -8,6 +8,7 @@ async function fixture(page:Page){
   const papers:any[]=['甲','乙'].map((label,i)=>({id:i?'resume-b':'resume-a',title:`继续阅读论文${label}`,authors:[],source:'pdf',createdAt:'2026-10-22T00:00:00Z',abstract:'Original English abstract that should be replaced by an available Chinese overview.',url:'https://example.org/paper',tags:[],pageCount:6,localPdfUrl:'/resume-source.pdf',activeReadingId:'version1',readingVersions:[{id:'version1',style:'deep',format:'article',language:'zh-CN',markdown:reading(label),mode:'agent',createdAt:'2026-10-22T00:00:00Z',translations:{en:{language:'en',markdown:'## English reading\n\nEnglish content must not inherit a Chinese paragraph location.'}}},{id:'version2',style:'quick',language:'zh-CN',markdown:'## 另一版本\n\n较短的内容不应该使用旧版本的位置。',mode:'agent',createdAt:'2026-10-21T00:00:00Z'}]}));
   await page.route('**/resume-source.pdf',route=>route.fulfill({contentType:'application/pdf',body:pdf}));
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),path=new URL(req.url()).pathname.slice(4);let result:any={};
     if(path==='/settings')result={provider:'openai',baseUrl:'',model:'',modelConfigured:false,apiKeyConfigured:false};
     else if(path==='/papers')result={papers};
@@ -27,7 +28,7 @@ async function library(page:Page){
   if(await menu.isVisible()&&!((await nav.getAttribute('class'))||'').includes('mobile-open'))await menu.click();
   await nav.getByRole('button',{name:/^(文库|Library)$/}).click();
 }
-async function openCard(page:Page,label:string){await page.locator('.paper-card-main').filter({hasText:`继续阅读论文${label}`}).click();}
+async function openCard(page:Page,label:string){await page.locator('.collection-paper-open').filter({hasText:`继续阅读论文${label}`}).click();}
 async function pdfPosition(page:Page){
   return page.getByLabel('连续滚动论文页面',{exact:true}).evaluate(element=>{
     const number=Number((document.querySelector('[aria-label="PDF 页码"]') as HTMLInputElement).value);
@@ -105,17 +106,14 @@ test('overview positions are per paper and reset when version, language or sourc
   await expect.poll(()=>page.evaluate(()=>window.scrollY)).toBe(0);
 });
 
-test('library cards use available Chinese overviews and switch to cached English content',async({page})=>{
+test('opening a library paper uses cached Chinese and English overviews without generation',async({page})=>{
   await fixture(page);await page.goto('/zh/');await library(page);
-  const excerpt=page.locator('.paper-card-main').filter({hasText:'继续阅读论文甲'}).locator('p');
-  await expect(excerpt).toContainText('比较受控实验的证据');
-  await expect(excerpt).not.toContainText('Original English abstract');
-  await expect(excerpt).toHaveAttribute('lang','zh-CN');
-  const menu=page.getByRole('button',{name:'展开导航',exact:true}),nav=page.getByRole('navigation');
-  if(await menu.isVisible()&&!((await nav.getAttribute('class'))||'').includes('mobile-open'))await menu.click();
-  await nav.getByRole('button',{name:'切换为英文',exact:true}).click();
-  await expect(excerpt).toContainText('English content must not inherit');
-  await expect(excerpt).toHaveAttribute('lang','en');
+  await page.locator('.collection-paper-open').filter({hasText:'继续阅读论文甲'}).click();
+  await expect(page.locator('.reading-prose')).toContainText('比较受控实验的证据');
+  await expect(page.locator('.reading-prose')).not.toContainText('Original English abstract');
+  await page.getByLabel('阅读语言',{exact:true}).selectOption('en');
+  await expect(page.locator('.reading-prose')).toContainText('English content must not inherit');
+  await expect(page.getByLabel('Reading language',{exact:true})).toHaveValue('en');
 });
 
 test('consecutive source detours retain the newest overview position after scrolling again',async({page})=>{

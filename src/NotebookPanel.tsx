@@ -1,3 +1,4 @@
+import {apiUrl,isDemoWorkspace} from './workspace-mode';
 import { useEffect, useRef, useState } from "react";
 import {
   BookMarked,
@@ -58,6 +59,7 @@ export default function NotebookPanel({
   onDelete: (id: string) => Promise<void>;
   onRestore: (id: string) => Promise<void>;
 }) {
+  const demo = isDemoWorkspace();
   const [exporting, setExporting] = useState(false), [exportNotice, setExportNotice] = useState("");
   const [reviewExportSource, setReviewExportSource] = useState(() => { try { return sessionStorage.getItem(`pw-export-review:${paperId}`) === "true"; } catch { return false; } });
   useEffect(() => { try { if (reviewExportSource) sessionStorage.setItem(`pw-export-review:${paperId}`, "true"); else sessionStorage.removeItem(`pw-export-review:${paperId}`); } catch { /* Source acceptance is always rechecked by the server. */ } }, [reviewExportSource, paperId]);
@@ -174,7 +176,7 @@ export default function NotebookPanel({
     const controller = new AbortController(); exportController.current = controller;
     setExporting(true); setExportNotice(""); setError("");
     try {
-      const response = await fetch(`/api/papers/${encodeURIComponent(paperId)}/annotations/export?format=pdf`, {signal: controller.signal});
+      const response = await fetch(apiUrl(`/papers/${encodeURIComponent(paperId)}/annotations/export?format=pdf`), {signal: controller.signal});
       if (!response.ok) {
         const result = await response.json().catch(() => ({}));
         if (result.code === "pdf_source_unbound") { setReviewExportSource(true); return; }
@@ -230,7 +232,7 @@ export default function NotebookPanel({
           <X size={18} />
         </button>
       </header>
-      <div className="notebook-actions">
+      {!demo && <div className="notebook-actions">
         <button
           className="soft-button"
           onClick={() => {
@@ -244,7 +246,7 @@ export default function NotebookPanel({
         </button>
         <a
           className="soft-button"
-          href={`/api/papers/${paperId}/annotations/export?format=markdown`}
+          href={apiUrl(`/papers/${paperId}/annotations/export?format=markdown`)}
           download
         >
           <Download size={14} />
@@ -256,15 +258,16 @@ export default function NotebookPanel({
         </button>}
         <a
           className="text-button"
-          href={`/api/papers/${paperId}/annotations/export?format=json`}
+          href={apiUrl(`/papers/${paperId}/annotations/export?format=json`)}
           download
         >
           JSON
         </a>
       </div>
+      }
       {hasPdf && !!Object.keys(drafts).length && <p className="notebook-export-notice">{t("导出仅包含已保存的笔记，当前草稿尚未保存。", "Exports include saved notes only. Your current drafts are unsaved.")}</p>}
       {exportNotice && <p className="notebook-export-notice" role="status">{exportNotice}</p>}
-      {reviewExportSource && <PdfExportRecovery paperId={paperId} onViewSource={onViewSource} onClose={()=>setReviewExportSource(false)} onAccepted={()=>{setReviewExportSource(false);void downloadAnnotatedPdf();}}/>}
+      {!demo && reviewExportSource && <PdfExportRecovery paperId={paperId} onViewSource={onViewSource} onClose={()=>setReviewExportSource(false)} onAccepted={()=>{setReviewExportSource(false);void downloadAnnotatedPdf();}}/>}
       <div className="notebook-search">
         <Search size={14} />
         <input
@@ -428,11 +431,12 @@ export default function NotebookPanel({
                 {segment.quote ? <blockquote className="notebook-quote">{segment.quote}</blockquote> : selectedSegments.length > 1 && <p className="notebook-region-label">{t("已标注的页面区域", "Marked page region")}</p>}
               </section>
             ))}
-            <div className="note-preview-toggle" role="group" aria-label={t("笔记显示方式", "Note display")}>
+            {!demo && <div className="note-preview-toggle" role="group" aria-label={t("笔记显示方式", "Note display")}>
               <button aria-pressed={!preview} onClick={()=>setPreview(false)}>{t("编辑", "Edit")}</button>
               <button aria-pressed={preview} onClick={()=>setPreview(true)}>{t("预览", "Preview")}</button>
             </div>
-            {preview ? <div className="prose notebook-preview"><Mark onPage={(number)=>selected && onSelect(selected, true, number)}>{draft.body || t("还没有笔记内容。", "No note content yet.")}</Mark></div> : <label>
+            }
+            {preview || demo ? <div className="prose notebook-preview"><Mark onPage={(number)=>selected && onSelect(selected, true, number)}>{draft.body || t("还没有笔记内容。", "No note content yet.")}</Mark></div> : <label>
               {t("你的笔记", "Your note")}
               <textarea
                 aria-label={t("笔记内容", "Note content")}
@@ -449,6 +453,7 @@ export default function NotebookPanel({
             <label>
               {t("标签", "Tags")}
               <input
+                readOnly={demo}
                 aria-label={t("笔记标签", "Note tags")}
                 value={draft.tags}
                 placeholder={t(
@@ -458,7 +463,7 @@ export default function NotebookPanel({
                 onChange={(e) => setDraft({ tags: e.target.value })}
               />
             </label>
-            {selected &&
+            {!demo && selected &&
               (selected.kind === "highlight" ||
                 selected.kind === "underline") && (
                 <div
@@ -485,7 +490,7 @@ export default function NotebookPanel({
                   )}
                 </div>
               )}
-            <div className="notebook-editor-actions">
+            {!demo && <div className="notebook-editor-actions">
               <button
                 className="primary-button"
                 disabled={busy || (!selected && !draft.body.trim())}
@@ -517,8 +522,9 @@ export default function NotebookPanel({
                 </button>
               )}
             </div>
+            }
             <small className="muted-label">
-              {t(
+              {demo ? t("预写示例笔记；返回个人文库即可创建自己的笔记。", "Prewritten sample note. Return to your library to create your own.") : t(
                 "保存在本地；删除后可撤销。导出包含来源页码。",
                 "Saved locally. Deletions can be undone; exports include source pages.",
               )}

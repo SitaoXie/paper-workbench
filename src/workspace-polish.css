@@ -1,4 +1,18 @@
 /* Standalone research shares the canvas; only the composer is a raised surface. */
+/* Keep settings reachable while long mobile navigation scrolls independently. */
+@media (max-width: 800px) {
+  .rail > .brand, .rail > .rail-bottom { flex-shrink: 0; }
+  .rail > .rail-main {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .rail-main > * { flex-shrink: 0; }
+  .rail-bottom { padding-top: 12px; }
+  .rail-bottom > .theme-toggle { min-width: 44px; min-height: 44px; }
+}
 .research-page { min-width: 0; }
 .research-page > .page-header { flex-shrink: 0; }
 .research-page .full-assistant {
@@ -67,6 +81,10 @@
 .reading-prose:lang(zh) { line-height: 1.95; }
 .reading-provenance .reading-style-badge { background: var(--subtle); color: var(--secondary); padding: 3px 7px; border-radius: 5px; }
 .reading-provenance .reading-style-badge::before { content: none; }
+/* Keep the non-interactive badge within the compact provenance row. */
+@container (max-width: 600px) {
+  .reading-provenance .reading-style-badge { padding-block: 1px; }
+}
 @container (max-width: 560px) {
   .reading-overview-heading { flex-wrap: wrap; }
   .reading-style-options { grid-template-columns: minmax(0,1fr); }

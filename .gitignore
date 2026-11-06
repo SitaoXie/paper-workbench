@@ -10,3 +10,6 @@ test-results/
 playwright-report/
 .DS_Store
 release/
+
+# Portable library backups contain private papers and notes.
+*.paperwork

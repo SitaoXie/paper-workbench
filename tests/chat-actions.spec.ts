@@ -8,6 +8,7 @@ async function setup(page: Page, configured = true) {
   const sessions:Record<string,any[]>={original:structuredClone(original)};let active='original',count=0;
   const sent:any[]=[],branches:any[]=[];let delayed:Route|undefined;
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const request=route.request(),path=new URL(request.url()).pathname.slice(4);let result:any={};
     if(path==='/settings')result={provider:'openai',model:'selected-model',modelConfigured:configured,apiKeyConfigured:configured,baseUrl:'https://example.org/v1'};
     else if(path==='/papers')result={papers:[paper]};
@@ -73,7 +74,7 @@ test('without an API, answer again prepares a separate draft for the subscriptio
   await page.locator('.message.assistant').filter({hasText:'observed difference'}).getByRole('button',{name:'Answer again in a new conversation',exact:true}).click();
   await expect(page.getByLabel('Ask the research assistant',{exact:true})).toHaveValue(f.original[0].content);
   expect(f.branches).toHaveLength(1);expect(f.sent).toHaveLength(0);
-  await expect(page.getByLabel('Question processing mode',{exact:true})).toHaveValue('agent');
+  await expect(page.getByRole('button',{name:'Choose model or subscription assistant',exact:true})).toContainText('Codex / Claude');
   await expect(page.getByRole('button',{name:'Prepare subscription task',exact:true})).toBeEnabled();
   expect(f.sessions.original).toEqual(f.original);
 });

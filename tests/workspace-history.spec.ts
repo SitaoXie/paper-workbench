@@ -6,7 +6,8 @@ async function fixture(page:Page){
   const papers:any[]=['a','b'].map(id=>({id:'history-'+id,title:'History paper '+id,authors:[],source:'pdf',createdAt:'2026-10-22T00:00:00Z',abstract:'The original abstract describes a controlled result.',text:'Source evidence.',tags:[],pageCount:3,localPdfUrl:'/history-source.pdf',activeReadingId:'current-'+id,readingVersions:[{id:'current-'+id,style:'deep',language:'en',markdown:readings('Current '+id),mode:'agent',createdAt:'2026-10-22T00:00:00Z'},{id:'older-'+id,style:'quick',language:'en',markdown:readings('Older '+id),mode:'agent',createdAt:'2026-10-21T00:00:00Z'}]}));
   const writes:any[]=[],pendingDetails:{id:string;route:Route}[]=[];const heldDetails=new Set<string>();
   await page.route('**/history-source.pdf',route=>route.fulfill({body:outlinePdf(),contentType:'application/pdf'}));
-  await page.route('**/api/**',async route=>{const req=route.request(),url=new URL(req.url()),path=url.pathname.slice(4);let json:any={};
+  await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}const req=route.request(),url=new URL(req.url()),path=url.pathname.slice(4);let json:any={};
     if(req.method()!=='GET')writes.push({path,body:req.postDataJSON()});
     if(path==='/settings')json={provider:'openai',baseUrl:'',model:'',modelConfigured:false,apiKeyConfigured:false};
     else if(path==='/papers')json={papers};
@@ -23,7 +24,7 @@ const geometry=(page:Page)=>viewport(page).evaluate(el=>({top:el.scrollTop,left:
 
 test('browser Back/Forward retains the overview paragraph, PDF position and unsent assistant draft',async({page})=>{
   const {writes}=await fixture(page);await page.goto('/en/?view=library');
-  await page.locator('.paper-card-main').filter({hasText:'History paper a'}).click();await closeAssistant(page);
+  await page.locator('.collection-paper-open').filter({hasText:'History paper a'}).click();await closeAssistant(page);
   const heading=page.getByRole('heading',{name:'Current a section 7',exact:true});await heading.scrollIntoViewIfNeeded();
   const citation=page.locator('.reading-prose').getByRole('button',{name:'p.2',exact:true}).nth(6);await citation.scrollIntoViewIfNeeded();
   const before=await heading.evaluate(el=>el.getBoundingClientRect().top);
@@ -45,14 +46,14 @@ test('browser Back/Forward retains the overview paragraph, PDF position and unse
 
 test('library and distinct papers are browser history entries and restoring does not rewrite active versions',async({page})=>{
   const {writes}=await fixture(page);await page.goto('/en/?view=library');
-  await page.locator('.paper-card-main').filter({hasText:'History paper a'}).click();await closeAssistant(page);
+  await page.locator('.collection-paper-open').filter({hasText:'History paper a'}).click();await closeAssistant(page);
   await page.getByRole('tab',{name:'Paper',exact:true}).click();await expect(page.getByLabel('PDF page number',{exact:true})).toBeVisible();
   await page.getByLabel('PDF page number',{exact:true}).fill('3');await page.getByLabel('PDF page number',{exact:true}).press('Enter');
   await expect(page.locator('[data-pdf-page="3"] canvas[data-rendered="true"]')).toBeVisible();await viewport(page).evaluate(el=>{el.scrollTop+=70;el.dispatchEvent(new Event('scroll'));});const before=await geometry(page);
-  await library(page);await page.locator('.paper-card-main').filter({hasText:'History paper b'}).click();await expect(page.locator('.paper-summary h1')).toHaveText('History paper b');
-  await page.goBack();await expect(page.locator('.paper-card-main')).toHaveCount(2);
+  await library(page);await page.locator('.collection-paper-open').filter({hasText:'History paper b'}).click();await expect(page.locator('.paper-summary h1')).toHaveText('History paper b');
+  await page.goBack();await expect(page.locator('.collection-paper-open')).toHaveCount(2);
   await page.goBack();await expect(page.getByLabel('PDF page number',{exact:true})).toHaveValue('3');await expect.poll(async()=>(await geometry(page)).top).toBeCloseTo(before.top,0);
-  await page.goBack();await expect(page.getByRole('tab',{name:'Overview',exact:true})).toHaveAttribute('aria-selected','true');await page.goBack();await expect(page.locator('.paper-card-main')).toHaveCount(2);
+  await page.goBack();await expect(page.getByRole('tab',{name:'Overview',exact:true})).toHaveAttribute('aria-selected','true');await page.goBack();await expect(page.locator('.collection-paper-open')).toHaveCount(2);
   await page.goForward();await expect(page.locator('.paper-summary h1')).toHaveText('History paper a');expect(writes).toEqual([]);
 });
 
@@ -68,7 +69,7 @@ test('an older-version chapter survives a browser history detour to its PDF cita
 
 test('a same-paper Back while details load still finishes loading its existing conversation',async({page})=>{
   const f=await fixture(page);await page.goto('/en/?view=library');f.holdDetail('history-a');
-  await page.locator('.paper-card-main').filter({hasText:'History paper a'}).click();await expect.poll(()=>f.pendingDetails.length).toBe(1);
+  await page.locator('.collection-paper-open').filter({hasText:'History paper a'}).click();await expect.poll(()=>f.pendingDetails.length).toBe(1);
   await closeAssistant(page);await page.getByRole('tab',{name:'Paper',exact:true}).click();await expect(page.getByLabel('PDF page number',{exact:true})).toBeVisible();
   await page.goBack();await expect(page.getByRole('tab',{name:'Overview',exact:true})).toHaveAttribute('aria-selected','true');
   await f.pendingDetails[0].route.fulfill({json:{paper:f.papers[0]}});
@@ -78,7 +79,7 @@ test('a same-paper Back while details load still finishes loading its existing c
 });
 
 test('refresh between a fast Back and Forward preserves the final PDF pixels',async({page})=>{
-  const f=await fixture(page);await page.goto('/en/?view=library');await page.locator('.paper-card-main').filter({hasText:'History paper a'}).click();await closeAssistant(page);
+  const f=await fixture(page);await page.goto('/en/?view=library');await page.locator('.collection-paper-open').filter({hasText:'History paper a'}).click();await closeAssistant(page);
   await page.locator('.reading-prose').getByRole('button',{name:'p.2',exact:true}).first().click();await expect(page.locator('[data-pdf-page="2"] canvas[data-rendered="true"]')).toBeVisible();
   const departure=await viewport(page).evaluate(element=>{element.scrollTop+=270;element.dispatchEvent(new Event('scroll'));const position={top:element.scrollTop,left:element.scrollLeft};history.back();return position;});
   await expect(page.getByRole('tab',{name:'Overview',exact:true})).toHaveAttribute('aria-selected','true');await page.reload();await expect(page.locator('.reading-prose')).toBeVisible();
@@ -88,7 +89,7 @@ test('refresh between a fast Back and Forward preserves the final PDF pixels',as
 
 
 test('zoom after going Back between two PDF source destinations stays on the restored page',async({page})=>{
-  const f=await fixture(page);await page.goto('/en/?view=library');await page.locator('.paper-card-main').filter({hasText:'History paper a'}).click();await closeAssistant(page);
+  const f=await fixture(page);await page.goto('/en/?view=library');await page.locator('.collection-paper-open').filter({hasText:'History paper a'}).click();await closeAssistant(page);
   await page.locator('.reading-prose').getByRole('button',{name:'p.2',exact:true}).first().click();await expect(page.getByLabel('PDF page number',{exact:true})).toHaveValue('2');
   await page.getByRole('button',{name:'Zoom in PDF',exact:true}).click();
   await page.getByRole('button',{name:'Open floating assistant',exact:true}).click();await page.locator('.messages').getByRole('button',{name:'p.3',exact:true}).click();await closeAssistant(page);
@@ -99,15 +100,15 @@ test('zoom after going Back between two PDF source destinations stays on the res
 
 test('a late paper response cannot overwrite a different paper or move its unsent question',async({page})=>{
   const f=await fixture(page);await page.goto('/en/?view=library');f.holdDetail('history-a');
-  await page.locator('.paper-card-main').filter({hasText:'History paper a'}).click();await expect.poll(()=>f.pendingDetails.length).toBe(1);await library(page);
-  await page.locator('.paper-card-main').filter({hasText:'History paper b'}).click();
+  await page.locator('.collection-paper-open').filter({hasText:'History paper a'}).click();await expect.poll(()=>f.pendingDetails.length).toBe(1);await library(page);
+  await page.locator('.collection-paper-open').filter({hasText:'History paper b'}).click();
   if(!await page.locator('.composer textarea').isVisible())await page.getByRole('button',{name:'Open floating assistant',exact:true}).click();
   await expect(page.locator('.messages')).toContainText('saved answer remains');await page.locator('.composer textarea').fill('This unsent question belongs only to paper B.');
   f.releaseDetail('history-a');await f.pendingDetails[0].route.fulfill({json:{paper:{...f.papers[0],title:'LATE PAPER A RESPONSE'}}});
   await expect(page.locator('.paper-summary h1')).toHaveText('History paper b');await expect(page.locator('.composer textarea')).toHaveValue('This unsent question belongs only to paper B.');
-  await page.goBack();await expect(page.locator('.paper-card-main')).toHaveCount(2);await page.goBack();await expect(page.locator('.paper-summary h1')).toHaveText('History paper a');
+  await page.goBack();await expect(page.locator('.collection-paper-open')).toHaveCount(2);await page.goBack();await expect(page.locator('.paper-summary h1')).toHaveText('History paper a');
   await expect(page.locator('.messages')).toContainText('saved answer remains');await expect(page.locator('.composer textarea')).toHaveValue('');
-  await page.goForward();await expect(page.locator('.paper-card-main')).toHaveCount(2);await page.goForward();await expect(page.locator('.paper-summary h1')).toHaveText('History paper b');await expect(page.locator('.composer textarea')).toHaveValue('This unsent question belongs only to paper B.');
+  await page.goForward();await expect(page.locator('.collection-paper-open')).toHaveCount(2);await page.goForward();await expect(page.locator('.paper-summary h1')).toHaveText('History paper b');await expect(page.locator('.composer textarea')).toHaveValue('This unsent question belongs only to paper B.');
   const navigationOnly=await page.evaluate(()=>({state:JSON.stringify(history.state),cache:sessionStorage.getItem('paper-workbench:history-positions-v1')||''}));
   for(const value of Object.values(navigationOnly)){expect(value).not.toContain('This unsent question');expect(value).not.toContain('saved answer remains');expect(value).not.toContain('Follow the original evidence');}
   expect(f.writes).toEqual([]);
@@ -117,13 +118,13 @@ test('a late paper response cannot overwrite a different paper or move its unsen
 test('a delayed fresh active version cannot replace the fixed overview restored by browser Back',async({page})=>{
   const f=await fixture(page);f.papers[0].activeReadingId='older-a';
   await page.goto('/en/?view=library');
-  await page.locator('.paper-card-main').filter({hasText:'History paper a'}).click();await closeAssistant(page);
+  await page.locator('.collection-paper-open').filter({hasText:'History paper a'}).click();await closeAssistant(page);
   await expect(page.getByLabel('Reading version',{exact:true})).toHaveValue('older-a');
   await expect(page.getByRole('heading',{name:'Older a section 1',exact:true})).toBeVisible();
   expect(new URL(page.url()).hash).toBe('');
-  await library(page);await page.locator('.paper-card-main').filter({hasText:'History paper b'}).click();
+  await library(page);await page.locator('.collection-paper-open').filter({hasText:'History paper b'}).click();
   await expect(page.locator('.paper-summary h1')).toHaveText('History paper b');
-  f.holdDetail('history-a');await page.goBack();await expect(page.locator('.paper-card-main')).toHaveCount(2);
+  f.holdDetail('history-a');await page.goBack();await expect(page.locator('.collection-paper-open')).toHaveCount(2);
   await page.goBack();await expect.poll(()=>f.pendingDetails.length).toBe(1);
   await expect(page.getByLabel('Reading version',{exact:true})).toHaveValue('older-a');
   // The library snapshot still points at A; the delayed detail legitimately
@@ -147,14 +148,14 @@ test('a delayed fresh active version cannot replace the fixed overview restored 
   await page.getByRole('button',{name:'Create source excerpts',exact:true}).click();
   await expect(page.getByLabel('Reading version',{exact:true})).toHaveValue(generated.id);
   await expect(page.getByRole('heading',{name:'Newly requested source excerpts',exact:true})).toBeVisible();
-  expect(f.writes).toEqual([{path:'/papers/history-a',body:{activeReadingId:'current-a'}},{path:'/papers/history-a/report',body:{language:'en',style:'quick',format:'article',focus:'',adversarial:false}}]);
+  expect(f.writes).toEqual([{path:'/papers/history-a',body:{activeReadingId:'current-a'}},{path:'/papers/history-a/report',body:{language:'en',style:'quick',format:'article',focus:'',adversarial:false,inputMode:'text-images',imageBatchSize:0}}]);
 });
 
 
 test('a delayed initial detail cannot undo an explicitly saved version choice',async({page})=>{
   const f=await fixture(page),staleDetail=structuredClone(f.papers[0]);
   f.holdDetail('history-a');await page.goto('/en/?view=library');
-  await page.locator('.paper-card-main').filter({hasText:'History paper a'}).click();
+  await page.locator('.collection-paper-open').filter({hasText:'History paper a'}).click();
   await expect.poll(()=>f.pendingDetails.length).toBe(1);
   await page.getByLabel('Reading version',{exact:true}).selectOption('older-a');
   await expect(page.getByLabel('Reading version',{exact:true})).toBeEnabled();
@@ -175,6 +176,7 @@ for(const outcome of ['success','failure'] as const){
     const papers=['a','b'].map(id=>({id:'uncached-'+id,title:'Uncached paper '+id,authors:[],source:'web',url:'https://example.org/'+id,createdAt:'2026-10-22T00:00:00Z',abstract:'Original source evidence.',text:'Original source evidence.',tags:[]}));
     let holdList=false,holdBack=false;let pendingBack:Route|undefined;const pendingLists:Route[]=[],chatReads:string[]=[];
     await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
       const url=new URL(route.request().url()),path=url.pathname.slice(4);let json:any={};
       if(path==='/settings')json={provider:'openai',model:'',modelConfigured:false,apiKeyConfigured:false};
       else if(path==='/papers'){if(holdList){pendingLists.push(route);return;}json={papers};}

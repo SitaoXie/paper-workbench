@@ -7,6 +7,7 @@ async function fixture(page:Page,markdown=source){
   const paper={id:'math-paper',title:'Reading math precisely',authors:[],source:'web',createdAt:reading.createdAt,abstract:'An independent abstract.',text:'Source text.',tags:[],readingVersions:[reading],activeReadingId:reading.id};
   const calls:{path:string,body:any}[]=[];
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),path=new URL(req.url()).pathname.slice(4);let json:any={};
     if(req.method()!=='GET')calls.push({path,body:req.postDataJSON()});
     if(path==='/settings')json={provider:'openai',model:'configured-model',modelConfigured:true,apiKeyConfigured:true};

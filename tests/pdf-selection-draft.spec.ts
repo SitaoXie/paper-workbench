@@ -19,10 +19,12 @@ async function fixture(page:Page,{deferred=false,clipboardFails=false,failSessio
   }
   const bytes=Buffer.from(await pdf.save());
   const papers=['pdf-draft-a','pdf-draft-b'].map(id=>({id,title:`PDF draft ${id}`,authors:[],source:'pdf',createdAt:'2026-10-22T00:00:00Z',abstract:'An original source abstract.',text:phrase,tags:[],pageCount:9,localPdfUrl:'/pdf-draft.pdf'}));
+  const annotations:any[]=[];
   const calls:{path:string;method:string;body:any}[]=[],pending:Route[]=[],pendingSessions:Route[]=[];let sessions=0;
   await page.addInitScript(fail=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{if(fail)throw new DOMException('Permission denied','NotAllowedError');}}}),clipboardFails);
   await page.route('**/pdf-draft.pdf',route=>route.fulfill({contentType:'application/pdf',body:bytes}));
   await page.route('**/api/**',async route=>{
+    if(new URL(route.request().url()).pathname==='/api/collections'){await route.fulfill({json:{collections:[]}});return;}
     const req=route.request(),url=new URL(req.url()),path=url.pathname.slice(4);calls.push({path,method:req.method(),body:req.method()==='GET'?undefined:req.postDataJSON()});
     if(path.endsWith('/assist')&&deferred){pending.push(route);return;}
     if(path==='/chats/new'&&deferredSession){pendingSessions.push(route);return;}
@@ -32,7 +34,7 @@ async function fixture(page:Page,{deferred=false,clipboardFails=false,failSessio
     else if(/^\/papers\/[^/]+$/.test(path))json={paper:papers.find(item=>item.id===path.split('/')[2])};
     else if(path==='/chats')json={messages:[],conversationId:null};
     else if(path==='/chats/new'){sessions++;if(failSession&&sessions===1){await route.fulfill({status:503,json:{error:'Temporary session creation failure'}});return;}json={conversationId:`draft-question-${sessions}`,messages:[]};}
-    else if(path.endsWith('/annotations'))json={annotations:[]};else if(path.endsWith('/activities'))json={activities:[]};
+    else if(path.endsWith('/annotations')){if(req.method()==='POST'){const annotation={...req.postDataJSON(),id:`draft-note-${annotations.length+1}`,paperId:path.split('/')[2]};annotations.push(annotation);json={annotation};}else json={annotations};}else if(path.endsWith('/activities'))json={activities:[]};
     else if(path.endsWith('/assist'))json={result:{text:'A precise result retained with its original selection.'}};
     await route.fulfill({json});
   });
@@ -95,7 +97,7 @@ test('a deferred PDF result finishes while folded and only an explicit return ex
   const f=await fixture(page,{deferred:true}),dialog=await selectSource(page);await dialog.getByRole('button',{name:'Explain selection',exact:true}).click();
   const inline=page.getByRole('dialog',{name:'Inline reading assistant',exact:true});await expect.poll(()=>f.pending.length).toBe(1);const chip=await away(page);await expect(chip).toContainText('Processing');
   await f.pending[0].fulfill({json:{result:{text:'A preserved bounded conclusion.'}}});await expect(chip).toContainText('Result preserved');await expect(inline).toBeHidden();
-  await chip.getByRole('button',{name:'Return to selected draft',exact:true}).click();await expect(inline).toContainText('A preserved bounded conclusion.');await assertRestored(page);expect(f.modelCalls()).toHaveLength(1);
+  await chip.getByRole('button',{name:'Return to selected draft',exact:true}).click();await expect(inline).toContainText('A preserved bounded conclusion.');await expect(inline.getByRole('button',{name:'Saved',exact:true})).toBeDisabled();await assertRestored(page);expect(f.modelCalls()).toHaveLength(1);
 });
 
 test('failure and unsent question survive folding with one explicit retry and no duplicate request',async({page})=>{
@@ -118,7 +120,7 @@ test('paper, UI language and inactive-tab changes clear PDF drafts and ignore la
   const f=await fixture(page,{deferred:true});let dialog=await selectSource(page);await dialog.getByRole('button',{name:'Explain selection',exact:true}).click();await away(page);
   await page.getByRole('tab',{name:'Overview',exact:true}).click();await expect(page.locator('.pdf-inline-assist')).toHaveCount(0);await f.pending[0].fulfill({json:{result:{text:'STALE_PDF_RESPONSE'}}});await page.getByRole('tab',{name:'Paper',exact:true}).click();await expect(page.locator('.pdf-inline-assist')).toHaveCount(0);
   await host(page).evaluate(node=>node.scrollTop=0);dialog=await selectSource(page);await dialog.getByRole('button',{name:'Minimize selection draft',exact:true}).click();if(page.viewportSize()!.width<700)await page.getByRole('button',{name:'Expand navigation',exact:true}).click();await page.getByRole('button',{name:'Switch to Chinese',exact:true}).click();await expect(page.locator('.pdf-selection-menu')).toHaveCount(0);await expect(page.locator('.pdf-selection-draft-chip')).toHaveCount(0);
-  await page.getByRole('button',{name:'切换为英文',exact:true}).click();if(page.viewportSize()!.width<700)await page.getByRole('button',{name:'Expand navigation',exact:true}).click();dialog=await selectSource(page);await dialog.getByRole('button',{name:'Minimize selection draft',exact:true}).click();await page.locator('.paper-toolbar').getByRole('button',{name:'Library',exact:true}).click();await page.locator('.paper-card-main').filter({hasText:'PDF draft pdf-draft-b'}).click();await expect(page.locator('.pdf-selection-draft-chip')).toHaveCount(0);await expect(page.locator('.pdf-selection-menu')).toHaveCount(0);
+  await page.getByRole('button',{name:'切换为英文',exact:true}).click();if(page.viewportSize()!.width<700)await page.getByRole('button',{name:'Expand navigation',exact:true}).click();dialog=await selectSource(page);await dialog.getByRole('button',{name:'Minimize selection draft',exact:true}).click();await page.locator('.paper-toolbar').getByRole('button',{name:'Library',exact:true}).click();await page.locator('.collection-paper-open').filter({hasText:'PDF draft pdf-draft-b'}).click();await expect(page.locator('.pdf-selection-draft-chip')).toHaveCount(0);await expect(page.locator('.pdf-selection-menu')).toHaveCount(0);
 });
 
 test('cross-page draft rebuilds both exact boundaries after recycling without substituting a repeated phrase',async({page})=>{
@@ -173,5 +175,5 @@ test('Escape and an unusable one-character source gesture keep a meaningful PDF 
   await expect(page.locator('.pdf-selection-draft-chip')).toHaveCount(1);if(await page.getByRole('button',{name:'Close floating assistant',exact:true}).isVisible())await page.getByRole('button',{name:'Close floating assistant',exact:true}).click();
   await restore.click();await expect(question).toHaveValue('Keep my PDF question until a usable source replaces it.');
   const first=page.locator('[data-pdf-page="1"] .pdf-text-layer span').first();await first.click();await first.evaluate(element=>{const range=document.createRange();range.setStart(element.firstChild!,0);range.setEnd(element.firstChild!,1);getSelection()!.removeAllRanges();getSelection()!.addRange(range);document.dispatchEvent(new Event('selectionchange'));});
-  await expect(restore).toBeVisible();await restore.click();await expect(question).toHaveValue('Keep my PDF question until a usable source replaces it.');expect(await page.evaluate(()=>getSelection()?.toString())).toBe(phrase);expect(f.modelCalls()).toEqual([]);
+  await expect(restore).toBeVisible();await restore.click();await expect(question).toHaveValue('Keep my PDF question until a usable source replaces it.');await expect.poll(()=>page.evaluate(()=>getSelection()?.toString())).toBe(phrase);expect(f.modelCalls()).toEqual([]);
 });

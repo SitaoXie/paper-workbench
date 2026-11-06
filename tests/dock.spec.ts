@@ -149,7 +149,7 @@ test("narrow startup grows into a wide desktop dock and keeps drafts through ove
     page,
     page.getByRole("button", { name: "关闭助手", exact: true }),
   );
-  await fitsViewport(page, page.getByTestId("assistant-dock").getByRole("button", { name: "管理模型连接", exact: true }));
+  await fitsViewport(page, page.getByTestId("assistant-dock").getByRole("button", { name: "选择模型或订阅助手", exact: true }));
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect
     .poll(
@@ -170,8 +170,8 @@ test("narrow startup grows into a wide desktop dock and keeps drafts through ove
     page,
     page.getByRole("button", { name: "关闭助手", exact: true }),
   );
-  await fitsViewport(page, page.getByTestId("assistant-dock").getByRole("button", { name: "管理模型连接", exact: true }));
-  await fitsViewport(page, page.getByLabel("问答处理方式", { exact: true }));
+  await fitsViewport(page, page.getByTestId("assistant-dock").getByRole("button", { name: "选择模型或订阅助手", exact: true }));
+  await fitsViewport(page, page.getByRole("button", { name: "添加附件", exact: true }));
   await fitsViewport(page, page.getByRole("button", { name: "准备订阅任务", exact: true }));
   const phoneComposer = (await page.locator(".assistant-dock .composer").boundingBox())!;
   expect(rect.y + rect.height - phoneComposer.y - phoneComposer.height).toBeLessThanOrEqual(20);
@@ -204,7 +204,7 @@ test("long conversation scrolls inside the dock while composer and close stay vi
       page,
       page.getByRole("button", { name: "关闭助手", exact: true }),
     );
-    await fitsViewport(page, page.getByTestId("assistant-dock").getByRole("button", { name: "管理模型连接", exact: true }));
+    await fitsViewport(page, page.getByTestId("assistant-dock").getByRole("button", { name: "选择模型或订阅助手", exact: true }));
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,

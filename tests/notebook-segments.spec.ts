@@ -44,10 +44,12 @@ test("one cross-page note searches and locates every excerpt, edits once, and su
   expect(saved).toHaveLength(1); expect(saved[0].id).toBe(annotation.id);
   expect(saved[0].segments).toEqual(segments); expect(saved[0].tags).toEqual(["reviewed", "cross-page"]);
   await page.reload();
-  const notesButton = page.getByTitle("Notes & annotations", { exact: true });
-  if (!(await notebook.isVisible())) await notesButton.click();
+  // The saved open notebook and selected editor restore after the initial
+  // paper request. Clicking the covered toolbar during that interval races the
+  // mobile overlay and can accidentally toggle the restored panel closed.
+  await expect(notebook).toBeVisible();
   await expect(notebook.locator(".notebook-card")).toHaveCount(1);
-  if (!(await editor.isVisible())) await notebook.locator(".notebook-card").click();
+  await expect(editor).toBeVisible();
   await expect(editor.getByRole("textbox", { name: "Note content", exact: true })).toHaveValue("The comment was edited once for both pages.");
   await expect(editor.locator(".notebook-source-segment")).toHaveCount(2);
   await editor.getByRole("button", { name: "Delete", exact: true }).click();

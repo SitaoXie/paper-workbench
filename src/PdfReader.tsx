@@ -1,3 +1,4 @@
+import {isDemoWorkspace} from './workspace-mode';
 import {citationHighlightLifetime,readyPdfTextLayer} from './citation-highlight';
 import {
   useCallback,
@@ -497,6 +498,11 @@ export default function PdfReader({
   language = "zh-CN",
   annotationFocus,
 }: Props) {
+  // The sample preserves reading/navigation, but never offers a mutating action.
+  if (isDemoWorkspace()) {
+    onAskSelection = undefined; onCreateAnnotation = undefined;
+    onInlineAssist = undefined; onHideAnnotation = undefined; onManageFigures = undefined;
+  }
   const activeRef = useRef(active);
   activeRef.current = active;
   const initialPositionRef = useRef(initialPosition); initialPositionRef.current = initialPosition;
