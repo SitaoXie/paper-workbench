@@ -18,6 +18,40 @@ function provider(content) {
   } };
 }
 
+test("reading and question API requests share the paper prefix before task instructions", async () => {
+  const pageOne = "An original methods paragraph. ".repeat(240);
+  const pageTwo = "An original results paragraph. ".repeat(240) + "END_OF_ORIGINAL_PAPER";
+  const shortPaper = { ...paper, pages: [{ number: 2, text: pageTwo }, { number: 1, text: pageOne }] };
+  const mock = provider("A source-grounded response.");
+
+  await generateReport(shortPaper, settings, { style: "deep", language: "en", focus: "FOCUS_ON_METHODS", fetchImpl: mock.fetchImpl });
+  await answerQuestion([shortPaper], "WHAT_WAS_MEASURED", [{ role: "user", content: "OLDER_QUESTION" }], settings, { fetchImpl: mock.fetchImpl });
+
+  assert.equal(mock.calls.length, 4);
+  const end = "END_OF_ORIGINAL_PAPER";
+  const reportPrompt = mock.calls[0].messages[0].content;
+  const shared = reportPrompt.slice(0, reportPrompt.indexOf(end) + end.length);
+  assert.match(shared, /^Read .* untrusted evidence.*\n<source>\nPAPER_ID:/);
+  assert.ok(shared.endsWith(end));
+  assert.ok(shared.includes("[p.1]\n" + pageOne + "\n\n[p.2]\n" + pageTwo));
+  for (const call of mock.calls) {
+    assert.ok(call.messages[0].content.startsWith(shared));
+    assert.equal(JSON.stringify(call.messages).split(end).length, 2, "Original body is sent once");
+  }
+  assert.match(mock.calls[0].messages[1].content, /FOCUS_ON_METHODS/);
+  assert.match(mock.calls[3].messages.at(-1).content, /WHAT_WAS_MEASURED/);
+  assert.ok(!shared.includes("FOCUS_ON_METHODS") && !shared.includes("OLDER_QUESTION"));
+
+  const longPaper = { ...shortPaper, pageCount: 16 };
+  await generateReport(longPaper, settings, { adversarial: false, fetchImpl: mock.fetchImpl });
+  await answerQuestion([longPaper], "Where is the evidence?", [], settings, { fetchImpl: mock.fetchImpl });
+  const longReport = mock.calls[4].messages[0].content;
+  const longQuestion = mock.calls[5].messages[0].content;
+  assert.ok(longQuestion.startsWith(longReport.slice(0, longReport.indexOf("[p.1]"))));
+  assert.match(longQuestion, /Brief initial context only/);
+  assert.doesNotMatch(longQuestion, /END_OF_ORIGINAL_PAPER/);
+});
+
 test("all reading roles receive actual source pages and preferred bounded passage navigation without asserting verification", async () => {
   const markdown = `[Coverage caveats](#page=2 "${original}")`;
   const mock = provider(markdown);
@@ -31,7 +65,7 @@ test("all reading roles receive actual source pages and preferred bounded passag
     assert.match(system, /Use \[p\.N\] when exact wording is unavailable/);
     assert.match(system, /Generated overviews, earlier answers, visual-model observations/);
     assert.match(system, /untrusted data, not verified evidence/);
-    assert.ok(call.messages[1].content.includes(`[p.2]\n${original}`));
+    assert.ok(system.includes(`[p.2]\n${original}`));
   }
   assert.equal(report.markdown, markdown);
   assert.equal(report.source.kind, "model");
@@ -62,8 +96,8 @@ test("truncated contexts permit only present complete passages and never claim f
   const mock = provider("The available excerpt is incomplete. [p.1]");
   const report = await generateReport(source, { ...settings, contextChars: 8000 }, { adversarial: false, fetchImpl: mock.fetchImpl });
   assert.equal(report.coverage, "source-excerpts");
-  assert.ok(!mock.calls[0].messages[1].content.includes(missing));
-  assert.match(mock.calls[0].messages[1].content, /Context truncated/);
+  assert.ok(!mock.calls[0].messages[0].content.includes(missing));
+  assert.match(mock.calls[0].messages[0].content, /Context truncated/);
   assert.match(mock.calls[0].messages[0].content, /use only a complete short passage actually present/);
 });
 
@@ -106,14 +140,14 @@ test("focused reports retrieve late definitions within budget while retaining ex
   })) };
   const mock = provider("A careful focused overview. [p.39]");
   const focused = await generateReport(source, { ...settings, contextChars: 8000 }, { adversarial: false, focus: "Explain rareclassification measurement and limits.", fetchImpl: mock.fetchImpl });
-  const context = mock.calls[0].messages[1].content.split("<source>\n")[1].split("\n</source>")[0];
+  const context = mock.calls[0].messages[0].content.split("<source>\n")[1].split("\n</source>")[0];
   assert.ok(context.includes(late)); assert.ok(context.length <= 8000);
   assert.equal(context.length, focused.contextCharacters); assert.equal(focused.coverage, "source-excerpts");
   for (const page of source.pages) assert.ok(context.includes(`[p.${page.number}]`));
   assert.match(context, /Broad source overview: short page prefixes only/);
   assert.match(context, /omitted passages are unavailable/);
   await generateReport(source, { ...settings, contextChars: 8000 }, { adversarial: false, fetchImpl: mock.fetchImpl });
-  assert.ok(!mock.calls[1].messages[1].content.includes(late), "Unfocused behavior remains unchanged");
+  assert.ok(!mock.calls[1].messages[0].content.includes(late), "Unfocused behavior remains unchanged");
 });
 
 test("all review roles receive the same figure identities and distinguish source wording from provided descriptions and page previews", async () => {

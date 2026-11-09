@@ -19,7 +19,8 @@ test('overview analyst, reviewer and editor receive the same labeled source imag
  for(const call of provider.calls){
   const content=call.messages[1].content;
   assert.equal(imageParts(content).length,2);
-  assert.match(content[0].text,/FIRST_PAGE_BODY/);assert.match(content[0].text,/SECOND_PAGE_BODY/);
+  assert.match(call.messages[0].content, /FIRST_PAGE_BODY/);
+  assert.match(call.messages[0].content, /SECOND_PAGE_BODY/);
   const labels=content.slice(1).filter(p=>p.type==='text').map(p=>JSON.parse(p.text));
   assert.deepEqual(labels.map(p=>p.pdfPage),[1,2]);assert.equal(labels[0].originalNumber,'Figure 3');
   assert.equal(labels[0].figureId,'original-chart');assert.equal(labels[0].paperId,paper.id);
@@ -36,7 +37,7 @@ test('screenshot mode uses actual PDF page count including pages absent from ext
  assert.deepEqual(seen.map(p=>p.page),[1,2,3]);
  const content=provider.calls[0].messages[1].content;
  assert.deepEqual(content.slice(1).filter(p=>p.type==='text').map(p=>JSON.parse(p.text).pdfPage),[1,2,3]);
- assert.ok(!JSON.stringify(content).includes('FIRST_PAGE_BODY'));
+ assert.ok(!JSON.stringify(provider.calls[0].messages).includes('FIRST_PAGE_BODY'));
  assert.equal(result.coverage,'full-page-images');assert.deepEqual(result.source.visualInput.pages,[1,2,3]);
 });
 
@@ -58,7 +59,7 @@ test('text-only writer uses independent Anthropic visual reader and receives onl
 test('no visual model falls back to source text even when screenshot mode is selected',async()=>{
  const provider=mock();
  const result=await generateReport(paper,{...settings,modelCapabilities:{writer:'text'}},{inputMode:'page-images',dataDir:'/fixture',renderImage:()=>{throw new Error('must not render');},fetchImpl:provider.fetchImpl,adversarial:false});
- assert.match(provider.calls[0].messages[1].content,/FIRST_PAGE_BODY/);
+ assert.match(provider.calls[0].messages[0].content,/FIRST_PAGE_BODY/);
  assert.equal(result.source.visualInput.fallbackReason,'no-vision-model');assert.equal(result.source.visualInput.imageCount,0);
 });
 

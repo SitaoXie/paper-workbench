@@ -33,7 +33,7 @@ test('writer, skeptic and editor receive the skill contract while preserving exp
   assert.equal(mock.calls.length, 3);
   for (const request of mock.calls) {
     assert.ok(request.messages[0].content.includes(readingPolicyPrompt('overview')));
-    assert.ok(request.messages[1].content.includes(paper.pages[0].text));
+    assert.ok(request.messages[0].content.includes(paper.pages[0].text));
     assert.ok(!request.messages[0].content.includes(focus));
     assert.match(request.messages[0].content, /requested language: zh-CN/);
   }

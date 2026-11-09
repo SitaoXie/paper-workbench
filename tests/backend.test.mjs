@@ -845,7 +845,7 @@ test("context keeps dense pages whole when the source fits and reports actual tr
   assert.equal(report.coverage, "full-text-extracted");
   assert.equal(report.contextCharacters, complete.text.length);
   assert.equal(report.sourceCharacters, complete.sourceCharacters);
-  assert.match(calls[0].messages[1].content, /DENSE_PAGE_END/);
+  assert.match(calls[0].messages[0].content, /DENSE_PAGE_END/);
   await answerQuestion([paper], "Read the complete paper", [], settings, {
     fetchImpl,
   });
@@ -2238,8 +2238,8 @@ test("OpenAI vision sends local crop pixels to the independent model and records
   assert.equal(calls[2].headers.Authorization, "Bearer writer-private-key");
   assert.equal(calls[2].body.model, "writer-v1");
   assert.ok(calls[2].body.messages.every(message => typeof message.content === "string"));
-  assert.match(calls[2].body.messages[1].content, /Visual model evidence/);
-  assert.match(calls[2].body.messages[1].content, /UNVERIFIED/);
+  assert.match(calls[2].body.messages[0].content, /Visual model evidence/);
+  assert.match(calls[2].body.messages[0].content, /UNVERIFIED/);
   assert.equal(generated.data.report.source.pixelsProvided, false);
   assert.deepEqual(generated.data.report.source.visualEvidenceIds, [evidence.id]);
   assert.equal(generated.data.report.source.visualEvidenceMode, "prior-vision-observations");
@@ -2537,7 +2537,7 @@ test("changed crops mark saved visual evidence stale and exclude it from later r
   assert.equal(report.status, 200);
   assert.equal(report.data.report.source.visualEvidenceMode, "none");
   assert.deepEqual(report.data.report.source.visualEvidenceIds, []);
-  assert.ok(!calls[1].messages[1].content.includes(`[Visual evidence ${evidence[0].id}]`));
+  assert.ok(!calls[1].messages[0].content.includes(`[Visual evidence ${evidence[0].id}]`));
 });
 
 test("text synthesis uses only the latest analysis per figure and never falls back past a stale latest crop", async (t) => {
@@ -2559,8 +2559,8 @@ test("text synthesis uses only the latest analysis per figure and never falls ba
   const report = await api(`${route}/report`, { method: "POST", body: { adversarial: false } });
   assert.equal(report.status, 200);
   assert.deepEqual(report.data.report.source.visualEvidenceIds, [latest.id]);
-  assert.match(calls.at(-1).messages[1].content, new RegExp(latest.id));
-  assert.ok(!calls.at(-1).messages[1].content.includes(older.id));
+  assert.match(calls.at(-1).messages[0].content, new RegExp(latest.id));
+  assert.ok(!calls.at(-1).messages[0].content.includes(older.id));
   const answer = await api("/api/chat", { method: "POST", body: { paperId: paper.id, message: "Explain the chart evidence." } });
   assert.equal(answer.status, 200);
   assert.deepEqual(answer.data.message.source.visualEvidenceIds, [latest.id]);
@@ -2577,7 +2577,7 @@ test("text synthesis uses only the latest analysis per figure and never falls ba
   assert.equal(afterRevert.status, 200);
   assert.equal(afterRevert.data.report.source.visualEvidenceMode, "none");
   assert.deepEqual(afterRevert.data.report.source.visualEvidenceIds, []);
-  for (const record of [older, latest, newest]) assert.ok(!calls.at(-1).messages[1].content.includes(record.id));
+  for (const record of [older, latest, newest]) assert.ok(!calls.at(-1).messages[0].content.includes(record.id));
 });
 
 test("in-flight text synthesis records the visual evidence actually sent even when a newer analysis arrives", async () => {
